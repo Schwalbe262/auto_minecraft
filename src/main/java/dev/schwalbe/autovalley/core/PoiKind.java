@@ -1,0 +1,2 @@
+package dev.schwalbe.autovalley.core;
+public enum PoiKind { TOMATO_CHEST, WINE_CHEST, WINE_KEG, PRESERVES_JAR, SHIPPING_BIN, DISPOSAL, BED, WAYPOINT }
