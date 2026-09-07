@@ -34,16 +34,10 @@ public final class RegistrationRules {
         return classifier(kind, text, null);
     }
 
-    /** Wine input is displayed AGE or +N future years; profiles continue to store the production cohort. */
+    /** Tomatoes are commodity-only; wine AGE/+N still maps to the production cohort. */
     public static Integer classifier(PoiKind kind, String text, Integer currentWineYear) {
-        if (kind != PoiKind.TOMATO_CHEST && kind != PoiKind.WINE_CHEST) return null;
         if (kind == PoiKind.WINE_CHEST) return WineCohortRules.parse(text, currentWineYear);
-        int number;
-        try { number = Integer.parseInt(text.trim()); }
-        catch (RuntimeException e) { throw new IllegalArgumentException("autovalley.error.classifier"); }
-        if (number < 0 || number > 3)
-            throw new IllegalArgumentException("autovalley.error.classifier");
-        return number;
+        return null;
     }
 
     public static Integer wineAge(Integer cohort, Integer currentWineYear) {

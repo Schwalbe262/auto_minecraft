@@ -48,7 +48,7 @@ class ProfileStoreTest {
         assertEquals(legacy,Files.readString(file));
     }
 
-    @Test void desiredTomatoLayoutPersistsSeparatelyFromLegacyActualGradesAndEmptyCandidates() throws Exception {
+    @Test void inertLegacyLayoutAndClassifierArePreservedWithoutReclassifyingStorage() throws Exception {
         Profile profile=new Profile(); Pos legacy=new Pos(-3,66,7), empty=new Pos(4,69,-9);
         profile.pois.add(new Poi(legacy,PoiKind.TOMATO_CHEST,"legacy actual grade",3));
         profile.pois.add(new Poi(empty,PoiKind.STORAGE_CANDIDATE,"empty future destination",null));
@@ -57,38 +57,46 @@ class ProfileStoreTest {
         ProfileStore store=new ProfileStore(directory); String key=ProfileStore.key("tomato-layout-roundtrip");
         store.save(key,profile); Profile loaded=store.load(key);
         assertEquals(profile.tomatoStorageTargets,loaded.tomatoStorageTargets); assertEquals(profile.pois,loaded.pois);
-        assertEquals(3,loaded.pois.get(0).classifier(),"target grade must never replace current stock classification during load/save");
+        assertEquals(3,loaded.pois.get(0).classifier(),"loading must preserve inert legacy metadata instead of silently rewriting it");
         assertNull(loaded.pois.get(1).classifier());
     }
 
-    @Test void invalidTomatoTargetGradesAndCoordinatesCannotOverwriteExistingProfile() throws Exception {
-        ProfileStore store=new ProfileStore(directory); String key=ProfileStore.key("tomato-layout-invalid");
-        store.save(key,new Profile()); String original=Files.readString(directory.resolve(key+".json"));
-        for (Integer grade:Arrays.asList(-1,4,null)) {
-            Profile profile=new Profile(); profile.tomatoStorageTargets.put("1:64:2",grade);
-            assertThrows(IllegalArgumentException.class,() -> store.save(key,profile));
-            assertEquals(original,Files.readString(directory.resolve(key+".json")));
-        }
-        for (String coordinate:Arrays.asList(null,"","1:2","1:2:3:4","1:64:x","2147483648:64:2","01:64:2","+1:64:2","1:64:2 ")) {
-            Profile profile=new Profile(); profile.tomatoStorageTargets.put(coordinate,0);
-            assertThrows(IllegalArgumentException.class,() -> store.save(key,profile));
-            assertEquals(original,Files.readString(directory.resolve(key+".json")));
-        }
-        Profile missing=new Profile(); missing.tomatoStorageTargets=null;
-        assertThrows(IllegalArgumentException.class,() -> store.save(key,missing));
-        Profile excessive=new Profile();
-        for (int n=0;n<4097;n++) excessive.tomatoStorageTargets.put(n+":64:2",0);
-        assertThrows(IllegalArgumentException.class,() -> store.save(key,excessive));
-        assertEquals(original,Files.readString(directory.resolve(key+".json")));
+    @Test void obsoleteLayoutDoesNotRequireMigrationBeforeSavingCommodityStorage() throws Exception {
+        ProfileStore store=new ProfileStore(directory); String key=ProfileStore.key("tomato-layout-ignored");
+        Profile profile=new Profile();
+        profile.pois.add(new Poi(new Pos(1,64,2),PoiKind.TOMATO_CHEST,"All tomatoes",null));
+        profile.tomatoStorageTargets.put("old-layout-label",4);
+        profile.tomatoStorageTargets.put("1:64:2",null);
+        store.save(key,profile);
+        assertEquals(profile.pois,store.load(key).pois);
+        profile.tomatoStorageTargets=null;
+        assertDoesNotThrow(() -> store.save(key,profile));
     }
 
-    @Test void malformedExplicitTomatoTargetMapIsPreservedInsteadOfBecomingAnEmptyLayout() throws Exception {
+    @Test void obsoleteExplicitTomatoTargetMapDoesNotBlockReadOnlyLoad() throws Exception {
         String key=ProfileStore.key("malformed-tomato-layout"); Path file=directory.resolve(key+".json");
         for (String json:List.of("{\"schemaVersion\":2,\"tomatoStorageTargets\":null}",
             "{\"schemaVersion\":2,\"tomatoStorageTargets\":{\"1:64:2\":4}}")) {
             Files.writeString(file,json);
-            assertThrows(IOException.class,() -> new ProfileStore(directory).load(key));
+            assertNotNull(new ProfileStore(directory).load(key));
             assertEquals(json,Files.readString(file));
+        }
+    }
+
+    @Test void commodityTomatoWarehousesAndLegacyGradeMetadataRoundTripTogether() throws Exception {
+        Profile profile=new Profile();
+        profile.pois.add(new Poi(new Pos(0,64,0),PoiKind.TOMATO_CHEST,"All grades",null));
+        int position=1;
+        for (int grade:new int[]{0,1,2,3,4,-1,Integer.MIN_VALUE,Integer.MAX_VALUE})
+            profile.pois.add(new Poi(new Pos(position++,64,0),PoiKind.TOMATO_CHEST,"Legacy "+grade,grade));
+        ProfileStore store=new ProfileStore(directory);String key=ProfileStore.key("commodity-tomatoes");
+        store.save(key,profile);assertEquals(profile.pois,store.load(key).pois);
+    }
+
+    @Test void wineStorageStillRequiresKnownNonnegativeCohort() {
+        for (Integer classifier:Arrays.asList(null,-1)) {
+            Profile profile=new Profile();profile.pois.add(new Poi(new Pos(0,64,0),PoiKind.WINE_CHEST,"Wine",classifier));
+            assertThrows(IllegalArgumentException.class,() -> ProfileStore.validate(profile));
         }
     }
 
@@ -121,9 +129,9 @@ class ProfileStoreTest {
         assertEquals(original,Files.readString(directory.resolve(key+".json")));
     }
 
-    @Test void invalidGradesDeadlinesAndDuplicateLocationsAreRejected() {
+    @Test void inertTomatoGradeIsAcceptedButInvalidDeadlinesAndDuplicateLocationsAreRejected() {
         Profile grade=new Profile(); grade.pois.add(new Poi(new Pos(0,64,0),PoiKind.TOMATO_CHEST,"bad",4));
-        assertThrows(IllegalArgumentException.class,() -> ProfileStore.validate(grade));
+        assertDoesNotThrow(() -> ProfileStore.validate(grade));
         Profile date=new Profile(); date.nextEligibleDay.put("wine:0:64:0",-1L);
         assertThrows(IllegalArgumentException.class,() -> ProfileStore.validate(date));
         Profile duplicate=new Profile(); Pos p=new Pos(0,64,0);

@@ -435,9 +435,9 @@ public final class ValleyScreen extends Screen {
         nameInput.setValue(poiName(selectedKind).getString());
         boolean classified = selectedKind == PoiKind.TOMATO_CHEST || selectedKind == PoiKind.WINE_CHEST;
         int actionY;
-        if (classified) {
+        if (selectedKind == PoiKind.WINE_CHEST) {
             int fieldWidth = Math.max(70, panelWidth / 3);
-            text(128, tr(selectedKind == PoiKind.TOMATO_CHEST ? "classifier.grade" : "classifier.year"));
+            text(128, tr("classifier.year"));
             classifierInput = input(left, 140, fieldWidth, tr("classifier"), 10);
             classifierInput.setValue("0");
             if (selectedKind == PoiKind.WINE_CHEST) classifierInput.setTooltip(Tooltip.create(tr("classifier.wine_hint")));
@@ -447,6 +447,13 @@ public final class ValleyScreen extends Screen {
                         String label = nameInput.getValue(), classifier = classifierInput.getValue();
                         rebuild(); nameInput.setValue(label); classifierInput.setValue(classifier);
                     });
+            actionY = 165;
+        } else if (selectedKind == PoiKind.TOMATO_CHEST) {
+            text(128, tr("tomato_storage.all_grades"));
+            button(left, 140, panelWidth, tr(containerChecked ? "container.checked" : "container.check"), () -> {
+                containerChecked = !containerChecked;
+                String label = nameInput.getValue(); rebuild(); nameInput.setValue(label);
+            }).setTooltip(Tooltip.create(tr("tomato_storage.hint")));
             actionY = 165;
         } else actionY = 132;
         int half = (panelWidth - 6) / 2;
@@ -536,7 +543,7 @@ public final class ValleyScreen extends Screen {
         try {
             classifier = selectedKind == PoiKind.WINE_CHEST
                     ? WineCohortRules.parseChecked(classifierInput.getValue(), classifierWineYear, runtime.world().wineYear())
-                    : RegistrationRules.classifier(selectedKind, classified ? classifierInput.getValue() : "", classifierWineYear);
+                    : RegistrationRules.classifier(selectedKind, "", classifierWineYear);
         }
         catch (IllegalArgumentException e) { error(e.getMessage().replace("autovalley.", "")); return; }
         String label = nameInput.getValue().trim();
@@ -681,7 +688,7 @@ public final class ValleyScreen extends Screen {
                 Component wineLabel = display == null ? tr("classifier.age_unknown")
                         : tr(display.future() ? "classifier.future_value" : "classifier.age_value", display.years());
                 caption = caption.copy().append(" · ").append(wineLabel);
-            } else if (poi.classifier() != null) caption = caption.copy().append(" " + poi.classifier());
+            } else if (poi.kind() == PoiKind.TOMATO_CHEST) caption = caption.copy().append(" · ").append(tr("tomato_storage.all_grades"));
             caption = caption.copy().append(" · " + coords(poi.pos()));
             button(left, y, panelWidth - 58, clipped(caption, panelWidth - 70), () -> {
                 if (poi.kind() == PoiKind.DISPOSAL) { updateDisposalFacing(poi); return; }

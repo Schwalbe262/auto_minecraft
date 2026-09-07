@@ -88,7 +88,7 @@ public final class MinecraftActions implements ActionPort {
         ItemSlot source=world.menu().slot(transfer.slot());
         ItemData item=source.item();
         boolean kindMatches=switch (poi.kind()) {
-            case TOMATO_CHEST -> item.is(ItemData.TOMATO) && poi.classifier()!=null && item.quality()==poi.classifier();
+            case TOMATO_CHEST -> TomatoStorageRules.permitsTransfer(item,world.menu());
             case WINE_CHEST -> source.player() && item.is(ItemData.WINE) && item.year()!=null && item.year().equals(poi.classifier());
             case SHIPPING_BIN -> source.player() && (item.standardShippingProduct() && context.session().allows(context.profile(),Feature.SHIPPING)
                 || item.is(ItemData.WINE) && WineSaleRules.permitted(item,context));

@@ -17,7 +17,7 @@ class StorageSurveyRulesTest {
     }
     @Test void pureTomatoAggregatesAllStacks() {
         var result=inspect(item(ItemData.TOMATO,64,2,null),item(ItemData.TOMATO,7,2,null),ItemData.EMPTY);
-        assertEquals(Status.TOMATO,result.status()); assertEquals(2,result.classifier());
+        assertEquals(Status.TOMATO,result.status()); assertNull(result.classifier());
         assertEquals(PoiKind.TOMATO_CHEST,result.classifiedKind()); assertEquals(71,result.contents().get(0).count());
         assertEquals(3,result.storageSlots()); assertEquals(1,result.emptySlots());
     }
@@ -30,8 +30,10 @@ class StorageSurveyRulesTest {
         var result=inspect(ItemData.EMPTY); assertEquals(Status.EMPTY,result.status());
         assertNull(result.classifier()); assertNull(result.classifiedKind());
     }
-    @Test void differentGradesOrCohortsAreMixed() {
-        assertEquals(Status.MIXED,inspect(item(ItemData.TOMATO,1,0,null),item(ItemData.TOMATO,1,1,null)).status());
+    @Test void tomatoGradesShareACommodityButWineCohortsStaySeparate() {
+        var tomatoes=inspect(item(ItemData.TOMATO,1,0,null),item(ItemData.TOMATO,1,1,null));
+        assertEquals(Status.TOMATO,tomatoes.status()); assertNull(tomatoes.classifier());
+        assertEquals(2,tomatoes.contents().size());
         assertEquals(Status.MIXED,inspect(item(ItemData.WINE,1,1,7),item(ItemData.WINE,1,1,8)).status());
     }
     @Test void otherItemsAndMixedProductsNeverClassify() {
@@ -42,9 +44,15 @@ class StorageSurveyRulesTest {
     }
     @Test void missingOrMalformedMetadataStaysUnknown() {
         for (var item:List.of(item(ItemData.WINE,1,1,null),item(ItemData.WINE,1,1,-1),
-                item(ItemData.TOMATO,1,-1,null),item(ItemData.TOMATO,1,4,null))) {
+                item(ItemData.WINE,1,-1,8),item(ItemData.WINE,1,4,8))) {
             var result=inspect(item); assertEquals(Status.UNKNOWN,result.status()); assertNull(result.classifiedKind());
         }
+    }
+    @Test void unknownTomatoQualityDoesNotHideItsKnownCommodity() {
+        var result=inspect(item(ItemData.TOMATO,2,-1,null),item(ItemData.TOMATO,3,4,null));
+        assertEquals(Status.TOMATO,result.status()); assertNull(result.classifier());
+        assertEquals(PoiKind.TOMATO_CHEST,result.classifiedKind());
+        assertEquals(5,result.contents().stream().mapToInt(StorageSurveyObservation.Stock::count).sum());
     }
     @Test void playerInventoryIsNotPartOfWarehouse() {
         var result=StorageSurveyRules.inspect(POS,2,List.of(new ItemSlot(0,-1,false,ItemData.EMPTY),
@@ -55,7 +63,7 @@ class StorageSurveyRulesTest {
         List<ItemSlot> slots=new ArrayList<>();
         for(int i=0;i<54;i++) slots.add(new ItemSlot(i,-1,false,i==53 ? item(ItemData.TOMATO,9,3,null) : ItemData.EMPTY));
         var result=StorageSurveyRules.inspect(POS,2,slots);
-        assertEquals(54,result.storageSlots()); assertEquals(53,result.emptySlots()); assertEquals(3,result.classifier());
+        assertEquals(54,result.storageSlots()); assertEquals(53,result.emptySlots()); assertNull(result.classifier());
         assertThrows(UnsupportedOperationException.class,() -> result.contents().clear());
     }
     @Test void malformedMenusCannotProduceClassification() {

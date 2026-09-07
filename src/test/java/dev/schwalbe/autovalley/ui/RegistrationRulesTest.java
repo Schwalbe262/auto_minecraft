@@ -6,14 +6,19 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class RegistrationRulesTest {
-    @Test void classifierRejectsMissingWineAgeAndUnknownGrade() {
+    @Test void classifierRejectsMissingWineAgeButTomatoesNeverRequireGrade() {
         assertThrows(IllegalArgumentException.class, () -> RegistrationRules.classifier(PoiKind.WINE_CHEST, ""));
         assertThrows(IllegalArgumentException.class, () -> RegistrationRules.classifier(PoiKind.WINE_CHEST, "2.5"));
         assertThrows(IllegalArgumentException.class, () -> RegistrationRules.classifier(PoiKind.WINE_CHEST, "-1"));
-        assertThrows(IllegalArgumentException.class, () -> RegistrationRules.classifier(PoiKind.TOMATO_CHEST, "4"));
-        assertEquals(3, RegistrationRules.classifier(PoiKind.TOMATO_CHEST, " 3 "));
+        assertNull(RegistrationRules.classifier(PoiKind.TOMATO_CHEST, ""));
+        assertNull(RegistrationRules.classifier(PoiKind.TOMATO_CHEST, " 3 "));
         assertEquals(3, RegistrationRules.classifier(PoiKind.WINE_CHEST, "7", 10));
         assertNull(RegistrationRules.classifier(PoiKind.BED, ""));
+    }
+
+    @Test void editingTomatoStorageClearsAnyLegacyClassifierWithoutUsingWineClock() {
+        for (String previous:Arrays.asList(null,"0","1","2","3","4","unknown"))
+            assertNull(RegistrationRules.classifier(PoiKind.TOMATO_CHEST,previous,null));
     }
 
     @Test void displayedAgeZeroUsesCurrentNativeWineCohort() {

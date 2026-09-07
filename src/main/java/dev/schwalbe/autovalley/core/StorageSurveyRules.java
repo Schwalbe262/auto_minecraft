@@ -32,8 +32,7 @@ public final class StorageSurveyRules {
             if (item.empty()) { empty++; continue; }
             StockKey key=new StockKey(item.id(),item.quality(),item.year());
             totals.merge(key,item.count(),Math::addExact);
-            if ((item.is(ItemData.TOMATO) || item.is(ItemData.WINE))
-                && (item.quality()<0 || item.quality()>3)) unknown=true;
+            if (item.is(ItemData.WINE) && (item.quality()<0 || item.quality()>3)) unknown=true;
             if (item.is(ItemData.WINE) && (item.year()==null || item.year()<0)) unknown=true;
         }
         List<StorageSurveyObservation.Stock> contents=totals.entrySet().stream()
@@ -43,9 +42,9 @@ public final class StorageSurveyRules {
         if (contents.isEmpty()) status=Status.EMPTY;
         else if (unknown) status=Status.UNKNOWN;
         else if (contents.stream().allMatch(s -> s.itemId().equals(ItemData.TOMATO))) {
-            Set<Integer> grades=new HashSet<>(); contents.forEach(s -> grades.add(s.quality()));
-            status=grades.size()==1 ? Status.TOMATO : Status.MIXED;
-            if (status==Status.TOMATO) classifier=grades.iterator().next();
+            // Grade remains in the observations for stock counting, not as a
+            // warehouse restriction. Even an unknown grade does not change the item.
+            status=Status.TOMATO;
         } else if (contents.stream().allMatch(s -> s.itemId().equals(ItemData.WINE))) {
             Set<Integer> cohorts=new HashSet<>(); contents.forEach(s -> cohorts.add(s.cohort()));
             status=cohorts.size()==1 ? Status.WINE : Status.MIXED;

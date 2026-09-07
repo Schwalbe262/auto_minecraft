@@ -49,7 +49,7 @@ abstract class DepositModule implements AutomationModule {
                     return WorkResult.idle();
                 }
                 selected = slot.item();
-                if (selected.quality() < 0 || selected.quality() > 3) return fail("Unknown product quality; inspect the item");
+                if (destinationKind()!=PoiKind.TOMATO_CHEST && (selected.quality() < 0 || selected.quality() > 3)) return fail("Unknown product quality; inspect the item");
                 Integer group = classifier(selected);
                 if (destinationKind() == PoiKind.WINE_CHEST && group == null) {
                     if (unknownSince < 0) unknownSince = c.world().tick();
@@ -58,7 +58,7 @@ abstract class DepositModule implements AutomationModule {
                 }
                 unknownSince = -1;
                 candidates = ModuleSupport.nearest(c,destinations(c,selected));
-                if (candidates.isEmpty()) return fail("Register a destination for " + selected.id() + " classification " + group);
+                if (candidates.isEmpty()) return fail("Register a destination for " + selected.id() + (group==null ? "" : " classification " + group));
                 candidate = 0; stage = Stage.APPROACH;
             }
             case APPROACH -> {
@@ -78,7 +78,7 @@ abstract class DepositModule implements AutomationModule {
                         return WorkResult.busy("Leaving incompatible legacy contents untouched; checking the next destination");
                     }
                 } catch (RuntimeException failure) { return fail("Could not safely prepare storage: "+failure.getMessage()); }
-                if (destinationKind() != PoiKind.SHIPPING_BIN && menu.slots().stream().filter(s -> !s.player()).map(ItemSlot::item)
+                if (destinationKind() == PoiKind.WINE_CHEST && menu.slots().stream().filter(s -> !s.player()).map(ItemSlot::item)
                     .anyMatch(i -> i.is(itemId()) && !Objects.equals(classifier(i),classifier(selected)))) return fail("Storage contains a conflicting grade or production Year");
                 ItemSlot source = ModuleSupport.menuPlayerItem(c,i -> ModuleSupport.same(i,selected) && !i.empty());
                 if (source == null) {
