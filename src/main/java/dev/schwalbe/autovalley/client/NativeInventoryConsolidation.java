@@ -142,11 +142,27 @@ final class NativeInventoryConsolidation {
             int slot=menuSlots[index];
             if (NativeWineMetadata.passiveChange(expectedMenu.get(slot),after.get(slot),level,wineYear)) passiveUpdates.add(index);
         }
-        var confirmation=transaction.acknowledge(inventory(after),passiveUpdates);
+        var inventoryAfter=inventory(after);
+        // This candidate is an actual full-menu server packet, not a live menu
+        // or applied single-slot snapshot. An unrelated pickup may be included
+        // in the same packet as the native primitive's result. The core still
+        // verifies that exact primitive and rejects its participants/receivers.
+        var additions=concurrentProductionAdditions(transaction,inventoryAfter,protectedHotbar);
+        var confirmation=transaction.acknowledge(inventoryAfter,passiveUpdates,additions);
         if (confirmation!=InventoryConsolidation.Confirmation.WAIT) {
             expectedMenu=after; acknowledgedSequence=acknowledgement.seq();
         }
         return confirmation;
+    }
+    static Set<Integer> concurrentProductionAdditions(InventoryConsolidation transaction,
+            InventoryConsolidation.Snapshot after,int protectedHotbar) {
+        Set<Integer> additions=new HashSet<>();
+        var before=transaction.expectedLive();
+        for (int index=0;index<36;index++) {
+            if (index!=protectedHotbar && transaction.allowsConcurrentAddition(index)
+                && productionAddition(before.items().get(index),after.items().get(index))) additions.add(index);
+        }
+        return Set.copyOf(additions);
     }
     private InventoryConsolidation.Snapshot inventory(List<InventoryConsolidation.Stack> menu) {
         return new InventoryConsolidation.Snapshot(Arrays.stream(menuSlots).mapToObj(menu::get).toList());

@@ -50,6 +50,14 @@ public final class InventoryConsolidation {
         };
     }
 
+    /** Read-only structural eligibility; never proves packet origin or item type. */
+    public boolean allowsConcurrentAddition(int index) {
+        if (stage==Stage.DONE || index<0 || index>=36
+                || index==plan.sourceIndex() || index==plan.scratchHotbar()) return false;
+        return stage!=Stage.MERGE || index!=plan.quickMoveIndex()
+                && (index<9)==(plan.quickMoveIndex()<9);
+    }
+
     /**
      * Refreshes a completed primitive's baseline without acknowledging or sending
      * another click. The native caller must prove every supplied change using
@@ -93,8 +101,21 @@ public final class InventoryConsolidation {
      * the next baseline only after the complete primitive is verified.
      */
     public Confirmation acknowledge(Snapshot after,Set<Integer> verifiedPassiveUpdates) {
-        if (stage==Stage.DONE || before.equals(after)) return Confirmation.WAIT;
-        if (verifiedPassiveUpdates==null) return Confirmation.WAIT;
+        return acknowledge(after,verifiedPassiveUpdates,Set.of());
+    }
+
+    /**
+     * A genuine full server ACK may contain an unrelated production-item pickup.
+     * The native caller verifies that item's whitelist and authoritative origin;
+     * only structurally untouched slots with exact positive additions are eligible
+     * here. A temporary comparison baseline removes those additions from the click
+     * proof, but the actual permutation/conserved move must still be present.
+     * Failed/no-op ACKs never change the baseline, stage or completed-click count.
+     */
+    public Confirmation acknowledge(Snapshot after,Set<Integer> verifiedPassiveUpdates,
+                                    Set<Integer> verifiedProductionAdditions) {
+        if (stage==Stage.DONE || after==null || before.equals(after)) return Confirmation.WAIT;
+        if (verifiedPassiveUpdates==null || verifiedProductionAdditions==null) return Confirmation.WAIT;
         List<Stack> comparisonItems=new ArrayList<>(before.items());
         for (Integer index:verifiedPassiveUpdates) {
             if (index==null || index<0 || index>=36) return Confirmation.WAIT;
@@ -103,6 +124,13 @@ public final class InventoryConsolidation {
             } else if (index==plan.quickMoveIndex()) return Confirmation.WAIT;
             Stack old=before.items().get(index),now=after.items().get(index);
             if (old.empty() || now.empty() || old.count()!=now.count() || old.limit()!=now.limit()) return Confirmation.WAIT;
+            comparisonItems.set(index,now);
+        }
+        for (Integer index:verifiedProductionAdditions) {
+            if (index==null || !allowsConcurrentAddition(index) || verifiedPassiveUpdates.contains(index)) return Confirmation.WAIT;
+            Stack old=before.items().get(index),now=after.items().get(index);
+            if (now.empty() || now.count()<=old.count() || !old.empty() && !old.sameKind(now)
+                    || now.identity().equals(initial.items().get(plan.sourceIndex()).identity())) return Confirmation.WAIT;
             comparisonItems.set(index,now);
         }
         Snapshot comparisonBefore=new Snapshot(comparisonItems);

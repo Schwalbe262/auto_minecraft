@@ -515,3 +515,30 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   fields without calling reconciliation or control methods. All remain clear at
   this checkpoint. The requested three-hour uninterrupted window is still open;
   the earlier 1-hour-50-minute interruption is not counted toward it.
+
+### Fourth observation interruption: pickup inside a full-menu merge reply
+
+- The fourth continuous window stopped after approximately **1 hour 8 minutes**
+  during ingredient consolidation. It did **not** meet the requested three
+  uninterrupted hours; earlier interrupted windows are not added to this run.
+- A read-only native audit found that the server had completed the planned
+  tomato merge: a two-item source joined a one-item receiver to make three.
+  The same full-menu reply also included one newly received wine bottle in a
+  separate empty hotbar slot. The previous strict comparison rejected the
+  combined reply despite the completed merge.
+- The correction narrowly accepts independently verified unrelated production-
+  item additions carried by the actual full-menu acknowledgement. The planned
+  primitive, participating slots and every implicit QUICK_MOVE receiver remain
+  strictly validated. It does not permit arbitrary inventory changes, manufacture
+  an acknowledgement, or replay a merge that the server already completed.
+- Before recovery, the interrupted inventory matched all 46 expected native
+  slots. The one remaining inverse SWAP was sent once and received an exact
+  full-menu acknowledgement, restoring all 55 borrowed torches with every other
+  slot unchanged. The original failed receipt and fence were retained; no
+  QUICK_MOVE replay or automatic retry was performed.
+- Thirteen new core/native regression tests cover the full-reply exception and
+  its safety boundaries. Integrated Java 17 `test build`: **681 tests, zero
+  failures or errors**. Snapshot SHA-256:
+  `6D7E0389AE99F2F58346011D1ED9C3732138E8A4308856504F7D354CC245C8B5`.
+  Build success and the bounded restoration do not establish post-installation
+  stability. A new uninterrupted observation window must be verified separately.
