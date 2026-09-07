@@ -29,6 +29,20 @@ Explicit local diagnostic/control request files support inspection and start/pau
 
 ## Verification
 
+### One-shot work and manual recording
+
+`AutomationEngine.startOnce` selects exactly one module. It grants only that feature a temporary session permission, never changes saved feature toggles, respects day deadlines, and stops on completion or blocking rather than scheduling another day. Stops revoke the temporary permission. Runtime refuses work with no registered target or while a manual recording is unsaved.
+
+The passive recorder uses an explicit outbound packet allow-list and sampled client state, not OS hooks or raw packet dumps. Intent and server-observed state have distinct event types. A recent use-block target is only an unverified temporal hint for menu ownership. Connection and recording generations fence queued callbacks. Local UTF-8 JSONL journals flush each second and require a user-supplied name; no replay or upload is included. Gameplay coordinates/inventory are private and ignored by version control.
+
+### Storage, magnet and scale
+
+Up to eight immutable full-menu ACK snapshots per container preserve an earlier successful transfer even if magnet pickup refills the player slot before the next tick. Confirmed source removal and destination increase, not a later live count alone, establish deposit quantity. A session ledger retains undelivered overflow until confirmed storage/disposal removes it; disappearance is not delivery. Production and sleep wait for the ledger to clear.
+
+Vinery's native `WineYears.getYear(Level)` is the aging clock. It is not the sleep-skipping day calendar. The UI accepts current wine age and stores the stable raw production cohort: existing wine stays in its container as its age increases. Selling held surplus requires a fresh full-capacity check of every registered reserve for that cohort; no reserve wine is withdrawn. Permissions expire at 1,200 ticks and on date/registration changes.
+
+Machine runs reuse acknowledged source stock counts while consuming held ingredients and recount before new hauls, date changes, and stale batches. Farms are an arbitrary list, not two fixed slots. Per-field volume and profile-file size protections remain. Bulk machine registration previews connected same-ID blocks, rejects partial/unloaded changes, and never infers storage contents.
+
 JUnit tests cover classification, source recounts, grade ties, priority, action cancellation, server-state waits, production/pickup failures, game-day deadlines, dawn races, sleep rejection, path constraints, door acknowledgement, real upper tomato vines, calibration, profile round trips and malformed-file preservation, and registration validation.
 
 Build the distributable with `gradlew test build`; `reobfJar` produces the mapped release JAR. A separate title-screen-only UI preview is available with `gradlew runClient -PuiPreview`. This property opens settings in a development client without loading a world.
