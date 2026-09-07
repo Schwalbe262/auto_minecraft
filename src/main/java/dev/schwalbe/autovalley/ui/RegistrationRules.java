@@ -25,6 +25,7 @@ public final class RegistrationRules {
             case "society:preserves_jar" -> List.of(PoiKind.PRESERVES_JAR);
             case "shippingbin:smart_shipping_bin" -> List.of(PoiKind.SHIPPING_BIN);
             default -> block.id().endsWith("_bed") ? List.of(PoiKind.BED)
+                    : StorageSurveyRules.ordinaryStorage(block) ? List.of(PoiKind.STORAGE_CANDIDATE, PoiKind.TOMATO_CHEST, PoiKind.WINE_CHEST)
                     : block.flag("container") ? List.of(PoiKind.TOMATO_CHEST, PoiKind.WINE_CHEST) : List.of();
         };
     }

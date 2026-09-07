@@ -15,6 +15,12 @@ public final class SessionState {
     public boolean magnetHaulPending;
     public final Map<String,Integer> magnetHaulRemaining=new HashMap<>();
     public final Map<Integer,WineSalePermit> wineSalePermits=new HashMap<>();
+    /** Local inspection evidence, not permission to transfer; retained after a one-shot finishes. */
+    public final Map<Pos,StorageSurveyObservation> storageSurveyObservations=new java.util.LinkedHashMap<>();
+    public int storageSurveyTotal;
+    public boolean storageSurveyComplete;
+    public String storageSurveyStatus="not_started";
+    public Pos storageSurveyBlockedAt;
     public void recordFarmRemoval(String id,int amount) {
         if (!magnetHaulPending || amount<=0) return;
         magnetHaulRemaining.computeIfPresent(id,(key,count) -> Math.max(0,count-amount));

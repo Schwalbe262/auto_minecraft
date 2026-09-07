@@ -104,7 +104,7 @@ public final class ValleyScreen extends Screen {
 
     private void modules() {
         int half = (panelWidth - 6) / 2;
-        Feature[] features = Feature.values();
+        Feature[] features = Arrays.stream(Feature.values()).filter(feature -> feature != Feature.STORAGE_SURVEY).toArray(Feature[]::new);
         int columns = 3;
         int featureWidth = (panelWidth - (columns - 1) * 6) / columns;
         for (int i = 0; i < features.length; i++) {
@@ -208,7 +208,7 @@ public final class ValleyScreen extends Screen {
     private void runOnceChooser() {
         text(55, tr("once.title"));
         text(73, tr("once.hint"));
-        int columns = 3;
+        int columns = Feature.values().length > 9 ? 4 : 3;
         int featureWidth = (panelWidth - (columns - 1) * 6) / columns;
         Feature[] features = Feature.values();
         for (int i = 0; i < features.length; i++) {
@@ -217,6 +217,7 @@ public final class ValleyScreen extends Screen {
                     Component.translatable(feature.translationKey()), () -> runOnce(feature));
             Component hint = tr(feature == Feature.WINE ? "once.wine_hint" : "once.hint");
             if (feature == Feature.WINE_SURPLUS_SHIPPING) hint = tr("surplus.hint");
+            if (feature == Feature.STORAGE_SURVEY) hint = tr("survey.hint");
             choose.setTooltip(Tooltip.create(Component.translatable(feature.translationKey()).append("\n").append(hint)));
         }
         int backY = 92 + ((features.length + columns - 1) / columns) * 24 + 14;

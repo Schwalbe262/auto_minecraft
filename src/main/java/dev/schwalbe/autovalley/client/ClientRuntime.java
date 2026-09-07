@@ -23,7 +23,7 @@ public final class ClientRuntime {
     private final MinecraftActions actions=new MinecraftActions(world,observations);
     private final LocalNavigator navigator=new LocalNavigator();
     private final HarvestModule harvest=new HarvestModule();
-    private final AutomationEngine engine=new AutomationEngine(List.of(new DisposalModule(),new TomatoStorageModule(),
+    private final AutomationEngine engine=new AutomationEngine(List.of(new StorageSurveyModule(),new DisposalModule(),new TomatoStorageModule(),
         new WineStorageModule(),new WineSurplusShippingModule(),new ShippingModule(),harvest,new MachineModule(Feature.WINE),new MachineModule(Feature.PRESERVES),new SleepModule()));
     private final ProfileStore store=new ProfileStore(FMLPaths.CONFIGDIR.get().resolve("autovalley"));
     private Profile profile=new Profile();
@@ -53,6 +53,13 @@ public final class ClientRuntime {
     public String recordingStatus() { return recorder.status(); }
     public boolean recordingActive() { return recorder.capturing(); }
     public String executionMode() { return engine.mode().name(); }
+    public Map<String,Object> storageSurveyReport() {
+        SessionState session=context.session(); Map<String,Object> report=new LinkedHashMap<>();
+        report.put("status",session.storageSurveyStatus); report.put("complete",session.storageSurveyComplete);
+        report.put("targetCount",session.storageSurveyTotal); report.put("observedCount",session.storageSurveyObservations.size());
+        report.put("blockedAt",session.storageSurveyBlockedAt); report.put("observations",List.copyOf(session.storageSurveyObservations.values()));
+        return report;
+    }
     public List<PendingMachineOutput> pendingMachineOutputs() { return List.copyOf(profile.pendingMachineOutputs.values()); }
     public boolean acknowledgePendingOutput(String id,MachineOutputLedger.Resolution reason) {
         pause("산출물 수동 처리 확인");
@@ -90,6 +97,7 @@ public final class ClientRuntime {
             default -> null;
         };
         if (feature==null || feature==Feature.HARVEST && profile.farms.isEmpty()
+            || feature==Feature.STORAGE_SURVEY && profile.pois.stream().noneMatch(p -> StorageSurveyModule.targetKind(p.kind()))
             || destination!=null && profile.pois(destination).isEmpty()) {
             pause("선택한 작업의 밭/설비/목적지를 먼저 등록하세요."); notifyUser(engine.status()); return false;
         }

@@ -47,7 +47,7 @@ class RegistrationRulesTest {
 
     @Test void machineClassificationNeverOffersWineStorageForShipping() {
         assertEquals(List.of(PoiKind.SHIPPING_BIN), RegistrationRules.kinds(block("shippingbin:smart_shipping_bin", new Pos(0, 0, 0), true)));
-        assertEquals(List.of(PoiKind.TOMATO_CHEST, PoiKind.WINE_CHEST), RegistrationRules.kinds(block("minecraft:chest", new Pos(0, 0, 0), true)));
+        assertEquals(List.of(PoiKind.STORAGE_CANDIDATE, PoiKind.TOMATO_CHEST, PoiKind.WINE_CHEST), RegistrationRules.kinds(block("minecraft:chest", new Pos(0, 0, 0), true)));
         assertTrue(RegistrationRules.kinds(block("minecraft:stone", new Pos(0, 0, 0), false)).isEmpty());
     }
 

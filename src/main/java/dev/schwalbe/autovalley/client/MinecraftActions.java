@@ -76,6 +76,7 @@ public final class MinecraftActions implements ActionPort {
         return ticket;
     }
     private String transferRejection(Action.QuickMove transfer) {
+        if (context.session().oneShotFeature==Feature.STORAGE_SURVEY) return "Storage survey cannot transfer items";
         if (!ownsContainer() || ownedContainer==null) return "This container was not opened by automation";
         Poi poi=context.profile().pois.stream().filter(p -> p.pos().equals(ownedContainer)).findFirst().orElse(null);
         if (poi==null) return "Container registration changed";
@@ -84,7 +85,7 @@ public final class MinecraftActions implements ActionPort {
         boolean kindMatches=switch (poi.kind()) {
             case TOMATO_CHEST -> item.is(ItemData.TOMATO) && poi.classifier()!=null && item.quality()==poi.classifier();
             case WINE_CHEST -> source.player() && item.is(ItemData.WINE) && item.year()!=null && item.year().equals(poi.classifier());
-            case SHIPPING_BIN -> source.player() && (item.is(ItemData.PRESERVES) && context.session().allows(context.profile(),Feature.SHIPPING)
+            case SHIPPING_BIN -> source.player() && (item.standardShippingProduct() && context.session().allows(context.profile(),Feature.SHIPPING)
                 || item.is(ItemData.WINE) && WineSaleRules.permitted(item,context));
             default -> false;
         };

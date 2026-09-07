@@ -11,12 +11,20 @@ public final class SafetyPolicy {
         if (!player.connected() || (!profile.allowBackground && !player.focused())) return "Game is not connected or requires focus";
         MenuData menu = world.menu();
         if (menu == null || !menu.carried().empty()) return "Resolve the item on the cursor before resuming";
+        boolean surveying=context.session().oneShotFeature==Feature.STORAGE_SURVEY;
+        if (surveying && (action instanceof Action.QuickMove || action instanceof Action.SwapHotbar
+            || action instanceof Action.ConsolidateInventory || action instanceof Action.ThrowRotten))
+            return "Storage survey is read-only; inventory changes are not permitted";
         if (action instanceof Action.UseBlock use) {
             if (menu.container()) return "Close the current container first";
             if (!world.loaded(use.pos())) return "Target chunk is not loaded";
             if (!world.canInteract(use.pos(),4.0)) return "Target is outside normal reach or line of sight";
             BlockData block = world.block(use.pos());
             if (block == null) return "Target is unavailable";
+            if (surveying && use.purpose()==Action.Use.OPEN_CONTAINER && (!block.flag("container")
+                || !block.id().equals("minecraft:barrel") && !block.id().equals("minecraft:chest")
+                    && !block.id().equals("minecraft:trapped_chest")))
+                return "Storage survey opens only ordinary barrels and chests";
             return switch (use.purpose()) {
                 case HARVEST -> {
                     ItemData held = held(world);
@@ -38,7 +46,8 @@ public final class SafetyPolicy {
                         || block.flag("working") && !block.flag("mature") || !validHand ? "Machine, ingredient, or batch is not ready" : null;
                 }
                 case OPEN_CONTAINER -> profile.pois.stream().noneMatch(p -> p.pos().equals(use.pos())
-                    && (p.kind()==PoiKind.TOMATO_CHEST || p.kind()==PoiKind.WINE_CHEST || p.kind()==PoiKind.SHIPPING_BIN))
+                    && (p.kind()==PoiKind.TOMATO_CHEST || p.kind()==PoiKind.WINE_CHEST || !surveying && p.kind()==PoiKind.SHIPPING_BIN
+                        || surveying && p.kind()==PoiKind.STORAGE_CANDIDATE))
                     ? "Container is not registered" : null;
                 case SLEEP -> !context.session().allows(profile,Feature.SLEEP) || !registered(profile,use.pos(),PoiKind.BED)
                     || !block.id().endsWith("_bed") ? "Bed is not registered" : null;
@@ -70,8 +79,12 @@ public final class SafetyPolicy {
             ItemSlot slot = menu.slot(move.slot());
             if (slot==null || slot.item().empty()) return "Transfer slot is empty";
             String id=slot.item().id();
-            if (!id.equals(ItemData.TOMATO) && !id.equals(ItemData.WINE) && !id.equals(ItemData.PRESERVES)) return "Item is outside automation scope";
+            if (!id.equals(ItemData.TOMATO) && !id.equals(ItemData.WINE) && !slot.item().standardShippingProduct()) return "Item is outside automation scope";
             if (!slot.player() && !id.equals(ItemData.TOMATO)) return "Only tomatoes may be withdrawn from storage";
+            if (slot.item().standardShippingProduct() && (slot.inventoryIndex()<0 || slot.inventoryIndex()>=36))
+                return "Shipping uses only normal player inventory slots";
+            if (slot.item().standardShippingProduct() && !context.session().allows(profile,Feature.SHIPPING))
+                return "Shipping is disabled or outside the selected one-shot job";
             return null;
         }
         if (action instanceof Action.ThrowRotten drop) {

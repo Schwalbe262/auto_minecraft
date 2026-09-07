@@ -67,6 +67,7 @@ public final class ClientDiagnostics {
         report.put("recordingActive",runtime.recordingActive());
         report.put("recordingStatus",runtime.recordingStatus());
         report.put("status",runtime.status());
+        report.put("storageSurvey",runtime.storageSurveyReport());
         report.put("screenClass",mc.screen == null ? null : mc.screen.getClass().getName());
         report.put("screenTitle",mc.screen == null ? null : mc.screen.getTitle().getString());
         if (connected) {

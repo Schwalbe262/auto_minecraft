@@ -57,6 +57,7 @@ public final class ProfileStore {
             if (poi==null || poi.pos()==null || poi.kind()==null || poi.label()==null || !positions.add(poi.pos())) throw new IllegalArgumentException("Invalid or duplicate location");
             if (poi.kind()==PoiKind.TOMATO_CHEST && (poi.classifier()==null || poi.classifier()<0 || poi.classifier()>3)) throw new IllegalArgumentException("Tomato grade must be 0..3");
             if (poi.kind()==PoiKind.WINE_CHEST && (poi.classifier()==null || poi.classifier()<0)) throw new IllegalArgumentException("Wine production year is required");
+            if (poi.kind()==PoiKind.STORAGE_CANDIDATE && poi.classifier()!=null) throw new IllegalArgumentException("Unclassified storage must not have a guessed classifier");
         }
         if (profile.hoeHotbarSlot<0 || profile.hoeHotbarSlot>8 || profile.harvestCycleDays<1 || profile.harvestCycleDays>28
             || profile.wineCycleDays<1 || profile.wineCycleDays>28 || profile.preservesCycleDays<1 || profile.preservesCycleDays>28

@@ -776,7 +776,92 @@ class LogisticsTest {
         assertTrue(f.history.isEmpty());
     }
 
-    @Test void shippingMovesPreservesOnly() {
+    @Test void standardShippingOneShotDeliversPreservesAndExactPineTarWithoutOtherJobsOrReserveWithdrawals() {
+        Fixture f=new Fixture(); f.reportConfirmedCount=true; f.profile.enabled.put(Feature.SHIPPING,false);
+        f.inventory[0]=new ItemData(ItemData.PINE_TAR,5,0,null,false,999);
+        f.inventory[1]=new ItemData(ItemData.PRESERVES,3,0,null,false,999);
+        f.inventory[2]=new ItemData(ItemData.PINE_TAR,64,0,null,false,999);
+        f.inventory[3]=wine(8,7,0); f.inventory[4]=tomato(2,9);
+        f.inventory[5]=new ItemData("society:oak_resin",4,0,null,false,999);
+        Pos bin=f.chest(PoiKind.SHIPPING_BIN,0,null,ItemData.EMPTY);
+        ItemData[] slots=new ItemData[6]; Arrays.fill(slots,ItemData.EMPTY); f.chests.put(bin,slots);
+        Pos reserve=f.chest(PoiKind.WINE_CHEST,1,8,wine(8,64,0));
+        AutomationEngine engine=isolatedStandardShippingEngine();
+        engine.startOnce(f.context(),Feature.SHIPPING); f.runUntilStopped(engine,200);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(69,Arrays.stream(slots).filter(i -> i.is(ItemData.PINE_TAR)).mapToInt(ItemData::count).sum());
+        assertEquals(3,Arrays.stream(slots).filter(i -> i.is(ItemData.PRESERVES)).mapToInt(ItemData::count).sum());
+        assertEquals(0,ModuleSupport.count(f.context(),ItemData::standardShippingProduct));
+        assertEquals(7,f.inventory[3].count()); assertEquals(9,f.inventory[4].count()); assertEquals(4,f.inventory[5].count());
+        assertEquals(64,f.chests.get(reserve)[0].count()); assertFalse(f.opens.containsKey(reserve));
+        assertEquals(0,f.withdrawnWine); assertEquals(0,f.soldWine); assertFalse(f.sleeping); assertEquals(0,f.machineClicks());
+        assertFalse(f.profile.enabled(Feature.SHIPPING)); assertNull(f.session.oneShotFeature);
+    }
+
+    @Test void pineTarOnlyShipsButOtherTreeProductsBucketsAndOffhandRemainUntouched() {
+        Fixture f=new Fixture(); f.inventory[0]=new ItemData(ItemData.PINE_TAR,12,0,null,false,999);
+        f.inventory[1]=new ItemData("society:maple_syrup",6,0,null,false,999);
+        f.inventory[2]=new ItemData("society:oak_resin",7,0,null,false,999);
+        f.inventory[3]=new ItemData("society:pine_tar_bucket",1,0,null,false,999);
+        f.extraMenuSlot=new ItemSlot(999,40,true,new ItemData(ItemData.PINE_TAR,8,0,null,false,999));
+        Pos bin=f.chest(PoiKind.SHIPPING_BIN,0,null,ItemData.EMPTY);
+        assertEquals(WorkResult.State.IDLE,f.run(new ShippingModule(),100).state());
+        assertEquals(ItemData.PINE_TAR,f.chests.get(bin)[0].id()); assertEquals(12,f.chests.get(bin)[0].count());
+        assertTrue(f.inventory[0].empty()); assertEquals(6,f.inventory[1].count()); assertEquals(7,f.inventory[2].count());
+        assertEquals(1,f.inventory[3].count()); assertEquals(8,f.extraMenuSlot.item().count());
+        assertTrue(f.history.stream().filter(Action.QuickMove.class::isInstance).map(a -> (Action.QuickMove)a).noneMatch(a -> a.slot()==999));
+        assertTrue(f.history.stream().allMatch(a -> a instanceof Action.QuickMove || a instanceof Action.CloseContainer
+            || a instanceof Action.UseBlock u && u.purpose()==Action.Use.OPEN_CONTAINER));
+    }
+
+    @Test void unrelatedTreeByproductsAloneDoNotOpenShippingOrBecomeSaleCandidates() {
+        Fixture f=new Fixture(); f.inventory[0]=new ItemData("society:maple_syrup",6,0,null,false,999);
+        f.inventory[1]=new ItemData("society:oak_resin",7,0,null,false,999);
+        f.inventory[2]=new ItemData("society:pine_tar_bucket",1,0,null,false,999);
+        f.chest(PoiKind.SHIPPING_BIN,0,null,ItemData.EMPTY);
+        assertEquals(WorkResult.State.IDLE,new ShippingModule().tick(f.context()).state());
+        assertTrue(f.history.isEmpty()); assertEquals(6,f.inventory[0].count()); assertEquals(7,f.inventory[1].count());
+    }
+
+    @Test void continuousShippingHonoursDisabledToggleThenDeliversBothAuthorizedProductsWhenEnabled() {
+        Fixture f=new Fixture(); f.profile.enabled.put(Feature.SHIPPING,false);
+        f.inventory[0]=new ItemData(ItemData.PINE_TAR,2,0,null,false,999);
+        f.inventory[1]=new ItemData(ItemData.PRESERVES,3,0,null,false,999);
+        Pos bin=f.chest(PoiKind.SHIPPING_BIN,0,null,ItemData.EMPTY);
+        AutomationEngine engine=new AutomationEngine(List.of(new ShippingModule())); engine.start(f.context());
+        for (int n=0;n<50;n++) { engine.tick(f.context()); f.advance(); }
+        assertTrue(f.history.isEmpty()); assertEquals(5,ModuleSupport.count(f.context(),ItemData::standardShippingProduct));
+        f.profile.enabled.put(Feature.SHIPPING,true); engine.start(f.context());
+        for (int n=0;n<100;n++) { engine.tick(f.context()); f.advance(); }
+        assertEquals(0,ModuleSupport.count(f.context(),ItemData::standardShippingProduct));
+        assertEquals(5,Arrays.stream(f.chests.get(bin)).mapToInt(ItemData::count).sum());
+    }
+
+    @Test void pineTarDeliveryWaitsForServerAckAndARejectedTransferCannotCompleteOneShot() {
+        Fixture f=new Fixture(); f.inventory[0]=new ItemData(ItemData.PINE_TAR,4,0,null,false,999);
+        Pos bin=f.chest(PoiKind.SHIPPING_BIN,0,null,ItemData.EMPTY);
+        AutomationEngine engine=isolatedStandardShippingEngine(); engine.startOnce(f.context(),Feature.SHIPPING);
+        for (int n=0;n<50 && !(f.action instanceof Action.QuickMove);n++) { engine.tick(f.context()); if (!(f.action instanceof Action.QuickMove)) f.advance(); }
+        assertTrue(f.action instanceof Action.QuickMove); int sent=f.history.size();
+        engine.tick(f.context()); assertEquals(sent,f.history.size()); assertTrue(engine.running());
+        assertEquals(4,f.inventory[0].count()); assertTrue(f.chests.get(bin)[0].empty());
+        f.cancel(); engine.tick(f.context());
+        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(4,f.inventory[0].count());
+        assertTrue(f.chests.get(bin)[0].empty()); assertNull(f.session.oneShotFeature);
+    }
+
+    private static AutomationEngine isolatedStandardShippingEngine() {
+        List<AutomationModule> modules=new ArrayList<>(); modules.add(new ShippingModule());
+        for (Feature feature:Feature.values()) if (feature!=Feature.SHIPPING) modules.add(new AutomationModule() {
+            @Override public Feature feature() { return feature; }
+            @Override public int priority() { return 1; }
+            @Override public WorkResult tick(Context c) { fail("Standard shipping must not run "+feature); return WorkResult.idle(); }
+            @Override public void reset() { }
+        });
+        return new AutomationEngine(modules);
+    }
+
+    @Test void standardShippingDoesNotSellTomatoesOrWine() {
         Fixture f = new Fixture(); f.inventory[0] = wine(4); f.inventory[1] = tomato(3,5);
         f.inventory[2] = new ItemData(ItemData.PRESERVES,3,0,null,false,999);
         Pos bin = f.chest(PoiKind.SHIPPING_BIN,0,null,ItemData.EMPTY);

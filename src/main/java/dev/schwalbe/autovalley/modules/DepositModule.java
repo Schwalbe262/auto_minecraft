@@ -12,6 +12,7 @@ abstract class DepositModule implements AutomationModule {
     private List<Poi> candidates = List.of();
     private int candidate, containerId = -1, before, beforeDestination;
     protected abstract String itemId();
+    protected boolean accepts(ItemData item) { return item.is(itemId()); }
     protected abstract PoiKind destinationKind();
     protected abstract Integer classifier(ItemData item);
 
@@ -34,7 +35,7 @@ abstract class DepositModule implements AutomationModule {
         }
         switch (stage) {
             case FIND -> {
-                ItemSlot slot = ModuleSupport.inventoryItem(c, i -> i.is(itemId()));
+                ItemSlot slot = ModuleSupport.inventoryItem(c, this::accepts);
                 if (slot == null) {
                     unknownSince = -1;
                     if (itemId().equals(ItemData.TOMATO) && c.session().magnetHaulRemaining.getOrDefault(itemId(),0)>0) {
@@ -57,7 +58,7 @@ abstract class DepositModule implements AutomationModule {
                 unknownSince = -1;
                 candidates = ModuleSupport.nearest(c,c.profile().pois(destinationKind()).stream()
                     .filter(p -> Objects.equals(p.classifier(),group)).toList());
-                if (candidates.isEmpty()) return fail("Register a destination for " + itemId() + " classification " + group);
+                if (candidates.isEmpty()) return fail("Register a destination for " + selected.id() + " classification " + group);
                 candidate = 0; stage = Stage.APPROACH;
             }
             case APPROACH -> {
@@ -86,7 +87,7 @@ abstract class DepositModule implements AutomationModule {
             }
             case CLOSE -> { return fail("Storage close acknowledgement was lost"); }
         }
-        return WorkResult.busy("Storing " + itemId());
+        return WorkResult.busy("Storing " + (selected==null ? itemId() : selected.id()));
     }
     private int destinationCount(Context c) {
         return c.world().menu().slots().stream().filter(s -> !s.player()).map(ItemSlot::item)
