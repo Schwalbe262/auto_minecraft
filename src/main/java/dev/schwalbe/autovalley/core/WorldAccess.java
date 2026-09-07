@@ -7,6 +7,8 @@ public interface WorldAccess {
     BlockData block(Pos pos);
     boolean loaded(Pos pos);
     boolean canStand(Pos feet);
+    /** Verified support height for a standing cell; unknown adapters must not invent a floor. */
+    default double standingY(Pos feet) { return Double.NaN; }
     boolean canTraverse(Pos from, Pos to);
     List<BlockData> scan(Pos center, int horizontalRadius, int verticalRadius);
     List<ItemSlot> inventory();

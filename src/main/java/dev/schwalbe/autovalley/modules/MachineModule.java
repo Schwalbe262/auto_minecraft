@@ -14,6 +14,7 @@ public final class MachineModule implements AutomationModule {
     private List<Poi> machines = List.of(), sources = List.of();
     private final Map<Poi,int[]> stock = new LinkedHashMap<>();
     private static final int STOCK_REFRESH_TICKS = 1200;
+    private static final int OUTPUT_SETTLE_TICKS = 5;
     private boolean stockReady, freshForHaul;
     private long stockDay, stockTick;
     private int machineIndex, sourceIndex, containerId = -1, grade = -1, cost, hotbar, inputBefore, outputBefore, withdrawalBefore;
@@ -75,7 +76,7 @@ public final class MachineModule implements AutomationModule {
             case MACHINE -> {
                 if (machineIndex >= machines.size()) { clearRun(); return WorkResult.idle(); }
                 if (closeIfNeeded(c,Stage.MACHINE)) return WorkResult.busy("Closing container before production");
-                Navigation.Result nav = c.navigation().moveTo(target().pos(),2.5,c);
+                Navigation.Result nav = c.navigation().moveTo(target().pos(),4.0,c);
                 if (nav == Navigation.Result.BLOCKED) return fail("Registered production machine cannot be reached");
                 if (nav != Navigation.Result.ARRIVED) return WorkResult.busy("Approaching production machine");
                 BlockData block = machine(c);
@@ -113,6 +114,12 @@ public final class MachineModule implements AutomationModule {
                 // underground haul (or concluding supplies ran out), recount all sources.
                 if (!freshForHaul && !sources.isEmpty() && (grade < 0 || heldCandidate(c) == null)) { beginStockScan(c); break; }
                 if (grade < 0) {
+                    // A one-shot must not report an unfunded refill as completed or hide
+                    // it behind tomorrow's polling deadline. Leave mature output in place
+                    // so supplying ingredients permits a safe retry on this same game day.
+                    if (c.session().oneShotFeature==feature)
+                        return fail("Not enough tomatoes: "+(machines.size()-machineIndex)+" machine(s) remaining; need "
+                            +cost+" tomatoes of one grade to refill the machine at "+target().pos()+". Add ingredients and retry.");
                     feeding = false;
                     if (!machine(c).flag("mature")) { schedule(c,target(),1); machineIndex++; stage = Stage.MACHINE; break; }
                     stage = Stage.RETURN;
@@ -148,7 +155,7 @@ public final class MachineModule implements AutomationModule {
                 submit(c,new Action.QuickMove(containerId,slot.index()),Pending.WITHDRAW);
             }
             case RETURN -> {
-                Navigation.Result nav = c.navigation().moveTo(target().pos(),2.5,c);
+                Navigation.Result nav = c.navigation().moveTo(target().pos(),4.0,c);
                 if (nav == Navigation.Result.BLOCKED) return fail("Production machine cannot be reached with ingredients");
                 if (nav == Navigation.Result.ARRIVED) {
                     BlockData block = machine(c);
@@ -176,6 +183,10 @@ public final class MachineModule implements AutomationModule {
                 if (!feeding && !collected) { machineIndex++; stage = Stage.MACHINE; break; }
                 // Output quality/year can differ from existing items: reserve a real free slot.
                 if (collected && !ModuleSupport.hasEmptyInventorySlot(c)) return fail("Free an inventory slot to collect the completed product");
+                // A pickup of an older product (even another wine cohort) would make a
+                // simple inventory increase look like confirmation of this new output.
+                if (collected && c.world().groundItems().stream().anyMatch(g -> g.item().is(outputId())))
+                    return fail("Pick up previously dropped "+outputId()+" before collecting another completed machine");
                 inputBefore = ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
                 outputBefore = ModuleSupport.count(c,i -> i.is(outputId()));
                 submit(c,new Action.UseBlock(target().pos(),Action.Use.MACHINE),Pending.USE);
@@ -195,8 +206,18 @@ public final class MachineModule implements AutomationModule {
             case PICKUP -> {
                 if (ModuleSupport.count(c,i -> i.is(outputId())) > outputBefore) { machineIndex++; stage = Stage.MACHINE; break; }
                 if (c.world().tick() - verifySince > c.profile().interactionTimeoutTicks) return fail("Completed product was not picked up; inspect the machine output side");
-                Navigation.Result nav = c.navigation().moveTo(outputPosition(machine(c)),0.9,c);
-                if (nav == Navigation.Result.BLOCKED) return fail("Cannot reach the dropped product at the machine output side");
+                Pos observed = c.world().tick()-verifySince < OUTPUT_SETTLE_TICKS ? null : observedPickup(c);
+                if (observed == null) {
+                    c.actions().stopMovement();
+                    return WorkResult.busy("Waiting for the completed product to fall or be picked up");
+                }
+                // Elevated outputs may still be falling or temporarily unreachable. A failed
+                // path is not a failed interaction: wait for another observation, never click again.
+                Navigation.Result nav = c.navigation().moveTo(observed,0.9,c);
+                if (nav == Navigation.Result.BLOCKED) {
+                    c.actions().stopMovement();
+                    return WorkResult.busy("Waiting for a reachable completed product");
+                }
             }
         }
         return WorkResult.busy("Servicing " + (feature == Feature.WINE ? "wine kegs" : "preserves jars"));
@@ -265,6 +286,27 @@ public final class MachineModule implements AutomationModule {
         return null;
     }
     private boolean validMenu(Context c) { return c.world().menu().container() && c.world().menu().id() == containerId && c.world().menu().carried().empty(); }
+    private Pos observedPickup(Context c) {
+        Pos output=outputPosition(machine(c));
+        PlayerState player=c.world().player();
+        return c.world().groundItems().stream().filter(g -> g.item().is(outputId()))
+            .filter(g -> Double.isFinite(g.x()) && Double.isFinite(g.y()) && Double.isFinite(g.z()))
+            .filter(g -> Math.pow(g.x()-output.x()-.5,2)+Math.pow(g.z()-output.z()-.5,2)<=9
+                && g.y()<=output.y()+1 && g.y()>=output.y()-6)
+            .sorted(Comparator.comparingDouble(g -> Math.pow(g.x()-player.x(),2)+Math.pow(g.y()-player.y(),2)+Math.pow(g.z()-player.z(),2)))
+            .map(g -> observedStandingCell(c,g)).filter(Objects::nonNull).findFirst().orElse(null);
+    }
+    private static Pos observedStandingCell(Context c,GroundItem item) {
+        Pos cell=new Pos((int)Math.floor(item.x()),(int)Math.floor(item.y()),(int)Math.floor(item.z()));
+        if (!c.world().loaded(cell)) return null;
+        if (c.world().canStand(cell)) return cell;
+        // Items on a bottom slab, farmland or a stair half share the support block's
+        // cell. Normalize only when the observed item height matches its actual surface.
+        Pos above=cell.offset(0,1,0);
+        if (!c.world().loaded(above) || !c.world().canStand(above)) return null;
+        double surface=c.world().standingY(above);
+        return Double.isFinite(surface) && Math.abs(surface-item.y())<=.125 ? above : null;
+    }
     private static Pos outputPosition(BlockData block) {
         return switch (block.properties().getOrDefault("facing","")) {
             case "north" -> block.pos().offset(0,0,-1);
