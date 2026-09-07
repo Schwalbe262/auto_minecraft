@@ -4,7 +4,7 @@ license="All Rights Reserved"
 
 [[mods]]
 modId="autovalley"
-version="0.1.0"
+version="${mod_version}"
 displayName="Auto Valley"
 authors="Schwalbe262"
 displayTest="IGNORE_ALL_VERSION"

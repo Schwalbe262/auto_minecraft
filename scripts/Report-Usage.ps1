@@ -4,20 +4,22 @@ param(
     [string]$OutputPath
 )
 $ErrorActionPreference = 'Stop'
-function Read-UsageEvents([string]$Path) {
-    $last = $null; $first = $null; $baseline = $null; $start = $null
+function Read-UsageEvents([string]$Path, [Nullable[DateTimeOffset]]$BaselineAt = $null) {
+    $last = $null; $first = $null; $baseline = $null
+    $start = if ($null -ne $BaselineAt) { ([DateTimeOffset]$BaselineAt).ToString('o') } else { $null }
     foreach ($line in (Get-Content -LiteralPath $Path -Encoding UTF8)) {
-        if ($line -match '"role"\s*:\s*"user"' -and $line.Contains($StartMessage)) {
+        if ($null -eq $BaselineAt -and $line -match '"role"\s*:\s*"user"' -and $line.Contains($StartMessage)) {
             $userRow = $line | ConvertFrom-Json
             if (($userRow.payload.content.text -join '') -eq $StartMessage) { $baseline = $last; $start = $userRow.timestamp }
         }
         if ($line -notmatch '"type"\s*:\s*"(token_count|user_msg)"') { continue }
         $row = $line | ConvertFrom-Json
         if ($row.type -ne 'event_msg') { continue }
-        if ($row.payload.type -eq 'user_msg' -and $row.payload.message -eq $StartMessage) { $baseline = $last; $start = $row.timestamp }
+        if ($null -eq $BaselineAt -and $row.payload.type -eq 'user_msg' -and $row.payload.message -eq $StartMessage) { $baseline = $last; $start = $row.timestamp }
         if ($row.payload.type -eq 'token_count' -and $null -ne $row.payload.info) {
             $last = $row
             if (-not $first) { $first = $row }
+            if ($null -ne $BaselineAt -and [DateTimeOffset]$row.timestamp -le [DateTimeOffset]$BaselineAt) { $baseline = $row }
         }
     }
     return [pscustomobject]@{First=$first;Last=$last;Baseline=$baseline;Start=$start}
@@ -42,12 +44,15 @@ foreach ($file in Get-ChildItem -LiteralPath (Split-Path -Parent $rootPath) -Fil
     if ($file.FullName -eq $rootPath) { continue }
     $meta = Get-Content -LiteralPath $file.FullName -TotalCount 1 -Encoding UTF8 | ConvertFrom-Json
     $spawn = $meta.payload.source.subagent.thread_spawn
-    if ($spawn.parent_thread_id -ne $rootMeta.payload.id -or [DateTimeOffset]$meta.payload.timestamp -lt [DateTimeOffset]$rootUsage.Start) { continue }
-    $usage = Read-UsageEvents $file.FullName
-    if (-not $usage.Last) { continue }
+    if ($spawn.parent_thread_id -ne $rootMeta.payload.id) { continue }
+    $usage = Read-UsageEvents $file.FullName ([DateTimeOffset]$rootUsage.Start)
+    if (-not $usage.Last -or [DateTimeOffset]$usage.Last.timestamp -le [DateTimeOffset]$rootUsage.Start) { continue }
+    $childBaselineTokens = if ($usage.Baseline) { [long]$usage.Baseline.payload.info.total_token_usage.total_tokens } else { 0 }
+    $childTokens = [long]$usage.Last.payload.info.total_token_usage.total_tokens - $childBaselineTokens
+    if ($childTokens -lt 0) { throw 'A child token counter moved backwards after the task baseline; no usage estimate produced.' }
     $rows += [pscustomobject]@{
-        Workstream=$spawn.agent_path; Tokens=[long]$usage.Last.payload.info.total_token_usage.total_tokens
-        LastRecorded=$usage.Last.timestamp; WeeklyStart=(Weekly $usage.First); WeeklyEnd=(Weekly $usage.Last)
+        Workstream=$spawn.agent_path; Tokens=$childTokens
+        LastRecorded=$usage.Last.timestamp; WeeklyStart=(Weekly $(if ($usage.Baseline) { $usage.Baseline } else { $usage.First })); WeeklyEnd=(Weekly $usage.Last)
     }
 }
 $report = [pscustomobject]@{
@@ -55,7 +60,7 @@ $report = [pscustomobject]@{
     IncludesCachedInput=$true; TotalRecordedTokens=($rows | Measure-Object -Property Tokens -Sum).Sum
     WeeklyStart=(Weekly $rootUsage.Baseline); WeeklyEnd=(Weekly $rootUsage.Last)
     ExactPerWorkstreamWeeklyShare=$null
-    Note='Token totals are recorded per agent workstream, including repeated/cached input and review. Weekly percentages are shared-account snapshots, not attributable per-stream shares. Final response and unflushed events are excluded.'
+    Note='Token totals are recorded per agent workstream, including repeated/cached input and review. Reused child sessions subtract their last recorded token total at or before the task start. Weekly percentages are shared-account snapshots, not attributable per-stream shares. Final response and unflushed events are excluded.'
     Workstreams=$rows
 }
 $json = $report | ConvertTo-Json -Depth 6

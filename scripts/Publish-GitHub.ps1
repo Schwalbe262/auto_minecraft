@@ -1,9 +1,41 @@
-param([switch]$CreateRepository, [switch]$Push, [switch]$Release)
+param([switch]$CreateRepository, [switch]$Push, [switch]$Release, [string]$ReleaseNotesPath)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $repoRoot
 $owner = 'Schwalbe262'
 $repository = 'auto_minecraft'
+$versionMatches = [regex]::Matches((Get-Content -LiteralPath (Join-Path $repoRoot 'gradle.properties') -Raw -Encoding UTF8), '(?m)^mod_version\s*=\s*(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\s*$')
+if ($versionMatches.Count -ne 1) { throw 'gradle.properties must contain exactly one valid mod_version.' }
+$modVersion = $versionMatches[0].Groups[1].Value
+$tag = "v$modVersion"
+$assetName = "autovalley-$modVersion.jar"
+$assetPath = Join-Path $repoRoot "build\libs\$assetName"
+$releaseNotes = "Client-only Forge 1.20.1 farming assistant for Society 4.1.4. This is a prerelease; see README for setup and current limitations.`n`nInstall the attached $assetName into the Society instance's mods directory, replacing the previous Auto Valley JAR after keeping a backup. Restart Minecraft to load the update. Ctrl+F8 configures; F8 toggles; Pause stops."
+if ($ReleaseNotesPath) { $releaseNotes = Get-Content -LiteralPath (Resolve-Path -LiteralPath $ReleaseNotesPath).Path -Raw -Encoding UTF8 }
+
+# Fail locally before any publication if the artifact or checkout is not the requested version.
+if ($Release) {
+    if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) { throw "Build $assetName before creating the prerelease." }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($assetPath)
+    try {
+        $entry = $archive.GetEntry('META-INF/mods.toml')
+        if (-not $entry -or -not $archive.GetEntry('dev/schwalbe/autovalley/AutoValley.class')) { throw 'Release JAR is missing Auto Valley metadata or its compiled entrypoint.' }
+        $reader = [IO.StreamReader]::new($entry.Open())
+        try { $metadata = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        $modBlocks = [regex]::Matches($metadata, '(?ms)^\s*\[\[mods\]\]\s*(.*?)(?=^\s*\[\[|\z)')
+        $ownBlocks = @($modBlocks | Where-Object { $_.Groups[1].Value -match '(?m)^modId\s*=\s*"autovalley"\s*$' })
+        if ($ownBlocks.Count -ne 1) { throw 'Release JAR does not declare exactly one Auto Valley mod.' }
+        $versions = [regex]::Matches($ownBlocks[0].Groups[1].Value, '(?m)^version\s*=\s*"([^"]+)"\s*$')
+        if ($versions.Count -ne 1 -or $versions[0].Groups[1].Value -ne $modVersion) { throw "Release JAR mod metadata does not match $modVersion." }
+    } finally { $archive.Dispose() }
+    $dirtyFiles = @(git status --porcelain)
+    if ($LASTEXITCODE -ne 0 -or $dirtyFiles.Count -ne 0) { throw 'Commit the intended release changes before publishing; the working tree must be clean.' }
+    $branch = (git branch --show-current).Trim()
+    if ($LASTEXITCODE -ne 0 -or $branch -ne 'main') { throw 'Publish releases from the main branch.' }
+    $head = (git rev-parse --verify HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the release commit.' }
+}
 
 # Git Credential Manager supplies the existing GitHub login. Secrets stay in memory.
 $credentialRequest = "protocol=https`nhost=github.com`nusername=$owner`n`n"
@@ -32,7 +64,7 @@ function Invoke-GitHub([string]$Path, [string]$Method = 'GET', [string]$Body = '
     $responseText = $responseLines -join "`n"
     $separator = $responseText.LastIndexOf("`n")
     $statusCode = [int]$responseText.Substring($separator+1)
-    if ($statusCode -eq 404) { return $null }
+    if ($statusCode -eq 404 -and $Method -eq 'GET') { return $null }
     if ($statusCode -lt 200 -or $statusCode -ge 300) { throw "GitHub returned HTTP $statusCode." }
     return $responseText.Substring(0,$separator) | ConvertFrom-Json
 }
@@ -65,21 +97,30 @@ try {
         }
     }
     if ($Release) {
-        $tag = 'v0.1.0'
-        $head = (git rev-parse HEAD).Trim()
+        $existingTag = Invoke-GitHub "/repos/$owner/$repository/git/ref/tags/$tag"
+        if ($existingTag) {
+            $tagObject = $existingTag.object
+            for ($depth = 0; $tagObject.type -eq 'tag' -and $depth -lt 5; $depth++) {
+                $annotatedTag = Invoke-GitHub "/repos/$owner/$repository/git/tags/$($tagObject.sha)"
+                if (-not $annotatedTag) { throw 'An existing release tag could not be resolved; it was not changed.' }
+                $tagObject = $annotatedTag.object
+            }
+            if ($tagObject.type -ne 'commit' -or $tagObject.sha -ne $head) { throw 'The version tag already points at another commit; bump mod_version instead of replacing it.' }
+        }
         $releaseInfo = Invoke-GitHub "/repos/$owner/$repository/releases/tags/$tag"
+        if ($releaseInfo -and ($releaseInfo.tag_name -ne $tag -or -not $releaseInfo.prerelease -or $releaseInfo.draft)) { throw 'An existing release is not the expected published prerelease; it was not changed.' }
         if (-not $releaseInfo) {
             $releaseBody = @{
-                tag_name=$tag; target_commitish=$head; name='Auto Valley 0.1.0 - Society 4.1.4'; draft=$false; prerelease=$true
-                body="Initial client-only Forge 1.20.1 farming assistant. Includes per-feature controls, registered locations, day-based harvest/production schedules, grade/vintage storage, wine-first allocation and sleep assistance.`n`nBuild and automated tests pass. UI preview verified. First-cycle validation on the actual server requires restart and location registration; no unattended server-run result is claimed.`n`nInstall the attached JAR into the existing Society 4.1.4 instance's mods directory, then restart. Ctrl+F8 configures; F8 toggles; Pause stops. See README for setup."
+                tag_name=$tag; target_commitish=$head; name="Auto Valley $modVersion - Society 4.1.4"; draft=$false; prerelease=$true
+                body=$releaseNotes
             } | ConvertTo-Json
             $releaseInfo = Invoke-GitHub "/repos/$owner/$repository/releases" 'POST' $releaseBody
         }
-        $assetName = 'autovalley-0.1.0.jar'
         if (@($releaseInfo.assets.name) -notcontains $assetName) {
-            $assetPath = Join-Path $repoRoot "build\libs\$assetName"
             $uploadedAsset = Invoke-GitHub "/repos/$owner/$repository/releases/$($releaseInfo.id)/assets?name=$assetName" 'POST' '' $assetPath
             Write-Output $uploadedAsset.browser_download_url
+        } else {
+            Write-Output "Existing $assetName was preserved; no release asset was overwritten."
         }
         Write-Output $releaseInfo.html_url
     }

@@ -10,11 +10,15 @@ There is no server module, custom networking protocol, fake player, world-state 
 
 Minecraft 1.20.1 can omit confirmation packets when a predicted inventory click exactly matches the server. Auto Valley therefore sends **one** ordinary container click without client prediction, using state ID `-1` to request vanilla's full resynchronization. The server executes the click once and sends the authoritative container content. The client requires a subsequent full-content update for that exact container ID plus the expected item change. Unrelated slot updates do not confirm a transfer. Timeout never resends a click.
 
-Only cursor-free QUICK_MOVE, SWAP, and exact rotten-item THROW operations are exposed. Deposits are constrained by the opened registered container's grade/year/product classification. The action layer checks focus, actual reach, line of sight, current held item, menu identity, and cursor state again before dispatch. Main-hand block interactions have no air-use fallback. Output pickup is verified separately from machine block-state changes.
+Only cursor-free QUICK_MOVE, SWAP, and exact rotten-item THROW operations are exposed. Deposits are constrained by the opened registered container's grade/year/product classification. The action layer checks the configured focus policy, actual reach, line of sight, current held item, menu identity, and cursor state again before dispatch. Main-hand block interactions have no air-use fallback. Output pickup is verified separately from machine block-state changes.
 
 A Netty handler observes vanilla replies after vanilla queues their application. It sends no custom packets and suppresses world destroy/entity interaction packets while automation owns control. Raw attack input is also fenced when it triggers manual takeover, including remapped attack controls.
 
 ## Scheduling
+
+Background operation defaults on. Alt/Tab/Windows task switching is exempt from manual takeover, while actual game movement, mouse input, and remapped attacks still stop automation. Background operation uses game APIs, never OS input or global hooks. Vanilla pause-on-lost-focus is temporarily suppressed only while background automation runs and restored on stop. Foreground-only mode remains available. Disconnection and unsafe health/hunger always stop work.
+
+Explicit local diagnostic/control request files support inspection and start/pause without stealing window focus. They contain no arbitrary input or mutation API; start uses the same runtime checks as F8. Snapshots contain local positions/inventory and must not be published.
 
 - Date is `floor(dayTime / 24000)`; UI shows date + 1.
 - Successful harvest stores a per-farm next date. Successful refill stores a per-machine next date. Start/stop and reconnect retain these dates.
