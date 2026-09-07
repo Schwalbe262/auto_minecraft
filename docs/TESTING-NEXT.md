@@ -2,7 +2,7 @@
 
 This document describes development source, not the installed or published 0.1.2 JAR. Do not replace a published release asset with these changed classes under the old version number.
 
-Java 17 / ForgeGradle `test build` passed: **255 tests, zero failures, errors or skipped tests**, including 62 logistics tests, 21 output-ledger tests and 8 scheduler/output integration tests. This is automated fixture coverage, not real-client execution of these new fixes.
+Java 17 / ForgeGradle `test build` passed: **337 tests, zero failures, errors or skipped tests**, including 79 logistics tests, 33 merge-planner tests, 12 native-snapshot transaction tests, 12 consolidation safety tests, 21 output-ledger tests and 8 scheduler/output integration tests. This is automated fixture coverage, not real-client execution of these new fixes.
 
 ## Manual demonstration evidence
 
@@ -21,9 +21,13 @@ Local journals from actual manual crop, wine and preserves work were analyzed wi
 - Existing same-product ground items prevent a new mature-machine collection. This avoids deliberately collecting an old bottle as confirmation of the new output.
 - Write-ahead output obligations survive pause, reset, feature changes and reconnect. Pickup confirmation is persisted before subsequent consumers run; manual inventory interactions invalidate live count evidence and do not clear the durable obligation. Explicit per-item recovery/loss confirmation requires two UI steps and remains paused.
 - Profile schema 2 prevents older clients from silently ignoring unresolved output. Valid schema 1 profiles migrate in memory without rewriting the original until an actual save; malformed or unknown schemas remain preserved and blocked.
+- Batch ingredient hauls fund remaining eligible machines while reserving two real output slots. Hauls are capped near a grade-priority crossover so a soon-to-be superseded grade cannot monopolize spare slots. Every source reply refreshes stock and grade selection; normal/upgraded costs, limited source stacks, multiple sources and bounded final-stack overfetch are covered.
+- Cursor-free native inventory consolidation combines leftover tomato fragments and already-confirmed products. Direct merges, bounded scratch swaps and tomato-only hotbar repositioning are separate from storage/sales. Native tag/capacity checks, exact changed-ACK conservation and live-state checks precede continuation. Cancellation never sends cleanup; unresolved replies block all new actions. A refused/no-op click can require reconnection rather than an automatic retry.
+- Large synthetic logistics fixtures cover 144 normal jars and 384 kegs. The latter uses a late-tagging pickup fixture that initially consumes a free slot per bottle and only merges through explicit consolidation actions; it is not a claim of real-client network or native-tag acceptance.
+- The first product-consolidation plan prefers an actual newly received/increased product slot, with wine cohort matching the resolved output obligation. Very tight multi-grade inventories can still pause safely; fill-only jobs never add automatic storage/sales to force completion.
 
 ## Still open before unattended acceptance
 
 The earlier refill-deadline/reset gap is covered by the durable ledger and scheduler regression tests. Real-client installation and failure/recovery acceptance remain unverified for this development build.
 
-Exact destination classifications, route registration, efficient material hauling, native-tag-safe inventory consolidation, continuous area-safe moving harvest and a complete real-client production-to-delivery cycle also require verification. Native Vinery assigns Year/effect tags after a fresh output enters inventory; therefore a fixture that automatically merges all same-year bottles does not prove that a large real keg sweep can preserve free slots. These development changes have not been installed into the user's running game.
+Exact destination classifications, route registration, continuous area-safe moving harvest and a complete real-client production-to-delivery cycle remain open. Bulk material hauling and native-ACK inventory consolidation now have code and fixture coverage, but still require real-client acceptance, including hidden server tags, cancellation/late-reply timing and interrupted layouts. Native Vinery assigns Year/effect tags after a fresh output enters inventory; automated fixture success does not prove that a large real keg sweep preserves free slots. These development changes have not been installed into the user's running game.
