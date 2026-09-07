@@ -6,4 +6,8 @@ public interface ActionPort {
     void move(Movement movement);
     void stopMovement();
     void cancel();
+    /** Unresolved in-flight inventory changes must block every scheduler consumer. */
+    default String pauseReason() { return null; }
+    /** Explicit manual resume may clear an already-resolved failure, never a late-ACK fence. */
+    default String startRejection() { return pauseReason(); }
 }

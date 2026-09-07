@@ -13,6 +13,54 @@ import static org.junit.jupiter.api.Assertions.*;
 class ServerObservationsTest {
     private static ItemData tomato(int count) { return new ItemData(ItemData.TOMATO,count,0,null,false,999); }
 
+    @Test void snapshotCopyDetachesMutableValuesAndNestedMetadataOnEveryRead() {
+        // Native ItemStacks need a launched Forge registry. Exercise the exact generic copy
+        // path they use with mutable count/tag stand-ins in this ordinary JVM test suite.
+        final class MutableValue {
+            int count;
+            final Map<String,Integer> tag;
+            MutableValue(int count,Map<String,Integer> tag) { this.count=count; this.tag=new HashMap<>(tag); }
+            MutableValue copy() { return new MutableValue(count,tag); }
+        }
+        MutableValue packetItem=new MutableValue(64,Map.of("Year",7));
+        List<MutableValue> packetItems=new ArrayList<>(List.of(packetItem));
+        var retained=ServerObservations.copySnapshotItems(packetItems,MutableValue::copy);
+        packetItem.count=1; packetItem.tag.put("Year",8); packetItems.clear();
+        assertEquals(64,retained.get(0).count); assertEquals(7,retained.get(0).tag.get("Year"));
+        var firstRead=ServerObservations.copySnapshotItems(retained,MutableValue::copy);
+        firstRead.get(0).count=2; firstRead.get(0).tag.clear();
+        var secondRead=ServerObservations.copySnapshotItems(retained,MutableValue::copy);
+        assertNotSame(retained.get(0),secondRead.get(0)); assertNotSame(firstRead.get(0),secondRead.get(0));
+        assertEquals(64,secondRead.get(0).count); assertEquals(7,secondRead.get(0).tag.get("Year"));
+        assertThrows(UnsupportedOperationException.class,() -> firstRead.clear());
+        assertThrows(UnsupportedOperationException.class,() -> retained.clear());
+    }
+
+    @Test void snapshotCopyRejectsMissingValuesRatherThanRetainingMutableAliases() {
+        assertThrows(NullPointerException.class,() -> ServerObservations.<String>copySnapshotItems(null,String::new));
+        assertThrows(NullPointerException.class,() -> ServerObservations.copySnapshotItems(List.of("slot"),null));
+        assertThrows(NullPointerException.class,() -> ServerObservations.copySnapshotItems(Arrays.asList((String)null),String::new));
+        assertThrows(NullPointerException.class,() -> ServerObservations.copySnapshotItems(List.of("slot"),item -> null));
+    }
+
+    @Test void mismatchedNativeAndReducedPacketSizesCannotAdvanceOrOverwriteAnAck() {
+        ServerObservations observations=new ServerObservations();
+        observations.fullMenu(4,List.of(tomato(64))); long before=observations.sequence();
+        assertThrows(IllegalArgumentException.class,() -> observations.fullMenu(4,List.of(tomato(1)),List.of(),null));
+        assertEquals(before,observations.sequence());
+        assertEquals(64,observations.fullMenuSnapshotSince(4,0).items().get(0).count());
+        assertTrue(observations.fullNativeMenuSnapshotsSince(4,0).isEmpty());
+    }
+
+    @Test void missingNativeCursorCannotAdvanceOrOverwriteAnAck() {
+        ServerObservations observations=new ServerObservations();
+        observations.fullMenu(4,List.of(tomato(64))); long before=observations.sequence();
+        assertThrows(NullPointerException.class,() -> observations.fullMenu(4,List.of(),List.of(),null));
+        assertEquals(before,observations.sequence());
+        assertEquals(64,observations.fullMenuSnapshotSince(4,0).items().get(0).count());
+        assertTrue(observations.fullNativeMenuSnapshotsSince(4,0).isEmpty());
+    }
+
     @Test void acknowledgedEmptySlotSurvivesInstantLiveInventoryRefill() {
         ServerObservations observations=new ServerObservations(); long sent=observations.sequence();
         List<ItemData> packetSlots=new ArrayList<>(List.of(tomato(64),ItemData.EMPTY));

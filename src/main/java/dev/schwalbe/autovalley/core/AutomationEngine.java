@@ -47,6 +47,8 @@ public final class AutomationEngine {
         if (!c.profile().allowBackground && !c.world().player().focused()) { status="Focus the game first"; return false; }
         if (c.world().menu()==null || !c.world().menu().carried().empty()) { status="Put down the item on the cursor first"; return false; }
         if (c.world().menu().container()) { status="Close the container before starting"; return false; }
+        String actionRejection=c.actions().startRejection();
+        if (actionRejection!=null) { status=actionRejection; return false; }
         try { MachineOutputLedger.reconcile(c); }
         catch (RuntimeException e) { stop(c,State.ERROR,"Could not save machine output verification; no work started"); return false; }
         if (MachineOutputLedger.hasPending(c)) { status=pendingOutputMessage(c); return false; }
@@ -72,6 +74,7 @@ public final class AutomationEngine {
         if (!player.connected()) { stop(c,State.PAUSED,"Game disconnected"); return; }
         if (!c.profile().allowBackground && !player.focused()) { stop(c,State.PAUSED,"Game lost focus"); return; }
         if (player.health()<=4 || player.food()<=4) { stop(c,State.PAUSED,"Low health or hunger: take over manually"); return; }
+        if (pauseForActions(c)) return;
         if (c.world().tick()<retryAt) return;
         try {
             MachineOutputLedger.reconcile(c);
@@ -82,6 +85,7 @@ public final class AutomationEngine {
             if (active!=null && !c.profile().enabled(active.feature())) { stop(c,State.PAUSED,"Feature was disabled"); return; }
             if (active!=null) {
                 WorkResult result=active.tick(c);
+                if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) { state=State.RUNNING; status=result.message(); return; }
                 if (MachineOutputLedger.hasPending(c)) { stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return; }
                 c.actions().stopMovement();
@@ -105,6 +109,7 @@ public final class AutomationEngine {
                 if (module.feature()==Feature.SLEEP && blocked!=null) continue;
                 if (module.feature()==Feature.PRESERVES && wineBlocked) continue;
                 WorkResult result=module.tick(c);
+                if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) { active=module; state=State.RUNNING; status=result.message(); return; }
                 if (MachineOutputLedger.hasPending(c)) { stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return; }
                 if (result.state()==WorkResult.State.BLOCKED) {
@@ -123,6 +128,12 @@ public final class AutomationEngine {
             throw e;
         }
     }
+    private boolean pauseForActions(Context c) {
+        String reason=c.actions().pauseReason();
+        if (reason==null) return false;
+        stop(c,State.PAUSED,reason);
+        return true;
+    }
     private void tickOnce(Context c) {
         if (active==null) { stop(c,State.PAUSED,"Selected one-shot job is unavailable"); return; }
         // A harvest that creates an overflow must finish its existing sweep. Only a
@@ -132,6 +143,7 @@ public final class AutomationEngine {
             return;
         }
         WorkResult result=active.tick(c);
+        if (pauseForActions(c)) return;
         if (result.state()!=WorkResult.State.BUSY && MachineOutputLedger.hasPending(c)) {
             stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return;
         }

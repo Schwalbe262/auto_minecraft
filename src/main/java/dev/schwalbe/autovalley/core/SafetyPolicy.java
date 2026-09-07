@@ -50,6 +50,20 @@ public final class SafetyPolicy {
         if (action instanceof Action.SwapHotbar swap)
             return menu.container() || swap.inventoryIndex()<0 || swap.inventoryIndex()>35 || swap.hotbarSlot()<0 || swap.hotbarSlot()>8
                 ? "Invalid inventory swap" : null;
+        if (action instanceof Action.ConsolidateInventory merge) {
+            var plan=merge.plan();
+            if (MachineOutputLedger.hasPending(context)) return "Verify pending production output before consolidating inventory";
+            if (menu.container() || plan==null || !context.session().allows(profile,plan.feature())
+                || plan.feature()!=Feature.WINE && plan.feature()!=Feature.PRESERVES)
+                return "Inventory consolidation is outside the selected production job";
+            if (plan.sourceIndex()<0 || plan.sourceIndex()>=36 || !ProductionMergePlanner.matchesSnapshot(plan,world.inventory()))
+                return "Inventory consolidation snapshot is stale";
+            var expected=ItemData.TOMATO.equals(plan.itemId())
+                ? ProductionMergePlanner.planTomatoes(world.inventory(),plan.feature(),profile.hoeHotbarSlot,
+                    plan.expectedItems().get(plan.sourceIndex()).quality(),plan.sourceIndex())
+                : ProductionMergePlanner.plan(world.inventory(),plan.feature(),profile.hoeHotbarSlot,plan.sourceIndex());
+            return expected.isEmpty() || !expected.get().equals(plan) ? "Inventory consolidation plan changed or is unsafe" : null;
+        }
         if (action instanceof Action.QuickMove move) {
             if (!menu.container() || menu.id()!=move.containerId()) return "Container changed";
             ItemSlot slot = menu.slot(move.slot());

@@ -30,6 +30,10 @@ public final class MinecraftActions implements ActionPort {
     private Pos ownedContainer;
     private ContainerShape openingShape, ownedShape;
     private int ownedMenu=-1;
+    private NativeInventoryConsolidation consolidation, lateInventoryReply;
+    private boolean consolidationInFlight;
+    private String consolidationFailure;
+    private long failureGeneration;
     private final LinkedHashMap<Long,ActionOutcome> outcomes=new LinkedHashMap<>();
     public MinecraftActions(MinecraftWorld world,ServerObservations observations) { this.world=world; this.observations=observations; }
     public void context(Context context) { this.context=context; }
@@ -47,6 +51,8 @@ public final class MinecraftActions implements ActionPort {
         long ticket=++nextTicket;
         if (!enabled || context==null) { put(ticket,ActionOutcome.State.CANCELLED,"Automation is paused"); return ticket; }
         if (pending!=null) { put(ticket,ActionOutcome.State.FAILED,"Another action is still awaiting the server"); return ticket; }
+        String paused=pauseReason();
+        if (paused!=null) { put(ticket,ActionOutcome.State.FAILED,paused); return ticket; }
         String rejection=SafetyPolicy.rejection(action,context);
         ContainerShape requestedShape=null;
         if (rejection==null && action instanceof Action.UseBlock use && use.purpose()==Action.Use.OPEN_CONTAINER) {
@@ -101,6 +107,10 @@ public final class MinecraftActions implements ActionPort {
             confirmedClick(mc.player.inventoryMenu.containerId,source,swap.hotbarSlot(),ClickType.SWAP);
         } else if (action instanceof Action.QuickMove transfer) {
             confirmedClick(transfer.containerId(),transfer.slot(),0,ClickType.QUICK_MOVE);
+        } else if (action instanceof Action.ConsolidateInventory merge) {
+            consolidation=NativeInventoryConsolidation.create(mc.player,merge.plan(),observations,context.profile().hoeHotbarSlot);
+            if (consolidation==null) { finish(ActionOutcome.State.SUCCEEDED,"Native stacks cannot be consolidated",0); return; }
+            sendConsolidationClick();
         } else if (action instanceof Action.ThrowRotten drop) {
             Look facing=context.profile().disposalDirections.get(Profile.positionKey(drop.disposal()));
             mc.player.setYRot(facing.yaw()); mc.player.setXRot(facing.pitch());
@@ -124,6 +134,7 @@ public final class MinecraftActions implements ActionPort {
         if (!enabled || mc.player==null || (!context.profile().allowBackground && !mc.isWindowActive())) { cancel(); return; }
         if (world.tick()==started) return;
         MenuData menu=world.menu();
+        if (pending instanceof Action.ConsolidateInventory) { tickConsolidation(); return; }
         if (pending instanceof Action.UseBlock use) {
             switch (use.purpose()) {
                 case OPEN_CONTAINER -> {
@@ -175,6 +186,64 @@ public final class MinecraftActions implements ActionPort {
         }
         if (world.tick()-started>=context.profile().interactionTimeoutTicks) finish(ActionOutcome.State.FAILED,"No server confirmation; inspect before retrying");
     }
+    private void sendConsolidationClick() {
+        if (MachineOutputLedger.hasPending(context) || !context.session().allows(context.profile(),consolidation.plan.feature())
+            || context.profile().hoeHotbarSlot!=consolidation.protectedHotbar) {
+            finish(ActionOutcome.State.FAILED,"Production settings changed; no further inventory clicks were sent"); return;
+        }
+        if (!consolidation.matchesLive(mc.player)) {
+            finish(ActionOutcome.State.FAILED,"Inventory changed before the next consolidation step; inspect the layout"); return;
+        }
+        var click=consolidation.transaction.click();
+        consolidation.beforeSequence=observations.sequence(); started=world.tick();
+        consolidationInFlight=true;
+        confirmedClick(consolidation.menuId,consolidation.sourceMenuSlot(),click.type()==InventoryConsolidation.Type.SWAP ? click.hotbar() : 0,
+            click.type()==InventoryConsolidation.Type.SWAP ? ClickType.SWAP : ClickType.QUICK_MOVE);
+    }
+    private void tickConsolidation() {
+        if (consolidation==null || observations.generation()!=consolidation.generation) {
+            finish(ActionOutcome.State.FAILED,"Connection changed during inventory consolidation"); return;
+        }
+        if (mc.player.containerMenu!=mc.player.inventoryMenu || !mc.player.containerMenu.getCarried().isEmpty()) {
+            finish(ActionOutcome.State.FAILED,"Inventory menu or cursor changed; no restoration was sent"); return;
+        }
+        for (var acknowledgement:observations.fullNativeMenuSnapshotsSince(consolidation.menuId,consolidation.beforeSequence)) {
+            var confirmation=consolidation.acknowledge(acknowledgement);
+            if (confirmation==InventoryConsolidation.Confirmation.WAIT) continue;
+            consolidationInFlight=false;
+            if (confirmation==InventoryConsolidation.Confirmation.COMPLETE) {
+                finish(ActionOutcome.State.SUCCEEDED,"Server verified inventory consolidation",consolidation.transaction.freedSlots()); return;
+            }
+            // The ACK can be older than a magnet pickup already installed in live slots.
+            // Never let that stale layout authorize another SWAP.
+            sendConsolidationClick(); return;
+        }
+        if (world.tick()-started>=context.profile().interactionTimeoutTicks)
+            finish(ActionOutcome.State.FAILED,"No exact consolidation acknowledgement; inspect inventory before resuming");
+    }
+    @Override public String pauseReason() {
+        if (failureGeneration!=observations.generation()) consolidationFailure=null;
+        if (lateInventoryReply!=null) {
+            if (lateInventoryReply.generation!=observations.generation()) lateInventoryReply=null;
+            else for (var acknowledgement:observations.fullNativeMenuSnapshotsSince(lateInventoryReply.menuId,lateInventoryReply.beforeSequence)) {
+                if (lateInventoryReply.acknowledge(acknowledgement)!=InventoryConsolidation.Confirmation.WAIT) { lateInventoryReply=null; break; }
+            }
+        }
+        return lateInventoryReply!=null ? "Waiting for the cancelled inventory click's exact server reply; no new actions. Reconnect if it never arrives."
+            : consolidationFailure;
+    }
+    @Override public String startRejection() {
+        pauseReason();
+        if (lateInventoryReply!=null) return pauseReason();
+        consolidationFailure=null;
+        return null;
+    }
+    private void finishConsolidation(ActionOutcome.State state,String message) {
+        if (!(pending instanceof Action.ConsolidateInventory)) return;
+        if (consolidationInFlight && consolidation!=null) lateInventoryReply=consolidation;
+        if (state==ActionOutcome.State.FAILED) { consolidationFailure=message; failureGeneration=observations.generation(); }
+        consolidation=null; consolidationInFlight=false;
+    }
     /** Null means unsafe, not a single chest fallback: both halves must be observable and reciprocal. */
     public Pos canonicalContainer(Pos pos) {
         ContainerShape shape=containerShape(pos);
@@ -211,7 +280,7 @@ public final class MinecraftActions implements ActionPort {
         mc.player.setXRot((float)-Math.toDegrees(Math.atan2(delta.y,Math.sqrt(delta.x*delta.x+delta.z*delta.z))));
     }
     public void move(Movement intent) {
-        if (!enabled || pending!=null || mc.player==null || world.menu().container() || (!context.profile().allowBackground && !mc.isWindowActive())) { stopMovement(); return; }
+        if (!enabled || pending!=null || pauseReason()!=null || mc.player==null || world.menu().container() || (!context.profile().allowBackground && !mc.isWindowActive())) { stopMovement(); return; }
         // Navigation cannot gain permission to jump or leave the approved farm/corridor.
         Pos feet=world.player().feet();
         if (!ProfileBounds.contains(context.profile(),feet) || intent.jump()) { stopMovement(); return; }
@@ -227,8 +296,9 @@ public final class MinecraftActions implements ActionPort {
         // Ownership survives pause only for diagnostics; start() requires manual closure.
     }
     public ActionOutcome outcome(long ticket) { return outcomes.getOrDefault(ticket,new ActionOutcome(ActionOutcome.State.CANCELLED,"Expired action")); }
-    private void finish(ActionOutcome.State state,String message) { put(pendingTicket,state,message); pending=null; }
+    private void finish(ActionOutcome.State state,String message) { finishConsolidation(state,message); put(pendingTicket,state,message); pending=null; }
     private void finish(ActionOutcome.State state,String message,int quantity) {
+        finishConsolidation(state,message);
         outcomes.put(pendingTicket,new ActionOutcome(state,message,quantity)); pending=null;
         if (outcomes.size()>512) outcomes.remove(outcomes.keySet().iterator().next());
     }

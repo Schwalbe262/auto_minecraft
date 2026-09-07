@@ -4,6 +4,7 @@ import io.netty.channel.*;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.Connection;
 import net.minecraft.network.protocol.game.*;
+import net.minecraft.world.item.ItemStack;
 import dev.schwalbe.autovalley.core.ItemData;
 import java.util.List;
 import java.util.function.BooleanSupplier;
@@ -28,15 +29,20 @@ public final class PacketObserver extends ChannelDuplexHandler {
     }
     @Override public void channelRead(ChannelHandlerContext ctx,Object message) throws Exception {
         long recordingEpoch=recorder.captureEpoch();
-        // Vanilla installs packet stacks in live menus. Copy their immutable values before
-        // forwarding, so a later pickup cannot rewrite the slot contents of this ACK.
-        List<ItemData> fullItems=message instanceof ClientboundContainerSetContentPacket packet
-            ? packet.getItems().stream().map(MinecraftWorld::item).toList() : null;
+        // Vanilla installs packet stacks in live menus. Detach both items and cursor BEFORE
+        // forwarding, so prediction/a later pickup cannot rewrite this server reply. This native
+        // client-visible metadata stays in RAM; the recorder still receives only reduced ItemData.
+        ServerObservations.NativeMenuSnapshot nativePacket=message instanceof ClientboundContainerSetContentPacket packet
+            ? new ServerObservations.NativeMenuSnapshot(0,packet.getItems(),packet.getCarriedItem()) : null;
+        List<ItemStack> nativeItems=nativePacket==null ? null : nativePacket.items();
+        ItemStack carried=nativePacket==null ? null : nativePacket.carried();
+        List<ItemData> fullItems=nativeItems==null ? null : nativeItems.stream().map(MinecraftWorld::item).toList();
         // The vanilla listener enqueues application first; our confirmation follows on the same main thread.
         super.channelRead(ctx,message);
         if (message instanceof ClientboundContainerSetSlotPacket packet) later(() -> observations.menu(packet.getContainerId()));
         else if (message instanceof ClientboundContainerSetContentPacket packet) later(() -> {
-            observations.fullMenu(packet.getContainerId(),fullItems); recorder.fullMenu(recordingEpoch,packet.getContainerId(),fullItems);
+            observations.fullMenu(packet.getContainerId(),fullItems,nativeItems,carried);
+            recorder.fullMenu(recordingEpoch,packet.getContainerId(),fullItems);
         });
         else if (message instanceof ClientboundBlockUpdatePacket packet) later(() -> {
             var pos=MinecraftWorld.pos(packet.getPos()); observations.block(pos); recorder.blockUpdate(recordingEpoch,pos);

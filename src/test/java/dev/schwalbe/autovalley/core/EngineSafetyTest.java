@@ -13,7 +13,7 @@ class EngineSafetyTest {
     @Test void actionAllowListCannotRepresentAttackOrBlockDestruction() {
         assertTrue(Action.class.isSealed());
         assertEquals(Set.of(Action.UseBlock.class,Action.SelectHotbar.class,Action.SwapHotbar.class,
-            Action.QuickMove.class,Action.ThrowRotten.class,Action.CloseContainer.class),Set.of(Action.class.getPermittedSubclasses()));
+            Action.QuickMove.class,Action.ThrowRotten.class,Action.CloseContainer.class,Action.ConsolidateInventory.class),Set.of(Action.class.getPermittedSubclasses()));
         assertEquals(Set.of("HARVEST","MACHINE","OPEN_CONTAINER","SLEEP","DOOR"),
             new HashSet<>(Arrays.stream(Action.Use.values()).map(Enum::name).toList()));
     }
@@ -137,17 +137,54 @@ class EngineSafetyTest {
         assertEquals(priorStorageChecks+1,storage.calls); assertEquals("deposit tomatoes",engine.status());
     }
 
+    @Test void unresolvedInventoryClickBlocksManualRestartUntilItsFenceClears() {
+        Fixture f=new Fixture(); Module work=new Module(Feature.WINE,60,WorkResult.busy("work"));
+        AutomationEngine engine=new AutomationEngine(List.of(work));
+        f.actionPause="Late inventory reply"; engine.start(f.context());
+        assertFalse(engine.running()); assertEquals("Late inventory reply",engine.status());
+        engine.tick(f.context()); assertEquals(0,work.calls);
+        f.actionPause=null; engine.start(f.context()); engine.tick(f.context()); assertEquals(1,work.calls);
+    }
+
+    @Test void newlyRaisedInventoryFencePreventsOtherContinuousConsumersInTheSameTick() {
+        Fixture f=new Fixture(); Module wine=new Module(Feature.WINE,60,WorkResult.blocked("merge failed"));
+        Module preserves=new Module(Feature.PRESERVES,70,WorkResult.busy("preserves"));
+        Module sleep=new Module(Feature.SLEEP,100,WorkResult.busy("sleep"));
+        wine.onTick=() -> f.actionPause="Inspect interrupted inventory consolidation";
+        AutomationEngine engine=new AutomationEngine(List.of(wine,preserves,sleep));
+        engine.start(f.context()); engine.tick(f.context());
+        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(1,wine.calls);
+        assertEquals(0,preserves.calls); assertEquals(0,sleep.calls);
+    }
+
+    @Test void inventoryFailureCannotBecomeOneShotCompletion() {
+        Fixture f=new Fixture(); Module wine=new Module(Feature.WINE,60,WorkResult.idle());
+        wine.onTick=() -> f.actionPause="Inventory uncertain";
+        AutomationEngine engine=new AutomationEngine(List.of(wine));
+        engine.startOnce(f.context(),Feature.WINE); engine.tick(f.context());
+        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals("Inventory uncertain",engine.status());
+    }
+
+    @Test void inventoryFenceCancelsAnAlreadyActiveJobBeforeAnotherTick() {
+        Fixture f=new Fixture(); Module wine=new Module(Feature.WINE,60,WorkResult.busy("work"));
+        AutomationEngine engine=new AutomationEngine(List.of(wine));
+        engine.start(f.context()); engine.tick(f.context()); assertEquals(1,wine.calls);
+        f.actionPause="Late inventory reply"; engine.tick(f.context());
+        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(1,wine.calls);
+    }
+
     private static final class Module implements AutomationModule {
-        final Feature feature; final int priority; WorkResult result; int calls;
+        final Feature feature; final int priority; WorkResult result; int calls; Runnable onTick=() -> {};
         Module(Feature feature,int priority,WorkResult result) { this.feature=feature; this.priority=priority; this.result=result; }
         @Override public Feature feature() { return feature; }
         @Override public int priority() { return priority; }
-        @Override public WorkResult tick(Context c) { calls++; return result; }
+        @Override public WorkResult tick(Context c) { calls++; onTick.run(); return result; }
         @Override public void reset() { }
     }
     private static final class Fixture implements WorldAccess,ActionPort,Navigation {
         final Profile profile = new Profile(); boolean focused=true, connected=true, container; int menuId, cancelCalls; long ticks;
         ItemData held=ItemData.EMPTY, carried=ItemData.EMPTY;
+        String actionPause;
         BlockData block=new BlockData(TARGET,"minecraft:air",Map.of());
         Context context() { return new Context(this,this,this,profile); }
         @Override public long tick() { return ticks; }
@@ -167,6 +204,7 @@ class EngineSafetyTest {
         @Override public void move(Movement m) { }
         @Override public void stopMovement() { }
         @Override public void cancel() { cancelCalls++; }
+        @Override public String pauseReason() { return actionPause; }
         @Override public Navigation.Result moveTo(Pos p,double r,Context c) { return Navigation.Result.ARRIVED; }
         @Override public void reset() { }
     }
