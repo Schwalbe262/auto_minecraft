@@ -24,7 +24,7 @@ Explicit local diagnostic/control request files support inspection and start/pau
 - Successful harvest stores a per-farm next date. Successful refill stores a per-machine next date. Start/stop and reconnect retain these dates.
 - Harvest checks wait until day tick 20 for Dew Drop's dawn growth. Busy machines wait through day tick 219 before being declared unfinished for that day.
 - Machine defaults: wine 6 days, preserves 3 days. Harvest 1 day is a conservative observation interval; actual growth depends on crop stage and fertilizer.
-- Resource shortage is ordinary waiting. Uncertain mutation or missing output remains blocked until manual review. A blocked wine task suppresses preserves; any unresolved work suppresses automatic sleep.
+- Resource shortage is ordinary waiting in continuous mode. In one-shot production, insufficient refill ingredients pause the selected job without marking the unfunded machine complete or postponing its retry to tomorrow. Uncertain mutation or missing output remains blocked until manual review. A blocked wine task suppresses preserves; any unresolved work suppresses automatic sleep.
 - A backwards game date clears obsolete deadlines and pauses for review.
 
 ## Verification
@@ -41,7 +41,7 @@ Up to eight immutable full-menu ACK snapshots per container preserve an earlier 
 
 Vinery's native `WineYears.getYear(Level)` is the aging clock. It is not the sleep-skipping day calendar. The UI accepts current wine age and stores the stable raw production cohort: existing wine stays in its container as its age increases. Selling held surplus requires a fresh full-capacity check of every registered reserve for that cohort; no reserve wine is withdrawn. Permissions expire at 1,200 ticks and on date/registration changes.
 
-Machine runs reuse acknowledged source stock counts while consuming held ingredients and recount before new hauls, date changes, and stale batches. Farms are an arbitrary list, not two fixed slots. Per-field volume and profile-file size protections remain. Bulk machine registration previews connected same-ID blocks, rejects partial/unloaded changes, and never infers storage contents.
+Machine runs reuse acknowledged source stock counts while consuming held ingredients and recount before new hauls, date changes, and stale batches. Farms are an arbitrary list, not two fixed slots. Per-field volume and profile-file size protections remain. Bulk machine registration previews connected same-ID blocks, warns before accepting a partial scan, rejects changed or unloaded selected blocks, and never infers storage contents.
 
 JUnit tests cover classification, source recounts, grade ties, priority, action cancellation, server-state waits, production/pickup failures, game-day deadlines, dawn races, sleep rejection, path constraints, door acknowledgement, real upper tomato vines, calibration, profile round trips and malformed-file preservation, and registration validation.
 
