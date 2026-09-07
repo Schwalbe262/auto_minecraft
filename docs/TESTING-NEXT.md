@@ -100,10 +100,11 @@ Those earlier passive checks were not end-to-end automation acceptance; unchange
 - Immediately before a machine use, release movement, settle for two ticks and
   recheck actual native reach/line of sight. Reapproach before creating an output
   obligation if this check fails; do not lower the four-block limit for tall racks.
-- Normal inventory capacity replaces strict ephemeral magnet-count gating:
-  twenty consecutive ticks with an empty normal slot and empty cursor release
-  the stale haul flag/count only. This is not a deposit acknowledgement and does
-  not change machine-output records or sale permission.
+- An initial twenty-tick inventory-capacity rule released stale magnet counts.
+  The user subsequently rejected magnet-count gating altogether: remove those
+  counts from harvest/production/storage/sleep start and completion conditions.
+  Actual native inventory transfers remain acknowledged separately; no magnet
+  count is a prerequisite for proceeding and no ground absence proves a sale.
 - The user's later request to drop fixed-grade tomato storage and add general
   storage groups is deferred. The private desired-layout map was disabled to
   allow the existing registered same-grade stores to continue working meanwhile.
@@ -118,3 +119,32 @@ Those earlier passive checks were not end-to-end automation acceptance; unchange
 Routing, click-speed improvements and map waypoint integration are tracked in
 [Deferred work](DEFERRED-WORK.md). Live acceptance of the new stop-policy build
 and the remaining production-to-storage/sale/sleep flow is still pending.
+
+## Count-free harvesting and smart-bin correction — 2026-09-08
+
+- Removed the transport counter, recovery API/command/UI, capacity-settling
+  policy and their obsolete tests entirely. The production and test source tree
+  no longer contains those feature names. `continueHarvestWhenFull` is now the
+  ordinary opt-in setting; native use confirmation and changed crop state finish
+  a harvest without reading ground items. Inventory transfer/deletion checks remain.
+- An approach whose predicted ray differs from the stopped player's actual ray
+  now settles before failure and can try at most four alternative safe endpoints.
+  The actual native ray, same reach, registered bounds and collision checks remain
+  authoritative. This is a correctness fix, not the deferred route optimization.
+- The operator's sale recording confirms a smart-bin menu with 54 storage slots
+  and 36 player slots, and a successful quick-move of pine tar into storage slot 0.
+  Earlier automation failed before opening the bin: the scripted block entity is
+  not itself a native Container/MenuProvider. No automated quick-move or earning
+  occurred in that failed attempt.
+- A narrow optional KubeJS bridge recognizes only the exact installed smart-bin
+  ID, entity/attachment types, owner identity and 54-slot capacity. It reads no
+  closed inventory contents. The subsequent full menu must match the 54+36 slot
+  layout before any transfer. Other scripted blocks, shops or banks are not admitted.
+- Smart-bin deposit and later server processing are distinct. Installed scripts
+  process eligible inventory periodically; a completed deposit is not proof of an
+  immediate HUD balance change.
+- Java 17 `test build` passed **516 tests, zero failures, errors or skips**. Removed
+  counter tests explain the lower total; nine smart-bin tests were added. Snapshot
+  SHA-256: `F389933632ADDE969CDEB51F7C68E47F04FAB619A81B626EC9B6642F6F94EDBE`.
+  The same Society instance was normally restarted with the backed-up replacement.
+  Full live wine/preserves/storage/sale/sleep acceptance remains open.
