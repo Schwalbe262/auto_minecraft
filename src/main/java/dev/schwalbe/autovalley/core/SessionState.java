@@ -14,6 +14,8 @@ public final class SessionState {
     public boolean allows(Profile profile,Feature feature) { return oneShotFeature==null ? profile.enabled(feature) : oneShotFeature==feature; }
     public boolean magnetHaulPending;
     public final Map<String,Integer> magnetHaulRemaining=new HashMap<>();
+    /** Operator reconciliation is not recorded as successful delivery or machine-output pickup. */
+    public Map<String,Integer> lastManuallyResolvedHaul=Map.of();
     public final Map<Integer,WineSalePermit> wineSalePermits=new HashMap<>();
     /** Local inspection evidence, not permission to transfer; retained after a one-shot finishes. */
     public final Map<Pos,StorageSurveyObservation> storageSurveyObservations=new java.util.LinkedHashMap<>();

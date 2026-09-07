@@ -13,6 +13,24 @@ import static org.junit.jupiter.api.Assertions.*;
 class ServerObservationsTest {
     private static ItemData tomato(int count) { return new ItemData(ItemData.TOMATO,count,0,null,false,999); }
 
+    @Test void incompleteSingleSlotEvidenceCannotAdvanceOrOverwriteAnyAcknowledgement() {
+        ServerObservations observations=new ServerObservations();
+        observations.fullMenu(0,List.of(tomato(10))); long before=observations.sequence();
+        assertThrows(NullPointerException.class,() -> observations.nativeSlot(0,9,null,List.of(),null));
+        assertEquals(before,observations.sequence());
+        assertTrue(observations.nativeSlotSnapshotsSince(0,0).isEmpty());
+        assertEquals(10,observations.fullMenuSnapshotSince(0,0).items().get(0).count());
+    }
+
+    @Test void ordinaryMenuMarkersDoNotInventAuthoritativeSingleSlotEvidence() {
+        ServerObservations observations=new ServerObservations();
+        observations.menu(0); observations.menu(-2); observations.fullMenu(0,List.of(ItemData.EMPTY));
+        assertTrue(observations.nativeSlotSnapshotsSince(0,0).isEmpty());
+        assertTrue(observations.nativeSlotSnapshotsSince(-2,0).isEmpty());
+        observations.clear();
+        assertTrue(observations.nativeSlotSnapshotsSince(0,0).isEmpty());
+    }
+
     @Test void snapshotCopyDetachesMutableValuesAndNestedMetadataOnEveryRead() {
         // Native ItemStacks need a launched Forge registry. Exercise the exact generic copy
         // path they use with mutable count/tag stand-ins in this ordinary JVM test suite.

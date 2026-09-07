@@ -6,6 +6,7 @@ import java.util.List;
 public final class DisposalModule implements AutomationModule {
     private long ticket = -1;
     private boolean throwing;
+    private boolean inventoryTrash;
     private int before;
     @Override public Feature feature() { return Feature.DISPOSAL; }
     @Override public int priority() { return 10; }
@@ -16,17 +17,27 @@ public final class DisposalModule implements AutomationModule {
             ticket = -1;
             if (!result.success()) return fail("Disposal action failed: " + result.message());
             if (throwing) {
-                int removed=result.confirmedCount()>0 ? result.confirmedCount() : before-ModuleSupport.count(c,i -> i.is(ItemData.ROTTEN));
+                int removed=result.confirmedCount()>0 ? result.confirmedCount() : inventoryTrash ? 0 : before-ModuleSupport.count(c,i -> i.is(ItemData.ROTTEN));
                 if (removed<=0) return fail("Rotten tomato disposal was not acknowledged");
                 c.session().recordFarmRemoval(ItemData.ROTTEN,removed);
             }
             throwing = false;
+            inventoryTrash = false;
         }
         if (ModuleSupport.inventoryItem(c,i -> i.is(ItemData.ROTTEN)) == null) return WorkResult.idle();
-        List<Poi> sites = ModuleSupport.nearest(c,c.profile().pois(PoiKind.DISPOSAL));
-        if (sites.isEmpty()) return fail("Register a safe rotten tomato disposal standing point");
+        if (MachineOutputLedger.hasPending(c)) return fail("Resolve pending production output before disposal");
         if (c.world().menu().container()) { ticket = c.actions().submit(new Action.CloseContainer(c.world().menu().id())); return WorkResult.busy("Closing container before disposal"); }
         if (!c.world().menu().carried().empty()) return fail("Clear the inventory cursor before disposal");
+        if (c.actions().supportsInventoryTrash()) {
+            ItemSlot rotten=c.world().inventory().stream().filter(s -> s.player() && s.inventoryIndex()>=0 && s.inventoryIndex()<36
+                && s.item().is(ItemData.ROTTEN)).findFirst().orElse(null);
+            if (rotten==null) return fail("No normal inventory rotten tomato stack is available");
+            before=rotten.item().count(); throwing=true; inventoryTrash=true;
+            ticket=c.actions().submit(new Action.TrashRotten(rotten.inventoryIndex(),rotten.item()));
+            return WorkResult.busy("Deleting rotten tomatoes through inventory TrashSlot");
+        }
+        List<Poi> sites = ModuleSupport.nearest(c,c.profile().pois(PoiKind.DISPOSAL));
+        if (sites.isEmpty()) return fail("Server inventory TrashSlot is unavailable; enable it or register a safe disposal point");
         Pos site = sites.get(0).pos();
         Navigation.Result nav = c.navigation().moveTo(site,0.7,c);
         if (nav == Navigation.Result.BLOCKED) return fail("Disposal point cannot be reached");
@@ -39,5 +50,5 @@ public final class DisposalModule implements AutomationModule {
         return WorkResult.busy("Disposing rotten tomatoes");
     }
     private WorkResult fail(String message) { reset(); return WorkResult.blocked(message); }
-    @Override public void reset() { ticket = -1; throwing = false; before = 0; }
+    @Override public void reset() { ticket = -1; throwing = false; inventoryTrash=false; before = 0; }
 }

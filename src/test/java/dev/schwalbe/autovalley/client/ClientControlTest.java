@@ -7,6 +7,11 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ClientControlTest {
+    @Test void haulResolutionIsExplicitAndAcceptsNoExtraArguments() throws Exception {
+        assertEquals("haul_resolved",parse("{\"command\":\"haul_resolved\"}"));
+        assertThrows(Exception.class,() -> parse("{\"command\":\"haul_resolved\",\"feature\":\"HARVEST\"}"));
+        assertThrows(Exception.class,() -> parse("{\"command\":\"haul_resolved\",\"name\":\"all\"}"));
+    }
     @Test void acceptsOnlySupportedStartAndPauseCommands() throws Exception {
         assertEquals("start",parse("{\"command\":\"start\"}"));
         assertEquals("pause",parse(" \n { \"command\" : \"pause\" } \t "));

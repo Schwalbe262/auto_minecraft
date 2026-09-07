@@ -35,12 +35,17 @@ public final class MinecraftActions implements ActionPort {
     private boolean consolidationInFlight;
     private String consolidationFailure;
     private long failureGeneration;
+    private NativeTrashSlot trash,lateTrashReply;
+    private boolean trashInFlight;
+    private String trashFailure;
+    private long trashFailureGeneration;
     private final LinkedHashMap<Long,ActionOutcome> outcomes=new LinkedHashMap<>();
     public MinecraftActions(MinecraftWorld world,ServerObservations observations) { this.world=world; this.observations=observations; }
     public void context(Context context) { this.context=context; }
     public void enabled(boolean enabled) { if (!enabled) stopMovement(); this.enabled=enabled; }
     public boolean busy() { return pending!=null; }
     @Override public boolean supportsMovingHarvest() { return true; }
+    @Override public boolean supportsInventoryTrash() { return NativeTrashSlot.available(); }
     public Movement movement() { return enabled && world.tick()-movementAt<=2 ? movement : null; }
     public boolean ownsContainer() {
         MenuData menu=world.menu();
@@ -115,6 +120,10 @@ public final class MinecraftActions implements ActionPort {
             consolidation=NativeInventoryConsolidation.create(mc.player,merge.plan(),observations,context.profile().hoeHotbarSlot);
             if (consolidation==null) { finish(ActionOutcome.State.SUCCEEDED,"Native stacks cannot be consolidated",0); return; }
             sendConsolidationClick();
+        } else if (action instanceof Action.TrashRotten rotten) {
+            trash=new NativeTrashSlot(mc.player,rotten,observations);
+            trashInFlight=true; // A send that throws may already have reached the channel: never retry it.
+            trash.send();
         } else if (action instanceof Action.ThrowRotten drop) {
             Look facing=context.profile().disposalDirections.get(Profile.positionKey(drop.disposal()));
             mc.player.setYRot(facing.yaw()); mc.player.setXRot(facing.pitch());
@@ -139,6 +148,7 @@ public final class MinecraftActions implements ActionPort {
         if (world.tick()==started) return;
         MenuData menu=world.menu();
         if (pending instanceof Action.ConsolidateInventory) { tickConsolidation(); return; }
+        if (pending instanceof Action.TrashRotten) { tickTrash(); return; }
         if (pending instanceof Action.UseBlock use) {
             switch (use.purpose()) {
                 case OPEN_CONTAINER -> {
@@ -225,7 +235,31 @@ public final class MinecraftActions implements ActionPort {
         if (world.tick()-started>=context.profile().interactionTimeoutTicks)
             finish(ActionOutcome.State.FAILED,"No exact consolidation acknowledgement; inspect inventory before resuming");
     }
+    private void tickTrash() {
+        if (trash==null || trash.generation!=observations.generation()) {
+            finish(ActionOutcome.State.FAILED,"Connection changed during rotten tomato deletion"); return;
+        }
+        if (mc.player.containerMenu!=mc.player.inventoryMenu || !mc.player.inventoryMenu.getCarried().isEmpty()) {
+            finish(ActionOutcome.State.FAILED,"Inventory or cursor changed during deletion; no further request was sent"); return;
+        }
+        if (trash.confirmed(observations)) {
+            int removed=trash.quantity; trashInFlight=false;
+            finish(ActionOutcome.State.SUCCEEDED,"Server verified the single rotten tomato stack deletion",removed); return;
+        }
+        if (world.tick()-started>=context.profile().interactionTimeoutTicks)
+            finish(ActionOutcome.State.FAILED,"No exact TrashSlot acknowledgement; inspect before resuming");
+    }
     @Override public String pauseReason() {
+        if (trashFailureGeneration!=observations.generation()) trashFailure=null;
+        if (lateTrashReply!=null) {
+            if (lateTrashReply.generation!=observations.generation()) lateTrashReply=null;
+            else if (lateTrashReply.confirmed(observations)) {
+                context.session().recordFarmRemoval(ItemData.ROTTEN,lateTrashReply.quantity);
+                lateTrashReply=null;
+            }
+        }
+        if (lateTrashReply!=null) return "Waiting for the cancelled TrashSlot request's exact server reply; no new actions. Reconnect if it never arrives.";
+        if (trashFailure!=null) return trashFailure;
         if (failureGeneration!=observations.generation()) consolidationFailure=null;
         if (lateInventoryReply!=null) {
             if (lateInventoryReply.generation!=observations.generation()) lateInventoryReply=null;
@@ -238,8 +272,9 @@ public final class MinecraftActions implements ActionPort {
     }
     @Override public String startRejection() {
         pauseReason();
-        if (lateInventoryReply!=null) return pauseReason();
+        if (lateInventoryReply!=null || lateTrashReply!=null) return pauseReason();
         consolidationFailure=null;
+        trashFailure=null;
         return null;
     }
     private void finishConsolidation(ActionOutcome.State state,String message) {
@@ -247,6 +282,12 @@ public final class MinecraftActions implements ActionPort {
         if (consolidationInFlight && consolidation!=null) lateInventoryReply=consolidation;
         if (state==ActionOutcome.State.FAILED) { consolidationFailure=message; failureGeneration=observations.generation(); }
         consolidation=null; consolidationInFlight=false;
+    }
+    private void finishTrash(ActionOutcome.State state,String message) {
+        if (!(pending instanceof Action.TrashRotten)) return;
+        if (trashInFlight && trash!=null) lateTrashReply=trash;
+        if (state==ActionOutcome.State.FAILED) { trashFailure=message; trashFailureGeneration=observations.generation(); }
+        trash=null; trashInFlight=false;
     }
     /** Null means unsafe, not a single chest fallback: both halves must be observable and reciprocal. */
     public Pos canonicalContainer(Pos pos) {
@@ -307,9 +348,10 @@ public final class MinecraftActions implements ActionPort {
         // Ownership survives pause only for diagnostics; start() requires manual closure.
     }
     public ActionOutcome outcome(long ticket) { return outcomes.getOrDefault(ticket,new ActionOutcome(ActionOutcome.State.CANCELLED,"Expired action")); }
-    private void finish(ActionOutcome.State state,String message) { finishConsolidation(state,message); put(pendingTicket,state,message); pending=null; }
+    private void finish(ActionOutcome.State state,String message) { finishConsolidation(state,message); finishTrash(state,message); put(pendingTicket,state,message); pending=null; }
     private void finish(ActionOutcome.State state,String message,int quantity) {
         finishConsolidation(state,message);
+        finishTrash(state,message);
         outcomes.put(pendingTicket,new ActionOutcome(state,message,quantity)); pending=null;
         if (outcomes.size()>512) outcomes.remove(outcomes.keySet().iterator().next());
     }

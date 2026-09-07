@@ -13,7 +13,7 @@ public final class SafetyPolicy {
         if (menu == null || !menu.carried().empty()) return "Resolve the item on the cursor before resuming";
         boolean surveying=context.session().oneShotFeature==Feature.STORAGE_SURVEY;
         if (surveying && (action instanceof Action.QuickMove || action instanceof Action.SwapHotbar
-            || action instanceof Action.ConsolidateInventory || action instanceof Action.ThrowRotten))
+            || action instanceof Action.ConsolidateInventory || action instanceof Action.ThrowRotten || action instanceof Action.TrashRotten))
             return "Storage survey is read-only; inventory changes are not permitted";
         if (action instanceof Action.UseBlock use) {
             if (menu.container()) return "Close the current container first";
@@ -86,6 +86,17 @@ public final class SafetyPolicy {
             if (slot.item().standardShippingProduct() && !context.session().allows(profile,Feature.SHIPPING))
                 return "Shipping is disabled or outside the selected one-shot job";
             return null;
+        }
+        if (action instanceof Action.TrashRotten trash) {
+            if (MachineOutputLedger.hasPending(context)) return "Resolve pending production output before disposal";
+            if (menu.container() || !context.session().allows(profile,Feature.DISPOSAL) || !context.actions().supportsInventoryTrash())
+                return "Inventory trash is unavailable or outside the selected disposal job";
+            if (trash.inventoryIndex()<0 || trash.inventoryIndex()>=36 || trash.expected()==null || !trash.expected().is(ItemData.ROTTEN))
+                return "Only a normal inventory rotten tomato stack may be trashed";
+            var inventoryMatches=world.inventory().stream().filter(s -> s.player() && s.inventoryIndex()==trash.inventoryIndex()).toList();
+            var menuMatches=menu.slots().stream().filter(s -> s.player() && s.inventoryIndex()==trash.inventoryIndex()).toList();
+            return inventoryMatches.size()!=1 || menuMatches.size()!=1 || !trash.expected().equals(inventoryMatches.get(0).item())
+                || !trash.expected().equals(menuMatches.get(0).item()) ? "Rotten tomato inventory snapshot changed" : null;
         }
         if (action instanceof Action.ThrowRotten drop) {
             if (menu.id()!=drop.containerId() || menu.container() || !registered(profile,drop.disposal(),PoiKind.DISPOSAL)

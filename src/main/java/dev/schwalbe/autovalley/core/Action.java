@@ -8,5 +8,7 @@ public sealed interface Action {
     record ConsolidateInventory(ProductionMergePlanner.Plan plan) implements Action { }
     record QuickMove(int containerId, int slot) implements Action { }
     record ThrowRotten(int containerId, int slot, Pos disposal) implements Action { }
+    /** One cursor-free TrashSlot deletion of this exact normal inventory stack. */
+    record TrashRotten(int inventoryIndex, ItemData expected) implements Action { }
     record CloseContainer(int containerId) implements Action { }
 }

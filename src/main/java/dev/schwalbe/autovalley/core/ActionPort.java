@@ -12,4 +12,6 @@ public interface ActionPort {
     default String startRejection() { return pauseReason(); }
     /** Moving/aiming separation must be supported before a module overlaps harvest and walking. */
     default boolean supportsMovingHarvest() { return false; }
+    /** Requires a supported server-side TrashSlot single-slot deletion channel. */
+    default boolean supportsInventoryTrash() { return false; }
 }

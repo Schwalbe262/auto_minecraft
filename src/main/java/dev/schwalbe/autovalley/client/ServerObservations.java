@@ -26,6 +26,11 @@ public final class ServerObservations {
         @Override public List<ItemStack> items() { return copySnapshotItems(items,ServerObservations::copyNativeStack); }
         @Override public ItemStack carried() { return copyNativeStack(carried); }
     }
+    /** Only packetItem is server-authored; appliedMenu is the detached post-application client state. */
+    public record NativeSlotSnapshot(long seq,int menuId,int slot,ItemStack packetItem,NativeMenuSnapshot appliedMenu) {
+        public NativeSlotSnapshot { packetItem=copyNativeStack(packetItem); Objects.requireNonNull(appliedMenu); }
+        @Override public ItemStack packetItem() { return copyNativeStack(packetItem); }
+    }
     private static final int MAX_MENU_SNAPSHOTS=256;
     private static final int MAX_SNAPSHOTS_PER_MENU=8;
     private long sequence;
@@ -35,9 +40,19 @@ public final class ServerObservations {
     private final LinkedHashMap<Integer,ArrayDeque<FullMenuSnapshot>> fullMenuSnapshots=new LinkedHashMap<>();
     private final Map<Integer,ArrayDeque<NativeMenuSnapshot>> fullNativeMenuSnapshots=new HashMap<>();
     private final Map<Pos,Long> blocks=new HashMap<>();
+    private final ArrayDeque<NativeSlotSnapshot> nativeSlots=new ArrayDeque<>();
     public long sequence() { return sequence; }
     public long generation() { return generation; }
     public void menu(int id) { menus.put(id,++sequence); }
+    public void nativeSlot(int id,int slot,ItemStack packetItem,List<ItemStack> appliedMenu,ItemStack carried) {
+        NativeSlotSnapshot snapshot=new NativeSlotSnapshot(sequence+1,id,slot,packetItem,new NativeMenuSnapshot(sequence+1,appliedMenu,carried));
+        menu(id);
+        nativeSlots.addLast(snapshot);
+        if (nativeSlots.size()>64) nativeSlots.removeFirst();
+    }
+    public List<NativeSlotSnapshot> nativeSlotSnapshotsSince(int id,long before) {
+        return nativeSlots.stream().filter(s -> s.menuId()==id && s.seq()>before).toList();
+    }
     public void fullMenu(int id) {
         markFullMenu(id);
         // A marker without slot data cannot lend older slot contents to a newer ACK.
@@ -113,5 +128,5 @@ public final class ServerObservations {
     }
     public boolean menuSince(int id,long before) { return menus.getOrDefault(id,0L)>before || menus.getOrDefault(-2,0L)>before; }
     public boolean blockSince(Pos pos,long before) { return blocks.getOrDefault(pos,0L)>before; }
-    public void clear() { sequence=0; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); }
+    public void clear() { sequence=0; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); nativeSlots.clear(); }
 }

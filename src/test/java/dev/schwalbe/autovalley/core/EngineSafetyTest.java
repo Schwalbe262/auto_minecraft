@@ -13,7 +13,7 @@ class EngineSafetyTest {
     @Test void actionAllowListCannotRepresentAttackOrBlockDestruction() {
         assertTrue(Action.class.isSealed());
         assertEquals(Set.of(Action.UseBlock.class,Action.SelectHotbar.class,Action.SwapHotbar.class,
-            Action.QuickMove.class,Action.ThrowRotten.class,Action.CloseContainer.class,Action.ConsolidateInventory.class),Set.of(Action.class.getPermittedSubclasses()));
+            Action.QuickMove.class,Action.ThrowRotten.class,Action.TrashRotten.class,Action.CloseContainer.class,Action.ConsolidateInventory.class),Set.of(Action.class.getPermittedSubclasses()));
         assertEquals(Set.of("HARVEST","MACHINE","OPEN_CONTAINER","SLEEP","DOOR"),
             new HashSet<>(Arrays.stream(Action.Use.values()).map(Enum::name).toList()));
     }

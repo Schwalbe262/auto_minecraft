@@ -37,9 +37,17 @@ public final class PacketObserver extends ChannelDuplexHandler {
         List<ItemStack> nativeItems=nativePacket==null ? null : nativePacket.items();
         ItemStack carried=nativePacket==null ? null : nativePacket.carried();
         List<ItemData> fullItems=nativeItems==null ? null : nativeItems.stream().map(MinecraftWorld::item).toList();
+        ItemStack changedSlot=message instanceof ClientboundContainerSetSlotPacket packet
+            ? new ServerObservations.NativeMenuSnapshot(0,List.of(packet.getItem()),ItemStack.EMPTY).items().get(0) : null;
         // The vanilla listener enqueues application first; our confirmation follows on the same main thread.
         super.channelRead(ctx,message);
-        if (message instanceof ClientboundContainerSetSlotPacket packet) later(() -> observations.menu(packet.getContainerId()));
+        if (message instanceof ClientboundContainerSetSlotPacket packet) later(() -> {
+            var player=Minecraft.getInstance().player;
+            if (player!=null && player.containerMenu==player.inventoryMenu && packet.getContainerId()==player.inventoryMenu.containerId)
+                observations.nativeSlot(packet.getContainerId(),packet.getSlot(),changedSlot,
+                    player.inventoryMenu.slots.stream().map(slot -> slot.getItem().copy()).toList(),player.inventoryMenu.getCarried());
+            else observations.menu(packet.getContainerId());
+        });
         else if (message instanceof ClientboundContainerSetContentPacket packet) later(() -> {
             observations.fullMenu(packet.getContainerId(),fullItems,nativeItems,carried);
             recorder.fullMenu(recordingEpoch,packet.getContainerId(),fullItems);

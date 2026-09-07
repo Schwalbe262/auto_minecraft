@@ -73,6 +73,7 @@ public final class ClientControl {
                         yield !runtime.running();
                     }
                     case "once" -> runtime.runOnce(parsed.feature());
+                    case "haul_resolved" -> runtime.acknowledgeManualHaul();
                     case "record_start" -> {
                         // Never replace an unsaved recording, including one suspended by an I/O failure.
                         if (!runtime.recording()) runtime.startRecording();
@@ -127,7 +128,7 @@ public final class ClientControl {
             String command = fields.get("command");
             if (command == null) throw new IOException("Missing command");
             return switch (command) {
-                case "start", "pause", "record_start" -> {
+                case "start", "pause", "record_start", "haul_resolved" -> {
                     if (!fields.keySet().equals(Set.of("command"))) throw new IOException("Unexpected command arguments");
                     yield new Request(command,null,null);
                 }
