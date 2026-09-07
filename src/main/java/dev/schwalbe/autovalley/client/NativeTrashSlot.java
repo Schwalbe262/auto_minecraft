@@ -5,6 +5,7 @@ import java.lang.reflect.*;
 import java.util.*;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.TagParser;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.fml.ModList;
@@ -21,6 +22,7 @@ final class NativeTrashSlot {
     final long generation,beforeSequence;
     final int menuId,sourceMenuSlot,quantity;
     private final List<InventoryConsolidation.Stack> before;
+    private final Set<Integer> inventoryMenuSlots;
 
     static boolean available() {
         try { return HOOKS!=null && HOOKS.installed().getBoolean(null); }
@@ -57,6 +59,12 @@ final class NativeTrashSlot {
         sourceMenuSlot=matching.get(0).index;
         menuId=player.inventoryMenu.containerId; quantity=action.expected().count();
         before=stacks(player.inventoryMenu.slots.stream().map(Slot::getItem).toList());
+        List<Slot> inventorySlots=player.inventoryMenu.slots.stream().filter(s -> s.container==player.getInventory()
+            && s.getContainerSlot()>=0 && s.getContainerSlot()<36).toList();
+        inventoryMenuSlots=Set.copyOf(inventorySlots.stream().map(s -> s.index).toList());
+        if (inventorySlots.size()!=36 || inventoryMenuSlots.size()!=36
+            || inventorySlots.stream().map(Slot::getContainerSlot).distinct().count()!=36)
+            throw new IllegalArgumentException("Incomplete normal inventory mapping");
         generation=observations.generation(); beforeSequence=observations.sequence();
     }
     void send() {
@@ -68,14 +76,56 @@ final class NativeTrashSlot {
     }
     boolean confirmed(ServerObservations observations) {
         if (generation!=observations.generation()) return false;
-        for (var ack:observations.fullNativeMenuSnapshotsSince(menuId,beforeSequence))
-            if (confirmed(ack,true)) return true;
-        for (var ack:observations.nativeSlotSnapshotsSince(menuId,beforeSequence))
-            if (ack.slot()==sourceMenuSlot && ack.packetItem().isEmpty() && confirmed(ack.appliedMenu(),true)) return true;
+        var full=observations.fullNativeMenuSnapshotsSince(menuId,beforeSequence);
+        var slots=observations.nativeSlotSnapshotsSince(menuId,beforeSequence);
+        List<InventoryTrashAcknowledgement.SlotProof> proofs=new ArrayList<>();
+        for (var ack:slots) proofs.add(new InventoryTrashAcknowledgement.SlotProof(ack.seq(),ack.menuId(),ack.slot(),stacks(List.of(ack.packetItem())).get(0)));
+        // Prior source changes invalidate the original quantity, including changes
+        // authored by a full packet. Other full-menu slots never masquerade as raw-slot proof.
+        for (var ack:full) {
+            List<ItemStack> items=ack.items();
+            if (sourceMenuSlot<items.size()) proofs.add(new InventoryTrashAcknowledgement.SlotProof(ack.seq(),menuId,sourceMenuSlot,
+                stacks(List.of(items.get(sourceMenuSlot))).get(0)));
+        }
+        for (var ack:full) {
+            var proven=proofsAt(observations,ack.seq(),proofs);
+            if (proven!=null && confirmed(ack,proven,true)) return true;
+        }
+        for (var ack:slots) {
+            if (ack.slot()!=sourceMenuSlot || !ack.packetItem().isEmpty() || ack.appliedMenu().seq()!=ack.seq()) continue;
+            var proven=proofsAt(observations,ack.seq(),proofs);
+            if (proven!=null && confirmed(ack.appliedMenu(),proven,false)) return true;
+        }
         return false;
     }
-    private boolean confirmed(ServerObservations.NativeMenuSnapshot ack,boolean serverEmpty) {
-        return InventoryTrashAcknowledgement.confirmed(before,stacks(ack.items()),sourceMenuSlot,serverEmpty,ack.carried().isEmpty())==quantity;
+    private Map<Integer,InventoryConsolidation.Stack> proofsAt(ServerObservations observations,long sequence,List<InventoryTrashAcknowledgement.SlotProof> proofs) {
+        return InventoryTrashAcknowledgement.precedingSlotProofs(generation,observations.generation(),menuId,beforeSequence,sequence,
+            sourceMenuSlot,before.get(sourceMenuSlot),proofs);
+    }
+    private boolean confirmed(ServerObservations.NativeMenuSnapshot ack,Map<Integer,InventoryConsolidation.Stack> proven,boolean fullServerPacket) {
+        List<InventoryConsolidation.Stack> after=stacks(ack.items());
+        if (after.size()!=before.size()) return false;
+        Set<Integer> additions=new HashSet<>();
+        for (int slot=0;slot<before.size();slot++) {
+            if (slot==sourceMenuSlot || before.get(slot).equals(after.get(slot))) continue;
+            // ROTTEN, gear, cursor, replacements and count losses are never exceptions.
+            // For a single-slot reply only its raw packetItem is authoritative;
+            // the surrounding applied-client menu needs independent earlier raw proofs.
+            if (!inventoryMenuSlots.contains(slot) || !productionAddition(before.get(slot),after.get(slot))
+                || !fullServerPacket && !after.get(slot).equals(proven.get(slot))) return false;
+            additions.add(slot);
+        }
+        return InventoryTrashAcknowledgement.confirmed(before,after,sourceMenuSlot,true,ack.carried().isEmpty(),additions,inventoryMenuSlots)==quantity;
+    }
+    private static boolean productionAddition(InventoryConsolidation.Stack old,InventoryConsolidation.Stack now) {
+        if (NativeInventoryConsolidation.productionAddition(old,now)) return true;
+        // Pine tar is also a user-authorized harvested/shipped product. This
+        // addition exception does not expand the inventory consolidation planner.
+        if (now.empty() || now.count()<=old.count()) return false;
+        try {
+            return ItemData.PINE_TAR.equals(TagParser.parseTag(now.identity()).getString("id"))
+                && (old.empty() || old.limit()==now.limit() && old.identity().equals(now.identity()));
+        } catch (com.mojang.brigadier.exceptions.CommandSyntaxException failure) { return false; }
     }
     private static List<InventoryConsolidation.Stack> stacks(List<ItemStack> items) {
         return items.stream().map(stack -> {

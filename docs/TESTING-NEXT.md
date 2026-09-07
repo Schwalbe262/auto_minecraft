@@ -453,3 +453,39 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   reconstruct the entire warehouse grade-total table, identify the final physical
   storage barrel, or verify its rotating UI label. It is not evidence of surplus
   wine sales: storage had accepted all bottles. The three-hour soak remains open.
+
+### Third observation interruption: unrelated pickups during TrashSlot deletion
+
+- The third continuous window ran from 20:14:56 UTC to the first OFF sample at
+  22:04:57 UTC, approximately 1 hour 50 minutes. It did **not** meet three hours.
+  Excluding preflight, 2,700 consecutive action IDs succeeded before one failed
+  disposal receipt. Eleven normal bed-entry receipts and sleeping transitions
+  were observed. There were no sample gaps above 2.5 seconds in the audited
+  interval and no disconnect or navigation-failure indication.
+- A read-only native packet audit proved the final two rotten tomatoes were
+  deleted: the exact requested source slot received an empty server packet.
+  Immediately before it, two other slots independently received two normal
+  tomatoes each. Those slots retained their exact native identities. The old
+  strict all-other-slots-unchanged comparison rejected this confirmed deletion.
+- The source was empty, the cursor empty, and all other native slots unchanged
+  apart from those independently confirmed additions. The failed action was
+  not relabeled successful; no second deletion or recovery click was sent.
+  A correction must distinguish these unrelated server-proven pickups while
+  preserving source, cursor, menu, generation and exact identity safeguards.
+- The prior observer's consolidation-specific fence flag remained false for
+  this TrashSlot failure. OFF/PAUSED state and terminal failed receipts must also
+  be checked; a false fence flag by itself is not a stability verdict.
+- The correction retains the strict API and adds independently proven positive
+  production-item additions in normal inventory slots only. Raw-slot evidence
+  must lie after the request and no later than the deletion reply; an actual
+  full-menu server packet may prove its own additions. Source changes, cursor
+  changes, other rotten stacks, replacements and count losses remain rejected.
+  Pine tar uses the same bounded exception only in this disposal adapter.
+- Twenty-two new regression cases cover the observed packet ordering and its
+  unsafe variants. Integrated Java 17 `test build`: **668 tests, zero failures or
+  errors**. One invalid over-limit test fixture was corrected to assert the
+  existing value constructor's rejection before the successful full rerun.
+  Snapshot SHA-256:
+  `355C4AF78E1BBB93F5F60D87C8F8ABD5F5743F6DC5E9BEC92B10C0D1B448DFC1`.
+  This checkpoint establishes build/test success, not yet post-installation
+  stability. Original failed receipts and private native evidence are retained.
