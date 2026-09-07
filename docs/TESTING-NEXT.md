@@ -2,6 +2,9 @@
 
 This document describes development source and a limited real-client smoke test of 0.1.3-SNAPSHOT, not the published 0.1.2 JAR. Do not replace a published release asset with these changed classes under the old version number.
 
+Later dated sections supersede earlier behavior and acceptance notes. In particular,
+wine pickup tracking is now disabled at the user's request; preserves tracking remains.
+
 Java 17 / ForgeGradle `test build` passed: **411 tests, zero failures, errors or skipped tests**, including 95 logistics tests, 39 navigation/harvest tests, 18 harvest-safety tests, 4 native-area geometry tests, 7 area-route tests, 8 movement-rule/axis tests, 13 emergency-key/start-priority tests, 33 merge-planner tests, 12 native-snapshot transaction tests, 12 consolidation safety tests, 21 output-ledger tests and 8 scheduler/output integration tests. These numbers describe fixture coverage; limited real-client checks are described separately below.
 
 ## Manual demonstration evidence
@@ -77,3 +80,41 @@ Those earlier passive checks were not end-to-end automation acceptance; unchange
 - Desired tomato grades are separate from actual stocked grades. Production still selects the largest actual grade total, prioritizing old-layout stock within that grade. Only a verified empty barrel changes classification; incompatible or unrelated contents are left untouched. Failed persistence rolls back the metadata and prevents transfer.
 - Java 17 `test build` passed with 482 tests; the subsequent test run including the additional group/profile tests passed **496 tests, zero failures, errors, or skips**. These are fixture results, not real-game acceptance of all new actions.
 - The existing Society instance was normally closed and reloaded with snapshot SHA-256 `C17B1252DFB9776A77B4114D9E821F292A25902295AF2D00A272DA4AC2E476C9`. The initial Quick Play attempt failed. A same-client normal join then returned an explicit invalid-session login error despite successful DNS/TCP checks. No new production action or warehouse installation was performed while disconnected; authenticated reconnection is required to continue the real workflow test.
+
+## Follow-up workflow and requested stop-policy changes — 2026-09-08
+
+- The operator reconnected successfully. In that connected session the native
+  storage survey completed all 48 registered tomato/wine containers. Native
+  TrashSlot acknowledgements confirmed deletion of 56 rotten tomatoes in five
+  single-stack operations. Neither observation is an inference from disappearing
+  items or a claim that all production/sales/sleep stages passed.
+- A real wine one-shot collected 24 bottles and restarted 24 kegs before a later
+  use was rejected by the reach/line-of-sight preflight. The previous write-ahead
+  output record then blocked resuming, even though that request had not reached
+  native use dispatch. The full rack was not completed in that run.
+- At the user's explicit request, wine no longer creates a pickup obligation,
+  waits for a counted bottle pickup, or chases ground bottles. Existing wine
+  obligations are archived as `WINE_PICKUP_TRACKING_DISABLED`, not falsely marked
+  recovered or lost. Preserves obligations, native action/input/state confirmation,
+  reserve-wine classification and surplus-sale authorization remain separate.
+- Immediately before a machine use, release movement, settle for two ticks and
+  recheck actual native reach/line of sight. Reapproach before creating an output
+  obligation if this check fails; do not lower the four-block limit for tall racks.
+- Normal inventory capacity replaces strict ephemeral magnet-count gating:
+  twenty consecutive ticks with an empty normal slot and empty cursor release
+  the stale haul flag/count only. This is not a deposit acknowledgement and does
+  not change machine-output records or sale permission.
+- The user's later request to drop fixed-grade tomato storage and add general
+  storage groups is deferred. The private desired-layout map was disabled to
+  allow the existing registered same-grade stores to continue working meanwhile.
+  No stored item was moved by that metadata change.
+
+- Java 17 `test build` passed **520 tests, zero failures, errors or skips**.
+  The new snapshot has SHA-256
+  `1D05AC8B385F46CCCD8C53C26843A50D29BFAE0E1C0CFAC941C6443F93899414`.
+  The same existing Society instance was normally restarted to load that JAR;
+  the previous JAR and private profile were backed up locally.
+
+Routing, click-speed improvements and map waypoint integration are tracked in
+[Deferred work](DEFERRED-WORK.md). Live acceptance of the new stop-policy build
+and the remaining production-to-storage/sale/sleep flow is still pending.
