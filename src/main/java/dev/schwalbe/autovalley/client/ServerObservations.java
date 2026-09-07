@@ -82,7 +82,7 @@ public final class ServerObservations {
         fullMenu(id,detached.items.stream().map(MinecraftWorld::item).toList(),detached.items,detached.carried);
     }
     private void appendFullMenu(int id,FullMenuSnapshot snapshot) {
-        // A later refresh may already contain magnet-refilled inventory. Keep the first
+        // A later refresh may already contain refilled inventory. Keep the first
         // authoritative click reply until the action adapter has had a client tick to inspect it.
         ArrayDeque<FullMenuSnapshot> history=fullMenuSnapshots.remove(id);
         if (history==null) history=new ArrayDeque<>();

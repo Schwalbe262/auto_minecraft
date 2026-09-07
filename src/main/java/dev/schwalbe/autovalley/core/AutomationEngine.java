@@ -33,10 +33,6 @@ public final class AutomationEngine {
         if (!begin(c)) return;
         AutomationModule selected=modules.stream().filter(module -> module.feature()==feature).findFirst().orElse(null);
         if (selected==null) { stop(c,State.PAUSED,"Selected one-shot job is unavailable"); return; }
-        if (hasPendingHaul(c) && (feature==Feature.HARVEST || needsCompletedHaul(feature))) {
-            stop(c,State.PAUSED,"Finish storing/discarding the magnet harvest before starting this job");
-            return;
-        }
         active=selected;
         c.session().oneShotFeature=feature;
         status="Starting one-shot " + feature;
@@ -101,10 +97,6 @@ public final class AutomationEngine {
             boolean wineBlocked=blockedThisSweep.keySet().stream().anyMatch(m -> m.feature()==Feature.WINE);
             for (AutomationModule module : modules) {
                 if (!c.profile().enabled(module.feature())) continue;
-                if (hasPendingHaul(c) && needsCompletedHaul(module.feature())) {
-                    if (blocked==null) blocked="Finish storing/discarding the magnet harvest before production or sleep";
-                    continue;
-                }
                 if (blockedThisSweep.containsKey(module)) continue;
                 if (module.feature()==Feature.SLEEP && blocked!=null) continue;
                 if (module.feature()==Feature.PRESERVES && wineBlocked) continue;
@@ -136,12 +128,6 @@ public final class AutomationEngine {
     }
     private void tickOnce(Context c) {
         if (active==null) { stop(c,State.PAUSED,"Selected one-shot job is unavailable"); return; }
-        // A harvest that creates an overflow must finish its existing sweep. Only a
-        // new harvest is blocked by the start guard; production/sleep never consumes it.
-        if (hasPendingHaul(c) && needsCompletedHaul(oneShotFeature)) {
-            stop(c,State.PAUSED,"Finish storing/discarding the magnet harvest before continuing this job");
-            return;
-        }
         WorkResult result=active.tick(c);
         if (pauseForActions(c)) return;
         if (result.state()!=WorkResult.State.BUSY && MachineOutputLedger.hasPending(c)) {
@@ -154,13 +140,7 @@ public final class AutomationEngine {
             case BLOCKED -> stop(c,State.PAUSED,"One-shot " + oneShotFeature + " paused: " + result.message());
         }
     }
-    private static boolean hasPendingHaul(Context c) {
-        return c.session().magnetHaulPending || !c.session().magnetHaulRemaining.isEmpty();
-    }
     private static String pendingOutputMessage(Context c) {
         return "미회수 산출물 "+c.profile().pendingMachineOutputs.size()+"건 — Ctrl+F8 → 실행·기록에서 회수 상태를 확인하세요";
-    }
-    private static boolean needsCompletedHaul(Feature feature) {
-        return feature==Feature.WINE || feature==Feature.PRESERVES || feature==Feature.SLEEP;
     }
 }

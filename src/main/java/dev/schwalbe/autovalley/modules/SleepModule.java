@@ -11,7 +11,6 @@ public final class SleepModule implements AutomationModule {
     @Override public Feature feature() { return Feature.SLEEP; }
     @Override public int priority() { return 100; }
     @Override public WorkResult tick(Context c) {
-        if (c.session().magnetHaulPending) return WorkResult.blocked("Unstored magnet harvest must be resolved before sleeping");
         long time = c.world().dayTime(), day = Math.floorDiv(time,24000);
         if (attemptDay != day && !trying) { attempts = 0; attemptDay = day; }
         if (trying && c.world().player().sleeping()) {

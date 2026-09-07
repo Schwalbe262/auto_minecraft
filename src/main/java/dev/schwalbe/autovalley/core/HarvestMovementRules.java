@@ -1,6 +1,6 @@
 package dev.schwalbe.autovalley.core;
 
-/** Small bounded overlap for magnet harvesting; every other pending action excludes movement. */
+/** Small bounded overlap for moving harvest; every other pending action excludes movement. */
 public final class HarvestMovementRules {
     private HarvestMovementRules() { }
     public static boolean mayOverlap(Action pending,Movement intent,PlayerState before,PlayerState current,long elapsed,boolean enabled) {

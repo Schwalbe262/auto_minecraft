@@ -45,9 +45,9 @@ Same-connection inventory observations can resolve a confirmed pickup, including
 
 The settings UI distinguishes explicit manual recovery/cleanup from confirmed loss, requires a second confirmation for one unchanged operation ID, remains paused and retains the entry if saving fails. Resolution history is bounded to 64 entries. Profile schema 1 is validated and migrated to schema 2 in memory; the next save uses schema 2 so old clients reject it instead of ignoring pending output. Back up the local profile before a deliberate version downgrade.
 
-### Storage, magnet and scale
+### Storage acknowledgements and scale
 
-Up to eight immutable full-menu ACK snapshots per container preserve an earlier successful transfer even if magnet pickup refills the player slot before the next tick. Confirmed source removal and destination increase, not a later live count alone, establish deposit quantity. A session ledger retains undelivered overflow until confirmed storage/disposal removes it; disappearance is not delivery. Production and sleep wait for the ledger to clear.
+Up to eight immutable full-menu ACK snapshots per container preserve an earlier successful transfer even if a later pickup refills the player slot before the next tick. Confirmed source removal and destination increase, not a later live count alone, establish deposit quantity. No overflow-transport counter controls starting, completing or scheduling work; storage and disposal operate on the actual player inventory.
 
 Vinery's native `WineYears.getYear(Level)` is the aging clock. It is not the sleep-skipping day calendar. The UI accepts current wine age and stores the stable raw production cohort: existing wine stays in its container as its age increases. Selling held surplus requires a fresh full-capacity check of every registered reserve for that cohort; no reserve wine is withdrawn. Permissions expire at 1,200 ticks and on date/registration changes.
 
@@ -63,7 +63,7 @@ The selected native hoe range defines the inspected area but is not evidence tha
 
 For installed Quark 4.0-462, native range two means a half-span of one (golden hoe: 3-by-3). The maximum permitted configuration value must not replace that actual range: doing so falsely included unrelated crops in live preflight. This supports Society 4.1.4 default crop rules with matching client/server range settings, consistent with the manual golden-hoe demonstration. Local/server booleans do not establish numeric or custom crop-map equality; server-only range changes, custom mappings and third-party handlers require revalidation and are not covered by this model.
 
-Only magnet harvest can opt into bounded movement during one outstanding use. A movement-only navigator cannot open doors, and the native adapter allows at most ten ticks of grounded, short-distance harvest overlap. Camera-relative forward/strafe components preserve the route's world heading while the view stays on the clicked crop, without diagonal speed amplification. Inventory, machine, door and sleep actions still exclude movement. Calibration and non-capable adapters retain stopped harvesting. Production timing and pickup confirmation remain separate from movement, and no world attack or break action is introduced.
+Only full-inventory-enabled harvest can opt into bounded movement during one outstanding use. A movement-only navigator cannot open doors, and the native adapter allows at most ten ticks of grounded, short-distance harvest overlap. Camera-relative forward/strafe components preserve the route's world heading while the view stays on the clicked crop, without diagonal speed amplification. Inventory, machine, door and sleep actions still exclude movement. Calibration and non-capable adapters retain stopped harvesting. Production timing and pickup confirmation remain separate from movement, and no world attack or break action is introduced.
 
 ### Bounded native inventory consolidation
 

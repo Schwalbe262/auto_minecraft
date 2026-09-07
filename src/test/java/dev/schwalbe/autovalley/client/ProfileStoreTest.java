@@ -12,6 +12,23 @@ import static org.junit.jupiter.api.Assertions.*;
 class ProfileStoreTest {
     @TempDir Path directory;
 
+    @Test void fullInventoryHarvestDefaultsEnabledAndExplicitOptOutRoundTrips() throws Exception {
+        Profile profile=new Profile(); assertTrue(profile.continueHarvestWhenFull);
+        profile.continueHarvestWhenFull=false;
+        ProfileStore store=new ProfileStore(directory); String key=ProfileStore.key("full-inventory-harvest-setting");
+        store.save(key,profile);
+        assertFalse(store.load(key).continueHarvestWhenFull);
+        assertTrue(Files.readString(directory.resolve(key+".json")).contains("\"continueHarvestWhenFull\": false"));
+    }
+
+    @Test void absentFullInventorySettingUsesDefaultWithoutRewritingOldProfile() throws Exception {
+        String key=ProfileStore.key("old-harvest-setting"); Path file=directory.resolve(key+".json");
+        String old="{\"schemaVersion\":2,\"obsoleteHarvestOption\":false}";
+        Files.writeString(file,old);
+        assertTrue(new ProfileStore(directory).load(key).continueHarvestWhenFull);
+        assertEquals(old,Files.readString(file));
+    }
+
     @Test void legacyProfileEnablesBackgroundAndExplicitOptOutPersists() throws Exception {
         String key=ProfileStore.key("legacy-background");
         Files.writeString(directory.resolve(key+".json"),"{\"schemaVersion\":1}");

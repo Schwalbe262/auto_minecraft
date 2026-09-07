@@ -84,7 +84,7 @@ class InventoryConsolidationTest {
         Collections.swap(items,9,5); items.set(11,tomato(1));
         assertEquals(WAIT,operation.acknowledge(snapshot(items)));
     }
-    @Test void mergeRejectsCountInflationLossAndUnrelatedMagnetPickup() {
+    @Test void mergeRejectsCountInflationLossAndUnrelatedPickup() {
         for (int count:new int[]{60,62}) {
             var items=items(); items.set(5,wine(1)); items.set(10,wine(60)); var operation=transaction(items,5,-1,ItemData.WINE);
             items.set(5,wine(0)); items.set(10,wine(count)); assertEquals(WAIT,operation.acknowledge(snapshot(items)));

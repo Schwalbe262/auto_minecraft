@@ -5,7 +5,7 @@ import dev.schwalbe.autovalley.navigation.LocalNavigator;
 import dev.schwalbe.autovalley.navigation.HarvestRoutePlanner;
 import java.util.*;
 
-/** Right-click-only tomato harvest, with verified inventory or magnet-carried ground output. */
+/** Right-click-only tomato harvest confirmed by the native acknowledgement and crop state. */
 public final class HarvestModule implements AutomationModule {
     private enum Stage { PREPARE, APPROACH, USING, PICKUP }
     private Stage stage = Stage.PREPARE;
@@ -22,9 +22,6 @@ public final class HarvestModule implements AutomationModule {
     private long cooldownDay = Long.MIN_VALUE;
     private long pickupStarted;
     private long sampleStarted;
-    private int beforePickup;
-    private int beforeGround;
-    private Map<String,Integer> beforeObservedByItem = Map.of();
     private String unresolvedOutput;
     private int useAttempts;
     private int sweep;
@@ -36,7 +33,6 @@ public final class HarvestModule implements AutomationModule {
     private double sampleMovementStarted;
     private final Sample walking = new Sample();
     private final Sample sprinting = new Sample();
-    private record HarvestObservation(Map<String,Integer> totals, int inventoryCount, int groundCount) { }
     private String calibrationStatus = "아직 빠른 수확을 측정하지 않았습니다.";
 
     private static final class Sample {
@@ -77,8 +73,6 @@ public final class HarvestModule implements AutomationModule {
         if (unresolvedOutput != null) return WorkResult.blocked(unresolvedOutput);
         if (calibration && calibrationProfile != null && calibrationProfile != profile) cancelCalibration();
         if (calibration) calibrationProfile = profile;
-        if (!active && (context.session().magnetHaulPending || !context.session().magnetHaulRemaining.isEmpty()))
-            return WorkResult.blocked("자석이 운반 중인 수확물을 먼저 저장해야 다음 수확을 시작할 수 있습니다.");
         // Dew Drop performs daily growth around day tick 5..14; inspect after that morning update.
         if (!active && Math.floorMod(world.dayTime(),24000L) < 20) return WorkResult.idle();
         if (!active && world.tick() < cooldownUntil && gameDay(world) == cooldownDay) return WorkResult.idle();
@@ -143,7 +137,7 @@ public final class HarvestModule implements AutomationModule {
                     navigator.setSprint(sampleSprint);
                 }
             }
-            if (!profile.magnetOverflowHarvest && !hasHarvestRoom(world.inventory()))
+            if (!profile.continueHarvestWhenFull && !hasHarvestRoom(world.inventory()))
                 return fail(context, "토마토와 썩은 토마토를 담을 공간이 부족합니다.");
             if (!isMature(world, target)) { target = null; return WorkResult.busy("이미 수확된 작물을 건너뜁니다."); }
             ItemSlot held = inventorySlot(world, profile.hoeHotbarSlot);
@@ -156,15 +150,6 @@ public final class HarvestModule implements AutomationModule {
             String footprintRejection = HarvestSafety.rejection(context,target);
             if (footprintRejection != null) return fail(context,footprintRejection);
             harvestRadius = world.harvestFootprint(target).radius();
-            beforePickup = harvestItems(world);
-            beforeGround = 0;
-            beforeObservedByItem = Map.of();
-            if (profile.magnetOverflowHarvest) {
-                HarvestObservation observation = observeHarvest(world);
-                beforePickup = observation.inventoryCount();
-                beforeGround = observation.groundCount();
-                beforeObservedByItem = observation.totals();
-            }
             ticket = actions.submit(new Action.UseBlock(target, Action.Use.HARVEST));
             useAttempts++;
             stage = Stage.USING;
@@ -198,50 +183,26 @@ public final class HarvestModule implements AutomationModule {
             stage = Stage.PICKUP;
         }
         if (stage == Stage.PICKUP) {
-            if (profile.magnetOverflowHarvest) continueHarvestMovement(context);
-            HarvestObservation observation = profile.magnetOverflowHarvest ? observeHarvest(world) : null;
-            int inventoryNow = observation == null ? harvestItems(world) : observation.inventoryCount();
-            int groundNow = observation == null ? 0 : observation.groundCount();
-            boolean outputConfirmed = profile.magnetOverflowHarvest
-                ? (long)inventoryNow + groundNow > (long)beforePickup + beforeGround
-                : inventoryNow > beforePickup;
-            long elapsed = world.tick() - pickupStarted;
-            if (outputConfirmed && elapsed >= (profile.magnetOverflowHarvest ? 2 : 10)) {
-                if (observation != null) recordMagnetOutput(context,observation);
-                recordSample(context, false);
-                markCompletedFarm(context,target);
-                if (!continuationMoving) {
-                    actions.stopMovement();
-                    context.navigation().reset();
-                }
-                target = null;
-                stage = Stage.APPROACH;
-                return WorkResult.busy(groundNow > 0 ? "수확물 생성을 확인했습니다. 자석 운반을 유지하며 수확합니다." : "토마토를 주웠습니다.");
+            // Output pickup is the player's concern. The successful native
+            // action and mature-to-harvested transition above are the completion evidence.
+            if (profile.continueHarvestWhenFull) continueHarvestMovement(context);
+            if (world.tick() - pickupStarted < 2) return WorkResult.busy("확인된 수확 동작을 마무리합니다.");
+            recordSample(context, false);
+            markCompletedFarm(context,target);
+            if (!continuationMoving) {
+                actions.stopMovement();
+                context.navigation().reset();
             }
-            if (!profile.magnetOverflowHarvest && !outputConfirmed && elapsed >= 10) {
-                Pos pickup = pickupFeet(world, target);
-                if (pickup == null) { recordSample(context, true); return fail(context, "수확물 옆에 안전하게 설 자리가 없습니다."); }
-                Navigation.Result arrival = context.navigation().moveTo(pickup, 1.0, context);
-                if (arrival == Navigation.Result.BLOCKED) {
-                    recordSample(context, true);
-                    return fail(context, "수확물에 접근하지 못했습니다. " + navigationFailure(context));
-                }
-            }
-            if (elapsed > Math.max(60, profile.interactionTimeoutTicks)) {
-                recordSample(context, true);
-                unresolvedOutput = profile.magnetOverflowHarvest
-                    ? "수확 후 인벤토리와 바닥의 수확물 증가를 확인하지 못했습니다. 확인 후 F8로 다시 시작하세요."
-                    : "수확 후 아이템 획득을 확인하지 못했습니다. 확인 후 F8로 다시 시작하세요.";
-                return fail(context,unresolvedOutput);
-            }
-            return WorkResult.busy(profile.magnetOverflowHarvest ? "자석이 운반할 수확물 생성을 확인하고 있습니다." : "바닥에 나온 토마토를 줍습니다.");
+            target = null;
+            stage = Stage.APPROACH;
+            return WorkResult.busy("작물의 수확 상태를 확인했습니다.");
         }
         return WorkResult.busy("수확 준비 중입니다.");
     }
 
     private void continueHarvestMovement(Context context) {
         WorldAccess world = context.world();
-        if (calibration || !context.profile().magnetOverflowHarvest || !context.actions().supportsMovingHarvest()
+        if (calibration || !context.profile().continueHarvestWhenFull || !context.actions().supportsMovingHarvest()
             || world.tick()-useStarted>=10 || continuationStopped) {
             stopContinuation(context);
             return;
@@ -417,56 +378,11 @@ public final class HarvestModule implements AutomationModule {
         sweep = 0;
         useAttempts = 0;
         stage = Stage.PREPARE;
-        beforeObservedByItem = Map.of();
     }
 
     private static boolean usableHoe(ItemData item) { return item.hoe() && !item.empty() && item.durability() > 1; }
-    private static Pos pickupFeet(WorldAccess world, Pos tomato) {
-        for (int dy = 0; dy >= -2; dy--) {
-            Pos feet = tomato.offset(0, dy, 0);
-            if (world.loaded(feet) && world.canStand(feet)) return feet;
-        }
-        return null;
-    }
     private static ItemSlot inventorySlot(WorldAccess world, int index) { return world.inventory().stream().filter(s -> s.inventoryIndex() == index).findFirst().orElse(null); }
     private static boolean isMature(WorldAccess world, Pos p) { BlockData b = world.block(p); return b != null && b.matureTomato(); }
-    private static int harvestItems(WorldAccess world) { return world.inventory().stream().map(ItemSlot::item).filter(i -> i.is(ItemData.TOMATO) || i.is(ItemData.ROTTEN)).mapToInt(ItemData::count).sum(); }
-    private static HarvestObservation observeHarvest(WorldAccess world) {
-        Map<String,Integer> totals = new HashMap<>();
-        int inventoryCount = 0, groundCount = 0;
-        for (ItemSlot slot : world.inventory()) {
-            ItemData item = slot.item();
-            if (item.is(ItemData.TOMATO) || item.is(ItemData.ROTTEN)) {
-                inventoryCount += item.count();
-                totals.merge(item.id(),item.count(),Integer::sum);
-            }
-        }
-        PlayerState player = world.player();
-        for (GroundItem ground : world.groundItems()) {
-            ItemData item = ground.item();
-            if ((item.is(ItemData.TOMATO) || item.is(ItemData.ROTTEN))
-                && Math.pow(ground.x()-player.x(),2) + Math.pow(ground.y()-player.y(),2) + Math.pow(ground.z()-player.z(),2) <= 48*48) {
-                groundCount += item.count();
-                totals.merge(item.id(),item.count(),Integer::sum);
-            }
-        }
-        return new HarvestObservation(Map.copyOf(totals),inventoryCount,groundCount);
-    }
-
-    private void recordMagnetOutput(Context context, HarvestObservation observation) {
-        SessionState session = context.session();
-        if (session.magnetHaulRemaining.isEmpty()) {
-            if (observation.groundCount() == 0 && !session.magnetHaulPending) return;
-            // The first overflow includes crops held or on the ground before this particular click.
-            session.magnetHaulRemaining.putAll(observation.totals());
-        } else {
-            for (var entry : observation.totals().entrySet()) {
-                int produced = entry.getValue() - beforeObservedByItem.getOrDefault(entry.getKey(),0);
-                if (produced > 0) session.magnetHaulRemaining.merge(entry.getKey(),produced,Integer::sum);
-            }
-        }
-        if (!session.magnetHaulRemaining.isEmpty()) session.magnetHaulPending = true;
-    }
     private static String navigationFailure(Context context) {
         return context.navigation() instanceof LocalNavigator navigator ? navigator.failureReason() : "익은 토마토로 가는 경로가 막혔습니다.";
     }

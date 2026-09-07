@@ -140,16 +140,16 @@ public final class ValleyScreen extends Screen {
             runtime.profile().allowBackground = !before;
             persist(() -> runtime.profile().allowBackground = before); rebuild();
         }).setTooltip(Tooltip.create(tr("background.hint")));
-        int magnetY = settingsY + 24;
-        button(left, magnetY, half, tr("magnet.toggle", tr(runtime.profile().magnetOverflowHarvest ? "on" : "off")), () -> {
+        int fullInventoryY = settingsY + 24;
+        button(left, fullInventoryY, half, tr("harvest.full_inventory.toggle", tr(runtime.profile().continueHarvestWhenFull ? "on" : "off")), () -> {
             runtime.pause(tr("settings.paused").getString());
-            boolean before = runtime.profile().magnetOverflowHarvest;
-            runtime.profile().magnetOverflowHarvest = !before;
-            persist(() -> runtime.profile().magnetOverflowHarvest = before); rebuild();
-        }).setTooltip(Tooltip.create(tr("magnet.hint")));
-        button(left + half + 6, magnetY, half, tr("tools.open"), () -> { toolsEditor = true; toolPage = ToolPage.MENU; rebuild(); });
-        if (magnetY + 33 < height - 25) text(magnetY + 24, tr("magnet.hint"));
-        if (magnetY + 50 < height - 25) text(magnetY + 41, tr("modules.hint"));
+            boolean before = runtime.profile().continueHarvestWhenFull;
+            runtime.profile().continueHarvestWhenFull = !before;
+            persist(() -> runtime.profile().continueHarvestWhenFull = before); rebuild();
+        }).setTooltip(Tooltip.create(tr("harvest.full_inventory.hint")));
+        button(left + half + 6, fullInventoryY, half, tr("tools.open"), () -> { toolsEditor = true; toolPage = ToolPage.MENU; rebuild(); });
+        if (fullInventoryY + 33 < height - 25) text(fullInventoryY + 24, tr("harvest.full_inventory.hint"));
+        if (fullInventoryY + 50 < height - 25) text(fullInventoryY + 41, tr("modules.hint"));
     }
 
     private void toolsEditor() {
@@ -184,13 +184,8 @@ public final class ValleyScreen extends Screen {
         }).setTooltip(Tooltip.create(tr("pending.persistent_hint")));
         text(147, tr("record.local"));
         text(162, tr("record.contents"));
-        if (runtime.hasPendingMagnetHaul()) {
-            button(left, 173, panelWidth, tr("haul.manual_confirm"), () -> {
-                if (runtime.acknowledgeManualHaul()) { success("haul.manual_saved"); rebuild(); }
-                else error("haul.manual_failed");
-            }).setTooltip(Tooltip.create(tr("haul.manual_hint")));
-        } else text(177, tr("record.no_replay"));
-        button(left, runtime.hasPendingMagnetHaul() ? 194 : 190, panelWidth, tr("back"), () -> { toolsEditor = false; rebuild(); });
+        text(177, tr("record.no_replay"));
+        button(left, 190, panelWidth, tr("back"), () -> { toolsEditor = false; rebuild(); });
     }
 
     private void recordingName() {

@@ -11,7 +11,6 @@ class InventoryTrashTest {
 
     @Test void deletionNeedsNoWorldPointAndWaitsForExactQuantityAcknowledgement() {
         Fixture f=new Fixture(); f.put(16,rotten(10));
-        f.session.magnetHaulPending=true; f.session.magnetHaulRemaining.put(ItemData.ROTTEN,10);
         DisposalModule module=new DisposalModule();
         assertEquals(WorkResult.State.BUSY,module.tick(f.context).state());
         assertEquals(List.of(new Action.TrashRotten(16,rotten(10))),f.sent);
@@ -20,29 +19,23 @@ class InventoryTrashTest {
         assertEquals(1,f.sent.size()); assertEquals(0,f.navigationCalls);
         f.put(16,ItemData.EMPTY);
         assertEquals(WorkResult.State.BUSY,module.tick(f.context).state(),"Local inventory disappearance is not an ACK");
-        assertTrue(f.session.magnetHaulPending);
         f.reply=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"server",10);
         assertEquals(WorkResult.State.IDLE,module.tick(f.context).state());
-        assertFalse(f.session.magnetHaulPending);
     }
 
-    @Test void aSuccessWithoutConfirmedQuantityDoesNotSettleTrashOrMagnetDebt() {
+    @Test void aSuccessWithoutConfirmedQuantityDoesNotConfirmDeletion() {
         Fixture f=new Fixture(); f.put(1,rotten(5));
-        f.session.magnetHaulPending=true; f.session.magnetHaulRemaining.put(ItemData.ROTTEN,5);
         DisposalModule module=new DisposalModule(); module.tick(f.context);
         f.put(1,ItemData.EMPTY); f.reply=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"unproven",0);
         assertEquals(WorkResult.State.BLOCKED,module.tick(f.context).state());
-        assertEquals(5,f.session.magnetHaulRemaining.get(ItemData.ROTTEN));
     }
 
     @Test void timeoutOrCancellationCannotBeReportedAsDeletion() {
         for (ActionOutcome.State state:List.of(ActionOutcome.State.FAILED,ActionOutcome.State.CANCELLED)) {
             Fixture f=new Fixture(); f.put(1,rotten(5));
-            f.session.magnetHaulPending=true; f.session.magnetHaulRemaining.put(ItemData.ROTTEN,5);
             DisposalModule module=new DisposalModule(); module.tick(f.context);
             f.reply=new ActionOutcome(state,"not confirmed");
             assertEquals(WorkResult.State.BLOCKED,module.tick(f.context).state());
-            assertEquals(1,f.sent.size()); assertEquals(5,f.session.magnetHaulRemaining.get(ItemData.ROTTEN));
         }
     }
 

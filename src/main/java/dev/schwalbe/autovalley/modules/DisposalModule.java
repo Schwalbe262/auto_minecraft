@@ -19,7 +19,6 @@ public final class DisposalModule implements AutomationModule {
             if (throwing) {
                 int removed=result.confirmedCount()>0 ? result.confirmedCount() : inventoryTrash ? 0 : before-ModuleSupport.count(c,i -> i.is(ItemData.ROTTEN));
                 if (removed<=0) return fail("Rotten tomato disposal was not acknowledged");
-                c.session().recordFarmRemoval(ItemData.ROTTEN,removed);
             }
             throwing = false;
             inventoryTrash = false;

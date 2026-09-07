@@ -52,17 +52,6 @@ public final class ClientRuntime {
     public boolean recording() { return recorder.recording(); }
     public String recordingStatus() { return recorder.status(); }
     public boolean recordingActive() { return recorder.capturing(); }
-    public boolean hasPendingMagnetHaul() { return context.session().magnetHaulPending || !context.session().magnetHaulRemaining.isEmpty(); }
-    public boolean acknowledgeManualHaul() {
-        if (recording()) { notifyUser("기록을 먼저 저장한 뒤 수동 정리 완료를 확인하세요."); return false; }
-        pause("수동으로 정리한 수확물 확인 중");
-        String rejected=actions.startRejection();
-        if (rejected==null) rejected=MagnetHaulRecovery.rejection(context);
-        if (rejected!=null) { notifyUser("운반 기록을 유지합니다: "+rejected); return false; }
-        MagnetHaulRecovery.acknowledgeByUser(context);
-        notifyUser("수동 정리 확인으로 이전 운반 기록을 해제했습니다. 저장·판매 성공으로 기록하지 않으며 자동화는 OFF입니다.");
-        return true;
-    }
     public String executionMode() { return engine.mode().name(); }
     public Map<String,Object> storageSurveyReport() {
         SessionState session=context.session(); Map<String,Object> report=new LinkedHashMap<>();
@@ -221,7 +210,6 @@ public final class ClientRuntime {
             MachineOutputLedger.reconcile(context);
         }
         catch (RuntimeException e) { pause("산출물 회수 확인 저장 실패 — 자동화 중지"); }
-        MagnetCapacityPolicy.observe(context);
         recorder.tick();
         ClientControl.tick(this);
         if (running() && anglesValid && mc.isWindowActive() && wasFocused && !mc.player.isSleeping() && !wasSleeping && !actions.expectingSleep()

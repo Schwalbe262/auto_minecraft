@@ -9,7 +9,7 @@ public final class Profile {
     public List<Farm> farms = new ArrayList<>();
     public Map<Feature, Boolean> enabled = new EnumMap<>(Feature.class);
     public boolean allowBackground = true;
-    public boolean magnetOverflowHarvest = true;
+    public boolean continueHarvestWhenFull = true;
     public int hoeHotbarSlot = 0;
     public boolean sprintHarvest = false;
     public boolean sprintCalibrated = false;

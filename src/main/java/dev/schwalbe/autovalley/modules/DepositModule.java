@@ -7,7 +7,7 @@ import java.util.*;
 abstract class DepositModule implements AutomationModule {
     private enum Stage { FIND, APPROACH, OPEN, TRANSFER, CLOSE, SKIP_CLOSE }
     private Stage stage = Stage.FIND;
-    private long ticket = -1, unknownSince = -1, groundWaitSince=-1;
+    private long ticket = -1, unknownSince = -1;
     private ItemData selected;
     private List<Poi> candidates = List.of();
     private int candidate, containerId = -1, before, beforeDestination;
@@ -33,7 +33,6 @@ abstract class DepositModule implements AutomationModule {
             } else if (stage == Stage.TRANSFER) {
                 int moved=result.confirmedCount()>0 ? result.confirmedCount() : Math.max(before-ModuleSupport.count(c,selected),destinationCount(c)-beforeDestination);
                 if (moved<=0) return fail("Storage transfer was not acknowledged by the server");
-                c.session().recordFarmRemoval(selected.id(),moved);
             } else if (stage == Stage.CLOSE) {
                 stage = Stage.FIND; containerId = -1;
             } else if (stage == Stage.SKIP_CLOSE) {
@@ -47,15 +46,8 @@ abstract class DepositModule implements AutomationModule {
                 ItemSlot slot = ModuleSupport.inventoryItem(c, this::accepts);
                 if (slot == null) {
                     unknownSince = -1;
-                    if (itemId().equals(ItemData.TOMATO) && c.session().magnetHaulRemaining.getOrDefault(itemId(),0)>0) {
-                        if (groundWaitSince<0) groundWaitSince=c.world().tick();
-                        if (c.world().tick()-groundWaitSince<c.profile().interactionTimeoutTicks)
-                            return WorkResult.busy("Waiting for magnet-held tomatoes to enter freed inventory slots");
-                        return fail("Unstored magnet harvest remains; check following ground items or free an inventory slot");
-                    }
-                    groundWaitSince=-1; return WorkResult.idle();
+                    return WorkResult.idle();
                 }
-                groundWaitSince=-1;
                 selected = slot.item();
                 if (selected.quality() < 0 || selected.quality() > 3) return fail("Unknown product quality; inspect the item");
                 Integer group = classifier(selected);
@@ -110,5 +102,5 @@ abstract class DepositModule implements AutomationModule {
             .filter(i -> ModuleSupport.same(i,selected)).mapToInt(ItemData::count).sum();
     }
     private WorkResult fail(String message) { reset(); return WorkResult.blocked(message); }
-    @Override public void reset() { stage = Stage.FIND; ticket = -1; selected = null; candidates = List.of(); candidate = 0; containerId = -1; unknownSince = -1; groundWaitSince=-1; }
+    @Override public void reset() { stage = Stage.FIND; ticket = -1; selected = null; candidates = List.of(); candidate = 0; containerId = -1; unknownSince = -1; }
 }

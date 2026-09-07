@@ -228,7 +228,7 @@ public final class MinecraftActions implements ActionPort {
             if (confirmation==InventoryConsolidation.Confirmation.COMPLETE) {
                 finish(ActionOutcome.State.SUCCEEDED,"Server verified inventory consolidation",consolidation.transaction.freedSlots()); return;
             }
-            // The ACK can be older than a magnet pickup already installed in live slots.
+            // The ACK can be older than a later pickup already installed in live slots.
             // Never let that stale layout authorize another SWAP.
             sendConsolidationClick(); return;
         }
@@ -254,7 +254,6 @@ public final class MinecraftActions implements ActionPort {
         if (lateTrashReply!=null) {
             if (lateTrashReply.generation!=observations.generation()) lateTrashReply=null;
             else if (lateTrashReply.confirmed(observations)) {
-                context.session().recordFarmRemoval(ItemData.ROTTEN,lateTrashReply.quantity);
                 lateTrashReply=null;
             }
         }
@@ -332,7 +331,7 @@ public final class MinecraftActions implements ActionPort {
         // Only a short grounded harvest continuation can overlap a server ACK. Inventory,
         // machine, door and sleep operations continue to exclude all movement.
         if (harvesting && !HarvestMovementRules.mayOverlap(pending,intent,beforePlayer,world.player(),world.tick()-started,
-            context.profile().magnetOverflowHarvest && context.session().allows(context.profile(),Feature.HARVEST))) { stopMovement(); return; }
+            context.profile().continueHarvestWhenFull && context.session().allows(context.profile(),Feature.HARVEST))) { stopMovement(); return; }
         // Navigation cannot gain permission to jump or leave the approved farm/corridor.
         Pos feet=world.player().feet();
         if (!ProfileBounds.contains(context.profile(),feet) || intent.jump()) { stopMovement(); return; }

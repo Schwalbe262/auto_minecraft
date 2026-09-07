@@ -3,7 +3,7 @@ package dev.schwalbe.autovalley.core;
 import java.util.List;
 import java.util.Objects;
 
-/** Measures the authoritative reply, not the live inventory a magnet may already have refilled. */
+/** Measures the authoritative reply, not a live inventory that may already have refilled. */
 public final class InventoryAcknowledgements {
     private InventoryAcknowledgements() { }
     public static boolean same(ItemData a,ItemData b) {

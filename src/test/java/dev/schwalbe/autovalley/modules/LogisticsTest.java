@@ -123,59 +123,49 @@ class LogisticsTest {
         assertEquals(6,f.chests.get(near)[0].count()); assertTrue(f.savedOutputs.isEmpty());
     }
 
-    @Test void magnetRefillDrainsOnlyAcknowledgedStoredQuantityAndNeverCountsTheSameAckTwice() {
+    @Test void instantRefillDoesNotHideConfirmedStorageTransfers() {
         for (boolean confirmedCount:new boolean[]{false,true}) {
             Fixture f=new Fixture(); f.inventory[0]=tomato(0,64); f.tomatoRefills.add(tomato(0,64)); f.reportConfirmedCount=confirmedCount;
-            f.session.magnetHaulPending=true; f.session.magnetHaulRemaining.put(ItemData.TOMATO,128);
             Pos chest=f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY); TomatoStorageModule module=new TomatoStorageModule();
             while (f.history.stream().noneMatch(Action.QuickMove.class::isInstance)) { module.tick(f.context()); f.advance(); }
-            assertEquals(64,f.inventory[0].count(),"magnet instantly replaced the deposited stack");
-            assertEquals(128,f.session.magnetHaulRemaining.get(ItemData.TOMATO),"sending/receiving a packet alone does not settle the ledger");
+            assertEquals(64,f.inventory[0].count(),"automatic pickup instantly replaced the deposited stack");
             module.tick(f.context());
-            assertEquals(64,f.session.magnetHaulRemaining.get(ItemData.TOMATO)); assertTrue(f.session.magnetHaulPending);
             module.tick(f.context());
-            assertEquals(64,f.session.magnetHaulRemaining.get(ItemData.TOMATO),"polling pending next transfer cannot replay previous ACK");
             f.advance(); assertEquals(WorkResult.State.IDLE,f.run(module,30).state());
-            assertFalse(f.session.magnetHaulPending); assertTrue(f.session.magnetHaulRemaining.isEmpty());
             assertEquals(128,Arrays.stream(f.chests.get(chest)).mapToInt(ItemData::count).sum());
         }
     }
 
-    @Test void disappearedGroundItemsNeverClearTheLedgerOrAllowProductionAndSleep() {
+    @Test void groundItemsDoNotPreventProductionOrSleep() {
         Fixture f=new Fixture(); f.dayTime=13000; f.inventory[0]=tomato(0,3);
-        f.session.magnetHaulPending=true; f.session.magnetHaulRemaining.put(ItemData.TOMATO,64);
         f.ground.add(new GroundItem(1,.5,64,.5,tomato(0,61)));
         f.machine(PoiKind.WINE_KEG,0,false,false,false); f.machine(PoiKind.PRESERVES_JAR,1,false,false,false); f.poi(PoiKind.BED,2,null);
         AutomationEngine engine=new AutomationEngine(List.of(new MachineModule(Feature.WINE),new MachineModule(Feature.PRESERVES),new SleepModule()));
         engine.start(f.context()); engine.tick(f.context()); f.ground.clear();
         for (int i=0;i<200;i++) { f.advance(); engine.tick(f.context()); }
-        assertTrue(f.session.magnetHaulPending); assertEquals(64,f.session.magnetHaulRemaining.get(ItemData.TOMATO));
-        assertEquals(0,f.machineClicks()); assertFalse(f.sleeping); assertTrue(f.history.isEmpty());
+        assertEquals(1,f.machineClicks()); assertEquals(3,f.consumed); assertTrue(f.sleeping);
     }
 
-    @Test void realStorageMustFinishTheMagnetLedgerBeforeProductionAndSleepStart() {
+    @Test void heldStorageRunsBeforeProductionAndSleep() {
         Fixture f=new Fixture(); f.dayTime=13000; f.inventory[0]=tomato(0,64); f.tomatoRefills.add(tomato(0,64)); f.reportConfirmedCount=true;
-        f.session.magnetHaulPending=true; f.session.magnetHaulRemaining.put(ItemData.TOMATO,128);
         f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY); f.machine(PoiKind.WINE_KEG,1,false,false,false); f.poi(PoiKind.BED,2,null);
         AutomationEngine engine=new AutomationEngine(List.of(new TomatoStorageModule(),new MachineModule(Feature.WINE),new SleepModule()));
         engine.start(f.context());
         for (int i=0;i<250 && !f.sleeping;i++) {
             engine.tick(f.context());
-            if (f.session.magnetHaulPending) { assertEquals(0,f.machineClicks()); assertFalse(f.sleeping); }
             f.advance();
         }
-        assertTrue(f.session.magnetHaulRemaining.isEmpty()); assertFalse(f.session.magnetHaulPending);
         assertEquals(1,f.machineClicks()); assertEquals(3,f.consumed); assertTrue(f.sleeping);
     }
 
-    @Test void failedStorageAcknowledgementNeverSettlesTheMagnetLedger() {
-        Fixture f=new Fixture(); f.inventory[0]=tomato(0,64); f.session.magnetHaulPending=true;
-        f.session.magnetHaulRemaining.put(ItemData.TOMATO,64); f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY);
+    @Test void failedStorageAcknowledgementCannotCompleteTheDeposit() {
+        Fixture f=new Fixture(); f.inventory[0]=tomato(0,64);
+        Pos destination=f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY);
         TomatoStorageModule module=new TomatoStorageModule();
         while (!(f.action instanceof Action.QuickMove)) { module.tick(f.context()); if (!(f.action instanceof Action.QuickMove)) f.advance(); }
         f.cancel();
         assertEquals(WorkResult.State.BLOCKED,module.tick(f.context()).state());
-        assertEquals(64,f.session.magnetHaulRemaining.get(ItemData.TOMATO)); assertTrue(f.session.magnetHaulPending);
+        assertEquals(64,f.inventory[0].count()); assertTrue(Arrays.stream(f.chests.get(destination)).allMatch(ItemData::empty));
     }
 
     @Test void surplusShipsOnlyHeldFreshWineAfterEveryBirthCohortReserveIsCompletelyFull() {
@@ -256,7 +246,7 @@ class LogisticsTest {
         assertEquals(WorkResult.State.IDLE,f.run(module,60).state()); assertEquals(0,f.soldWine);
     }
 
-    @Test void destinationAcknowledgementConsumesAllowanceDespiteInstantMagnetRefill() {
+    @Test void destinationAcknowledgementConsumesAllowanceDespiteInstantInstantPickupRefill() {
         Fixture f=new Fixture(); f.inventory[0]=wine(8,5,0); f.refillAfterWineSale=wine(8,5,0);
         f.fullWineReserve(0,8,27); Pos bin=f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
         assertEquals(WorkResult.State.BLOCKED,f.run(new WineSurplusShippingModule(),100).state());
@@ -1066,7 +1056,7 @@ class LogisticsTest {
         assertTrue(f.navigationHistory.stream().filter(v -> v.target().equals(keg)).allMatch(v -> v.reach()==4.0));
     }
 
-    @Test void magnetCanCollectElevatedOutputWithoutAnyGroundLevelNavigation() {
+    @Test void automaticPickupCanCollectElevatedOutputWithoutAnyGroundLevelNavigation() {
         Fixture f=new Fixture(); f.inventory[0]=tomato(0,9); f.pickup=false;
         Pos keg=f.machine(PoiKind.PRESERVES_JAR,1,66,true,true,true);
         f.minimumReaches.put(keg,4.0); f.unstandable.add(keg.offset(0,0,-1));

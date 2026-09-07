@@ -108,7 +108,7 @@ class ServerObservationsTest {
         observations.fullMenu(4,List.of(ItemData.EMPTY,tomato(64)));
         long sent=observations.sequence();
         observations.fullMenu(4,List.of(tomato(64),ItemData.EMPTY)); // The one click's server reply.
-        observations.fullMenu(4,List.of(tomato(64),tomato(64))); // A magnet pickup, then full refresh.
+        observations.fullMenu(4,List.of(tomato(64),tomato(64))); // A later pickup, then full refresh.
         assertEquals(0,InventoryAcknowledgements.removed(before,observations.fullMenuSnapshotSince(4,sent).items(),1));
         var acknowledgements=observations.fullMenuSnapshotsSince(4,sent);
         assertEquals(2,acknowledgements.size());

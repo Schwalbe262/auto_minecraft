@@ -149,58 +149,9 @@ class EngineOneShotTest {
         assertTrue(engine.running()); assertEquals(1,f.navigationCalls,"only an explicit new run services the now-due machine");
     }
 
-    @Test void pendingMagnetHaulBlocksNewHarvestProductionAndSleepWithoutRunningHelpers() {
-        for (Feature feature:List.of(Feature.HARVEST,Feature.WINE,Feature.PRESERVES,Feature.SLEEP)) {
-            for (boolean ledgerOnly:new boolean[]{false,true}) {
-                Fixture f=new Fixture();
-                f.session.magnetHaulPending=!ledgerOnly;
-                if (ledgerOnly) f.session.magnetHaulRemaining.put(ItemData.TOMATO,8);
-                Module selected=new Module(feature,WorkResult.busy("unsafe"));
-                Module storage=new Module(Feature.TOMATO_STORAGE,WorkResult.busy("storage"));
-                AutomationEngine engine=new AutomationEngine(List.of(selected,storage));
-                engine.startOnce(f.context(),feature); engine.tick(f.context());
-                assertEquals(AutomationEngine.State.PAUSED,engine.state(),feature.name());
-                assertEquals(0,selected.calls); assertEquals(0,storage.calls); assertNull(f.session.oneShotFeature);
-                if (ledgerOnly) assertEquals(8,f.session.magnetHaulRemaining.get(ItemData.TOMATO));
-                else assertTrue(f.session.magnetHaulPending);
-            }
-        }
-    }
 
-    @Test void oneShotStorageAndDisposalMayResolvePendingHaulWithoutStartingOtherWork() {
-        for (Feature feature:List.of(Feature.TOMATO_STORAGE,Feature.DISPOSAL)) {
-            Fixture f=new Fixture(); f.session.magnetHaulPending=true;
-            f.session.magnetHaulRemaining.put(ItemData.TOMATO,8);
-            Module selected=new Module(feature,WorkResult.busy("resolving haul"));
-            Module wine=new Module(Feature.WINE,WorkResult.busy("must not run"));
-            AutomationEngine engine=new AutomationEngine(List.of(selected,wine));
-            engine.startOnce(f.context(),feature); engine.tick(f.context());
-            assertTrue(engine.running()); assertEquals(1,selected.calls); assertEquals(0,wine.calls);
-        }
-    }
 
-    @Test void harvestMayFinishSweepThatCreatedOverflowThenStopsWithLedgerIntact() {
-        Fixture f=new Fixture();
-        Module harvest=new Module(Feature.HARVEST,WorkResult.busy("overflow sweep"));
-        harvest.onTick=c -> { c.session().magnetHaulPending=true; c.session().magnetHaulRemaining.put(ItemData.TOMATO,8); };
-        Module storage=new Module(Feature.TOMATO_STORAGE,WorkResult.busy("must not run"));
-        AutomationEngine engine=new AutomationEngine(List.of(harvest,storage));
-        engine.startOnce(f.context(),Feature.HARVEST); engine.tick(f.context()); engine.tick(f.context());
-        assertEquals(2,harvest.calls); assertTrue(engine.running());
-        harvest.result=WorkResult.idle(); engine.tick(f.context());
-        assertEquals(AutomationEngine.State.COMPLETE,engine.state()); assertEquals(0,storage.calls);
-        assertTrue(f.session.magnetHaulPending); assertEquals(8,f.session.magnetHaulRemaining.get(ItemData.TOMATO));
-        engine.startOnce(f.context(),Feature.HARVEST); engine.tick(f.context());
-        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(3,harvest.calls);
-    }
 
-    @Test void newlyObservedPendingHaulPausesActiveProduction() {
-        Fixture f=new Fixture(); Module wine=new Module(Feature.WINE,WorkResult.busy("wine"));
-        AutomationEngine engine=new AutomationEngine(List.of(wine));
-        engine.startOnce(f.context(),Feature.WINE); engine.tick(f.context());
-        f.session.magnetHaulRemaining.put(ItemData.TOMATO,4); engine.tick(f.context());
-        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(1,wine.calls);
-    }
 
     @Test void disconnectedUnfocusedCursorAndOpenContainerAllRejectStart() {
         for (int reason=0;reason<4;reason++) {

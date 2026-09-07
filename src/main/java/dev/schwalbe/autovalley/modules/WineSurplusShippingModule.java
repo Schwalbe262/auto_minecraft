@@ -45,7 +45,7 @@ public final class WineSurplusShippingModule implements AutomationModule {
                     int transferred=destinationCount(c)-beforeDestination;
                     if (transferred<=0 || transferred>sentCount || transferred>beforeAllowance) return fail("Surplus wine destination increase was not confirmed");
                     WineSalePermit remaining=session.wineSalePermits.get(cohort);
-                    // The action adapter is the sole allowance consumer, including magnet refills.
+                    // The action adapter is the sole allowance consumer, including concurrent inventory refills.
                     if (remaining!=null && remaining.inventoryLimit()>beforeAllowance-transferred) return fail("Surplus wine allowance was not updated after transfer");
                     soldCount+=transferred;
                     stage=Stage.TRANSFER;
@@ -74,7 +74,7 @@ public final class WineSurplusShippingModule implements AutomationModule {
                 if (!started) {
                     if (MachineOutputLedger.hasPending(c)) return fail("Resolve pending machine output before selling surplus wine");
                     // A run checks its initial inventory cohorts once, not an unbounded
-                    // stream of new magnet pickups. Every cohort gets a fresh reserve scan.
+                    // stream of new item pickups. Every cohort gets a fresh reserve scan.
                     LinkedHashSet<Integer> initial=new LinkedHashSet<>();
                     for (ItemSlot item:c.world().inventory()) if (item.item().is(ItemData.WINE)) initial.add(item.item().year());
                     if (initial.size()>36) return fail("Too many wine cohorts in the current inventory");
