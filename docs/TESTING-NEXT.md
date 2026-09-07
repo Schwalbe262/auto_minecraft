@@ -409,3 +409,23 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
 - At this checkpoint the fix is built, not yet installed. The interrupted
   layout needs its audited remaining restoration before normal restart/resume.
   Live recovery and the requested long-duration stability check remain open.
+
+### Live recovery after the slot-refresh fix
+
+- The interrupted transaction's one remaining inverse SWAP was independently
+  audited and sent exactly once. Its exact full-menu server ACK restored all 55
+  torches to their original hotbar position with every other native slot
+  unchanged. The original failed action was not relabeled successful or replayed.
+- After normal restart into the 646-test build, a wine-production one-shot used
+  the remaining 18 tomatoes to finish exactly six remaining kegs. Its 33 native
+  tickets all succeeded, without a new warehouse inventory survey. All 384
+  registered kegs are working; the common deadline is six days after the final
+  confirmed feed. The interrupted batch's earlier 378 refills were not repeated.
+- A separate wine-storage one-shot deposited all 384 same-cohort bottles with
+  confirmed transfers of five times 64, then 63 and 1. Its nine tickets all
+  succeeded; no wine or tomatoes remained in inventory. Production-only and
+  storage-only one-shots are distinct operations.
+- A new continuous observation window began at **2026-09-07 20:14:56 UTC**.
+  Earlier interruption/setup time is excluded. At this checkpoint the requested
+  three-hour continuous window remains incomplete; later cycles still need
+  verification. Private raw inventory identities and coordinates are not published.
