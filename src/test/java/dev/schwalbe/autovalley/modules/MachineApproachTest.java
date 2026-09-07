@@ -27,10 +27,10 @@ class MachineApproachTest {
         WorkResult result=null;
         for (int n=0;n<15;n++) {
             result=f.step();
-            if (result.message().contains("Settling")) break;
+            if (result.message().contains("정지 안정화")) break;
             f.advance();
         }
-        assertNotNull(result); assertTrue(result.message().contains("Settling"));
+        assertNotNull(result); assertTrue(result.message().contains("정지 안정화"));
         for (int n=0;n<10;n++) f.step();
         assertEquals(0,f.uses); assertTrue(f.profile.pendingMachineOutputs.isEmpty());
         f.advance(); f.step(); assertEquals(0,f.uses);
@@ -40,13 +40,13 @@ class MachineApproachTest {
 
     @Test void reachLostWhileSettlingIsCheckedAgainBeforeWriteAheadRecord() {
         Fixture f=new Fixture(); f.equipped();
-        for (int n=0;n<15;n++) { if (f.step().message().contains("Settling")) break; f.advance(); }
+        for (int n=0;n<15;n++) { if (f.step().message().contains("정지 안정화")) break; f.advance(); }
         f.reachable=false;
         f.advance(); f.step(); f.advance();
         WorkResult result=f.step();
         assertEquals(0,f.uses); assertEquals(0,f.checkpoints);
         assertTrue(f.profile.pendingMachineOutputs.isEmpty());
-        assertTrue(result.message().contains("Reapproaching"));
+        assertTrue(result.message().contains("상호작용 위치 재접근"));
     }
 
     @Test void highRackStillUsesTheFullNativeFourBlockReach() {
@@ -61,7 +61,7 @@ class MachineApproachTest {
 
     @Test void unloadedTargetCannotCreateDebtOrSendAUse() {
         Fixture f=new Fixture(); f.equipped();
-        for (int n=0;n<15;n++) { if (f.step().message().contains("Settling")) break; f.advance(); }
+        for (int n=0;n<15;n++) { if (f.step().message().contains("정지 안정화")) break; f.advance(); }
         f.loaded=false;
         for (int n=0;n<5;n++) { f.advance(); f.step(); }
         assertEquals(0,f.uses); assertEquals(0,f.checkpoints);

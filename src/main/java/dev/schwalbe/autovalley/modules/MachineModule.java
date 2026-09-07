@@ -48,7 +48,7 @@ public final class MachineModule implements AutomationModule {
         if (unresolvedInteraction != null) return WorkResult.blocked(unresolvedInteraction);
         if (ticket >= 0) {
             ActionOutcome result = c.actions().outcome(ticket);
-            if (!result.done()) return WorkResult.busy("Waiting for production acknowledgement");
+            if (!result.done()) return WorkResult.busy(progressStatus() + " · 서버 응답 대기");
             ticket = -1;
             if (!result.success()) return fail("Production action failed: " + result.message());
             switch (pending) {
@@ -84,7 +84,7 @@ public final class MachineModule implements AutomationModule {
         }) {
             beginStockScan(c);
             if (c.world().menu().container()) close(c,Stage.SOURCE);
-            return WorkResult.busy("Refreshing tomato stock for the new game day");
+            return WorkResult.busy(progressStatus() + " · 날짜가 바뀌어 재확인");
         }
         switch (stage) {
             case START -> {
@@ -95,16 +95,16 @@ public final class MachineModule implements AutomationModule {
             }
             case MACHINE -> {
                 if (machineIndex >= machines.size()) { clearRun(); return WorkResult.idle(); }
-                if (closeIfNeeded(c,Stage.MACHINE)) return WorkResult.busy("Closing container before production");
+                if (closeIfNeeded(c,Stage.MACHINE)) return WorkResult.busy(machineStatus("상자 닫는 중"));
                 Navigation.Result nav = c.navigation().moveTo(target().pos(),4.0,c);
                 if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Registered production machine cannot be reached"));
-                if (nav != Navigation.Result.ARRIVED) return WorkResult.busy("Approaching production machine");
+                if (nav != Navigation.Result.ARRIVED) return WorkResult.busy(machineStatus("설비로 이동 중"));
                 BlockData block = machine(c);
                 if (!block.id().equals(blockId())) return fail("Registered production machine no longer matches its type");
                 if (!block.properties().containsKey("working") || !block.properties().containsKey("mature")) return fail("Machine state is not synchronized");
                 if (block.flag("working") && !block.flag("mature")) {
                     if (morningSettled(c)) schedule(c,target(),1);
-                    machineIndex++; return WorkResult.busy("Production in progress; checking next machine");
+                    machineIndex++; return WorkResult.busy(machineStatus("생산 중인 설비를 건너뛰고 다음 확인"));
                 }
                 cost = feature == Feature.WINE || block.flag("upgraded") ? 3 : 5;
                 grade = -1; inputMergeAttempts=0;
@@ -231,10 +231,15 @@ public final class MachineModule implements AutomationModule {
                 c.actions().stopMovement();
                 if (c.world().menu().container() || !c.world().menu().carried().empty()) return fail("Close inventory screens and clear the cursor before production");
                 ItemSlot selected = c.world().inventory().stream().filter(s -> s.inventoryIndex() == hotbar).findFirst().orElse(null);
+                ItemSlot prepared = feeding ? heldCandidate(c) : null;
                 boolean correct = feeding ? selected != null && ModuleSupport.tomatoGrade(selected.item(),grade) && selected.item().count() >= cost
+                    && (selected.item().count()>cost || prepared!=null && (prepared.inventoryIndex()==hotbar || prepared.item().count()<=cost))
                     : selected == null || selected.item().empty();
                 if (!correct) {
-                    ItemSlot ingredient = feeding ? heldCandidate(c) : emptySlot(c);
+                    // Replace the last recipe in the hand before a new output can occupy
+                    // that slot. Never SWAP the hand with itself or repeatedly shuffle it.
+                    ItemSlot ingredient = feeding ? prepared : emptySlot(c);
+                    if (feeding && ingredient==null) { stage=Stage.CHOOSE; break; }
                     if (ingredient == null) return fail(feeding ? "Selected-grade tomato stack is no longer available" : "A free inventory slot is needed for empty-hand collection");
                     submit(c,new Action.SwapHotbar(ingredient.inventoryIndex(),hotbar),Pending.SWAP); break;
                 }
@@ -256,10 +261,10 @@ public final class MachineModule implements AutomationModule {
                 // immediately before a write-ahead obligation or any machine dispatch.
                 if (useSettleAt < 0) useSettleAt = c.world().tick();
                 if (c.world().tick() - useSettleAt < 2)
-                    return WorkResult.busy("Settling before production interaction");
+                    return WorkResult.busy(machineStatus("상호작용 전 정지 안정화"));
                 if (!c.world().loaded(target().pos()) || !c.world().canInteract(target().pos(),4.0)) {
                     useSettleAt = -1; c.navigation().reset(); stage = Stage.RETURN;
-                    return WorkResult.busy("Reapproaching production machine before interaction");
+                    return WorkResult.busy(machineStatus("상호작용 위치 재접근"));
                 }
                 inputBefore = ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
                 // submit() can dispatch immediately: preserves obligations reach disk first.
@@ -302,14 +307,14 @@ public final class MachineModule implements AutomationModule {
                 Pos observed = c.world().tick()-verifySince < OUTPUT_SETTLE_TICKS ? null : observedPickup(c);
                 if (observed == null) {
                     c.actions().stopMovement();
-                    return WorkResult.busy("Waiting for the completed product to fall or be picked up");
+                    return WorkResult.busy(machineStatus("완성된 병조림 회수 대기"));
                 }
                 // Elevated outputs may still be falling or temporarily unreachable. A failed
                 // path is not a failed interaction: wait for another observation, never click again.
                 Navigation.Result nav = c.navigation().moveTo(observed,0.9,c);
                 if (nav == Navigation.Result.BLOCKED) {
                     c.actions().stopMovement();
-                    return WorkResult.busy("Waiting for a reachable completed product");
+                    return WorkResult.busy(machineStatus("병조림을 회수할 수 있는 위치 확인"));
                 }
             }
             case OUTPUT -> {
@@ -327,7 +332,33 @@ public final class MachineModule implements AutomationModule {
                 machineIndex++; stage=Stage.MACHINE;
             }
         }
-        return WorkResult.busy("Servicing " + (feature == Feature.WINE ? "wine kegs" : "preserves jars"));
+        return WorkResult.busy(progressStatus());
+    }
+
+    /** Presentation only: reporting progress must never open, cache, reset, or skip a source. */
+    private String progressStatus() {
+        if (pending==Pending.OPEN_SCAN || pending==Pending.CLOSE && afterClose==Stage.SOURCE
+                || stage==Stage.SOURCE || stage==Stage.SNAPSHOT)
+            return "토마토 재고 확인 " + Math.min(sourceIndex,sources.size()) + "/" + sources.size() + " — 가장 많은 등급 선택";
+        if (pending==Pending.OPEN_FETCH || pending==Pending.WITHDRAW || stage==Stage.FETCH_SOURCE || stage==Stage.FETCH)
+            return "재료 가져오는 중 — " + (grade<0 ? "토마토" : "등급 " + grade + " 토마토") + " · " + machineStatus("보충 준비");
+        if (pending==Pending.INPUT_MERGE) return machineStatus("선택한 등급의 재료 합치는 중");
+        if (pending==Pending.OUTPUT_MERGE) return machineStatus("인벤토리 산출물 정리 중");
+        return machineStatus(switch (stage) {
+            case START -> "처리할 설비 확인";
+            case MACHINE -> "이동·생산 상태 확인";
+            case CHOOSE -> "가장 많은 토마토 등급 선택";
+            case RETURN -> "재료를 들고 설비로 돌아가는 중";
+            case EQUIP -> "사용할 재료 준비";
+            case VERIFY -> "재료 소비·생산 상태 확인";
+            case PICKUP -> "완성된 병조림 회수 확인";
+            case OUTPUT -> "인벤토리 산출물 정리 중";
+            case SOURCE, SNAPSHOT, FETCH_SOURCE, FETCH -> "재료 확인";
+        });
+    }
+    private String machineStatus(String phase) {
+        int current=machines.isEmpty() ? 0 : Math.min(machineIndex+1,machines.size());
+        return (feature==Feature.WINE ? "와인통 " : "절임통 ") + current + "/" + machines.size() + " — " + phase;
     }
 
     /** Largest total stock wins, with lower grade winning ties. Counts include synchronized chests and player inventory. */
@@ -430,7 +461,15 @@ public final class MachineModule implements AutomationModule {
         stock.put(poi,counts); return null;
     }
     private ItemSlot heldCandidate(Context c) {
-        return ModuleSupport.inventoryItem(c,i -> ModuleSupport.tomatoGrade(i,grade) && i.count() >= cost);
+        List<ItemSlot> held=c.world().inventory().stream()
+            .filter(s -> s.inventoryIndex()>=0 && s.inventoryIndex()<36 && ModuleSupport.tomatoGrade(s.item(),grade)).toList();
+        ItemSlot refill=held.stream().filter(s -> s.item().count()>cost).findFirst().orElse(null);
+        if (refill!=null) return refill;
+        // More work and known same-grade supplies warrant the existing bounded merge
+        // or fresh-source fetch before emptying the hand. A genuinely final recipe
+        // keeps the old exact-cost completion semantics; it needs no later refill.
+        if (grade>=0 && remainingIngredientDemand(c)>cost && totals(c)[grade]>cost) return null;
+        return held.stream().filter(s -> s.item().count()>=cost).findFirst().orElse(null);
     }
     private ItemSlot emptySlot(Context c) {
         for (int i = 0; i < 36; i++) {

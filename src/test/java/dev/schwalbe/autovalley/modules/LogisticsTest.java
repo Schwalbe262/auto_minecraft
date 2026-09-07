@@ -11,6 +11,57 @@ class LogisticsTest {
     private static ItemData preserves(int count) { return new ItemData(ItemData.PRESERVES,count,0,null,false,99); }
     private static ItemData wine(int year,int count,int grade) { return new ItemData(ItemData.WINE,count,grade,year,false,999); }
 
+    @Test void lastRecipeInHandIsReplacedByALargerHeldSameGradeStackBeforeMachineUse() {
+        for (int recipe=0;recipe<3;recipe++) {
+            Feature feature=recipe==0 ? Feature.WINE : Feature.PRESERVES;
+            int cost=recipe==1 ? 5 : 3;
+            Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,cost); f.inventory[9]=tomato(2,60);
+            f.inventory[10]=tomato(0,58);
+            f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,10,true,true,recipe==2);
+            AutomationEngine engine=isolatedMachineEngine(feature); engine.startOnce(f.context(),feature); f.runUntilStopped(engine,100);
+            assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+            assertEquals(List.of(60),f.handCountsAtMachineUse); assertEquals(List.of(2),f.usedGrades);
+            assertEquals(60-cost,f.inventory[1].count()); assertTrue(f.inventory[1].is(ItemData.TOMATO));
+            assertEquals(List.of(new Action.SwapHotbar(9,1)),f.history.stream().filter(Action.SwapHotbar.class::isInstance).toList());
+            assertTrue(f.inventory[0].hoe()); assertEquals(58,f.inventory[10].count()); assertEquals(0,f.tomatoWithdrawals);
+        }
+    }
+
+    @Test void knownSourceIsFetchedBeforeUsingTheLastHandRecipeWhenMoreMachinesRemain() {
+        Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,3);
+        f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,64));
+        f.machine(PoiKind.WINE_KEG,10,false,false,false); f.machine(PoiKind.WINE_KEG,11,false,false,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE); engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,200);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(1,f.tomatoWithdrawals); assertEquals(2,f.machineClicks()); assertEquals(6,f.consumed);
+        assertTrue(f.handCountsAtMachineUse.stream().allMatch(count -> count>3));
+        assertTrue(f.inventory[1].is(ItemData.TOMATO)); assertTrue(f.inventory[0].hoe());
+        assertTrue(f.history.stream().noneMatch(a -> a instanceof Action.SwapHotbar swap && swap.inventoryIndex()==swap.hotbarSlot()));
+    }
+
+    @Test void twoHeldExactRecipesMergeOnceAndDoNotCreateAnEquipShuffleLoop() {
+        Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,3); f.inventory[9]=tomato(2,3);
+        f.machine(PoiKind.WINE_KEG,10,false,false,false); f.machine(PoiKind.WINE_KEG,11,false,false,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE); engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(List.of(6,3),f.handCountsAtMachineUse); assertEquals(6,f.consumed);
+        assertEquals(1,f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count());
+        assertTrue(f.history.stream().noneMatch(a -> a instanceof Action.SwapHotbar swap && swap.inventoryIndex()==swap.hotbarSlot()));
+        assertEquals(0,f.tomatoWithdrawals); assertTrue(f.inventory[0].hoe());
+    }
+
+    @Test void genuinelyFinalExactRecipeStillCompletesWithoutARefillOrAnotherJob() {
+        for (Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) {
+            Fixture f=new Fixture(); f.equipHoe(); int cost=feature==Feature.WINE ? 3 : 5; f.inventory[1]=tomato(2,cost);
+            f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,10,true,true,false);
+            AutomationEngine engine=isolatedMachineEngine(feature); engine.startOnce(f.context(),feature); f.runUntilStopped(engine,100);
+            assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status()); assertEquals(cost,f.consumed);
+            assertEquals(List.of(cost),f.handCountsAtMachineUse); assertEquals(1,f.machineClicks());
+            assertTrue(f.history.stream().noneMatch(a -> a instanceof Action.SwapHotbar || a instanceof Action.QuickMove || a instanceof Action.ConsolidateInventory));
+            assertTrue(f.inventory[0].hoe());
+        }
+    }
+
     @Test void layoutChoosesLargestActualGradeThenWithdrawsMisplacedLegacyStockBeforeNearerCorrectStock() {
         for (Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) {
             Fixture f=new Fixture();
@@ -1523,6 +1574,7 @@ class LogisticsTest {
         final List<Integer> usedGrades = new ArrayList<>();
         final List<Pos> tomatoWithdrawalSources = new ArrayList<>();
         final List<Integer> tomatoesAtMachineUse=new ArrayList<>(), emptySlotsAfterWithdraw=new ArrayList<>();
+        final List<Integer> handCountsAtMachineUse=new ArrayList<>();
         final List<NavVisit> navigationHistory=new ArrayList<>();
         final Map<Pos,Double> minimumReaches=new HashMap<>();
         final Map<Pos,Double> standingHeights=new HashMap<>();
@@ -1669,6 +1721,7 @@ class LogisticsTest {
         }
         private void applyMachine(Action.UseBlock use) {
             tomatoesAtMachineUse.add(ModuleSupport.count(context(),i -> i.is(ItemData.TOMATO)));
+            handCountsAtMachineUse.add(inventory[selected].count());
             BlockData block=blocks.get(use.pos());
             boolean wineMachine=block.id().equals("society:wine_keg");
             int batch=wineMachine || block.flag("upgraded") ? 3 : 5;
