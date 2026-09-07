@@ -11,7 +11,7 @@ $tag = "v$modVersion"
 $assetName = "autovalley-$modVersion.jar"
 $assetPath = Join-Path $repoRoot "build\libs\$assetName"
 $releaseNotes = "Client-only Forge 1.20.1 farming assistant for Society 4.1.4. This is a prerelease; see README for setup and current limitations.`n`nInstall the attached $assetName into the Society instance's mods directory, replacing the previous Auto Valley JAR after keeping a backup. Restart Minecraft to load the update. Ctrl+F8 configures; F8 toggles; Pause stops."
-if ($ReleaseNotesPath) { $releaseNotes = Get-Content -LiteralPath (Resolve-Path -LiteralPath $ReleaseNotesPath).Path -Raw -Encoding UTF8 }
+if ($ReleaseNotesPath) { $releaseNotes = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $ReleaseNotesPath).Path,[Text.Encoding]::UTF8) }
 
 # Fail locally before any publication if the artifact or checkout is not the requested version.
 if ($Release) {
