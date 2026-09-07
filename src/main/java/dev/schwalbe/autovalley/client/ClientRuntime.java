@@ -52,6 +52,18 @@ public final class ClientRuntime {
     public String recordingStatus() { return recorder.status(); }
     public boolean recordingActive() { return recorder.capturing(); }
     public String executionMode() { return engine.mode().name(); }
+    public List<PendingMachineOutput> pendingMachineOutputs() { return List.copyOf(profile.pendingMachineOutputs.values()); }
+    public boolean acknowledgePendingOutput(String id,MachineOutputLedger.Resolution reason) {
+        pause("산출물 수동 처리 확인");
+        if (profileKey==null || persistenceError!=null) { notifyUser("접속 상태와 설정 저장 오류를 먼저 확인하세요."); return false; }
+        try {
+            MachineOutputLedger.resolveByUser(context,id,reason);
+            notifyUser(reason==MachineOutputLedger.Resolution.CONFIRMED_LOST
+                ? "선택한 산출물의 유실 확인을 저장했습니다. 자동화는 정지 상태입니다."
+                : "선택한 산출물의 수동 회수·정리 확인을 저장했습니다. 자동화는 정지 상태입니다.");
+            return true;
+        } catch (RuntimeException e) { notifyUser("처리 확인을 저장하지 못했습니다. 미회수 항목을 보존합니다."); return false; }
+    }
     public void startRecording() {
         pause("직접 플레이 기록 준비");
         recorder.start();
@@ -111,6 +123,8 @@ public final class ClientRuntime {
         if (attack) attackFenceUntil=world.tick()+3;
         pause("직접 조작을 감지해 일시정지했습니다.");
     }
+    /** Called before manual item interactions, including while OFF; a later count is no longer causal evidence. */
+    public void manualOutputInteraction() { MachineOutputLedger.invalidateLiveEvidence(context); }
     public void openSettings() { pause("설정 중"); mc.setScreen(new ValleyScreen()); }
     public void toggleFeature(Feature feature) { pause("기능 설정 변경"); profile.enabled.put(feature,!profile.enabled(feature)); saveProfile(); }
     public void saveProfile() {
@@ -136,7 +150,11 @@ public final class ClientRuntime {
         try { saveProfile(); notifyUser("경유지를 저장했습니다."); }
         catch (RuntimeException e) { profile.pois.remove(profile.pois.size()-1); notifyUser(e.getMessage()); }
     }
-    private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest); }
+    private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest,profile.pendingMachineOutputs,profile.machineOutputResolutions); }
+    private void checkpointMachineState() {
+        try { saveProfile(); }
+        catch (RuntimeException e) { persistenceError=e.getMessage(); throw e; }
+    }
     private void updateBackgroundPause() {
         if (running() && profile.allowBackground) {
             if (savedPauseOnLostFocus==null) savedPauseOnLostFocus=mc.options.pauseOnLostFocus;
@@ -163,6 +181,16 @@ public final class ClientRuntime {
         String key=ProfileStore.key(identity);
         Connection current=mc.getConnection().getConnection();
         if (!key.equals(connectionKey) || current!=connection) connect(key,current);
+        // A manual menu may move an unrelated bottle before the next observation. Its
+        // opening permanently invalidates live count evidence; closing it cannot restore it.
+        boolean managedContainer=actions.ownsContainer() || actions.openingContainer();
+        boolean manualScreen=mc.screen!=null && !(mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen)
+            && !(mc.screen instanceof ValleyScreen) && !mc.player.isSleeping() && !managedContainer;
+        if (manualScreen || world.menu().container() && !managedContainer) manualOutputInteraction();
+        // Observe recovery while paused too, before any control request or consumer
+        // can move the bottle out of inventory. Reconnect has no live proof tokens.
+        if (persistenceError==null) try { MachineOutputLedger.reconcile(context); }
+        catch (RuntimeException e) { pause("산출물 회수 확인 저장 실패 — 자동화 중지"); }
         recorder.tick();
         ClientControl.tick(this);
         if (running() && anglesValid && mc.isWindowActive() && wasFocused && !mc.player.isSleeping() && !wasSleeping && !actions.expectingSleep()
@@ -202,7 +230,7 @@ public final class ClientRuntime {
         profileKey=key; connectionKey=key; connection=current; persistenceError=null;
         try { profile=store.load(key); }
         catch (IOException e) { profile=new Profile(); persistenceError="기존 설정 파일을 읽지 못했습니다. 원본을 보존하고 자동화를 중지합니다."; }
-        context=new Context(world,actions,navigator,profile); actions.context(context);
+        context=new Context(world,actions,navigator,profile,new SessionState(),this::checkpointMachineState); actions.context(context);
         observations.clear(); PacketObserver.install(current,observations,() -> attackFence,recorder);
         engine.stop(context,AutomationEngine.State.OFF,"OFF — Ctrl+F8 설정 / F8 시작");
         actions.enabled(false); anglesValid=false; savedScheduleHash=scheduleHash();

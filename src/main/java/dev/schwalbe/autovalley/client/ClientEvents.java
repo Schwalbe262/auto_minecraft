@@ -21,8 +21,13 @@ public final class ClientEvents {
         runtime().tick();
     }
     @SubscribeEvent public void keyboard(InputEvent.Key event) {
-        if (event.getAction()!=GLFW.GLFW_PRESS || !runtime().running()) return;
+        if (event.getAction()!=GLFW.GLFW_PRESS) return;
         var input=InputConstants.getKey(event.getKey(),event.getScanCode());
+        var options=Minecraft.getInstance().options;
+        if (options.keyUse.isActiveAndMatches(input) || options.keyAttack.isActiveAndMatches(input)
+            || options.keyDrop.isActiveAndMatches(input) || options.keySwapOffhand.isActiveAndMatches(input)
+            || options.keyInventory.isActiveAndMatches(input)) runtime().manualOutputInteraction();
+        if (!runtime().running()) return;
         if (ClientKeys.TOGGLE.isActiveAndMatches(input) || ClientKeys.SETTINGS.isActiveAndMatches(input)
             || ClientKeys.STOP.isActiveAndMatches(input) || ClientKeys.WAYPOINT.isActiveAndMatches(input)) return;
         if (event.getKey()==GLFW.GLFW_KEY_LEFT_CONTROL || event.getKey()==GLFW.GLFW_KEY_RIGHT_CONTROL) return;
@@ -32,14 +37,22 @@ public final class ClientEvents {
         if (attack) Minecraft.getInstance().options.keyAttack.setDown(false);
     }
     @SubscribeEvent public void mouse(InputEvent.MouseButton.Pre event) {
-        if (event.getAction()==GLFW.GLFW_PRESS && runtime().running()) {
+        if (event.getAction()==GLFW.GLFW_PRESS) {
+            runtime().manualOutputInteraction();
+            if (!runtime().running()) return;
             boolean attack=event.getButton()==GLFW.GLFW_MOUSE_BUTTON_LEFT || Minecraft.getInstance().options.keyAttack.matchesMouse(event.getButton());
             runtime().manualInput(attack);
             if (attack) event.setCanceled(true);
         }
     }
-    @SubscribeEvent public void scroll(InputEvent.MouseScrollingEvent event) { if (runtime().running()) runtime().manualInput(false); }
+    @SubscribeEvent public void scroll(InputEvent.MouseScrollingEvent event) {
+        runtime().manualOutputInteraction();
+        if (runtime().running()) runtime().manualInput(false);
+    }
     @SubscribeEvent public void interaction(InputEvent.InteractionKeyMappingTriggered event) {
+        // This event belongs to vanilla key/mouse use, not direct gameMode.useItemOn calls.
+        runtime().manualOutputInteraction();
+        if (runtime().running()) runtime().manualInput(event.isAttack());
         if (event.isAttack() && runtime().blockAttacks()) { event.setCanceled(true); event.setSwingHand(false); }
     }
     @SubscribeEvent public void movement(MovementInputUpdateEvent event) {

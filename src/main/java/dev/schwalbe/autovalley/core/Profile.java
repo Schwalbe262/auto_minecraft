@@ -3,7 +3,7 @@ package dev.schwalbe.autovalley.core;
 import java.util.*;
 
 public final class Profile {
-    public int schemaVersion = 1;
+    public int schemaVersion = 2;
     public List<Poi> pois = new ArrayList<>();
     public List<Farm> farms = new ArrayList<>();
     public Map<Feature, Boolean> enabled = new EnumMap<>(Feature.class);
@@ -23,6 +23,8 @@ public final class Profile {
     public int wineCycleDays = 6;
     public int preservesCycleDays = 3;
     public Map<String, Long> nextEligibleDay = new HashMap<>();
+    public Map<String,PendingMachineOutput> pendingMachineOutputs = new LinkedHashMap<>();
+    public List<MachineOutputLedger.ResolutionEntry> machineOutputResolutions = new ArrayList<>();
     public long lastSeenDay = -1;
     public Map<String,Look> disposalDirections = new HashMap<>();
     public static String positionKey(Pos pos) { return pos.x()+":"+pos.y()+":"+pos.z(); }

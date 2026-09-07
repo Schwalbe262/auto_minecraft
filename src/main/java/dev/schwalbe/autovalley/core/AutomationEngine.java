@@ -47,6 +47,9 @@ public final class AutomationEngine {
         if (!c.profile().allowBackground && !c.world().player().focused()) { status="Focus the game first"; return false; }
         if (c.world().menu()==null || !c.world().menu().carried().empty()) { status="Put down the item on the cursor first"; return false; }
         if (c.world().menu().container()) { status="Close the container before starting"; return false; }
+        try { MachineOutputLedger.reconcile(c); }
+        catch (RuntimeException e) { stop(c,State.ERROR,"Could not save machine output verification; no work started"); return false; }
+        if (MachineOutputLedger.hasPending(c)) { status=pendingOutputMessage(c); return false; }
         retryAt=0;
         state=State.RUNNING;
         status="Starting";
@@ -59,6 +62,7 @@ public final class AutomationEngine {
         blockedThisSweep.clear();
         active=null;
         c.session().oneShotFeature=null;
+        c.session().activeMachineOutputId=null;
         state=next;
         status=reason;
     }
@@ -70,11 +74,16 @@ public final class AutomationEngine {
         if (player.health()<=4 || player.food()<=4) { stop(c,State.PAUSED,"Low health or hunger: take over manually"); return; }
         if (c.world().tick()<retryAt) return;
         try {
+            MachineOutputLedger.reconcile(c);
+            if (MachineOutputLedger.hasPending(c) && (active==null || !MachineOutputLedger.ownsActive(c,active.feature()))) {
+                stop(c,State.PAUSED,pendingOutputMessage(c)); return;
+            }
             if (mode==RunMode.ONCE) { tickOnce(c); return; }
             if (active!=null && !c.profile().enabled(active.feature())) { stop(c,State.PAUSED,"Feature was disabled"); return; }
             if (active!=null) {
                 WorkResult result=active.tick(c);
                 if (result.state()==WorkResult.State.BUSY) { state=State.RUNNING; status=result.message(); return; }
+                if (MachineOutputLedger.hasPending(c)) { stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return; }
                 c.actions().stopMovement();
                 c.navigation().reset();
                 if (result.state()==WorkResult.State.BLOCKED) {
@@ -97,6 +106,7 @@ public final class AutomationEngine {
                 if (module.feature()==Feature.PRESERVES && wineBlocked) continue;
                 WorkResult result=module.tick(c);
                 if (result.state()==WorkResult.State.BUSY) { active=module; state=State.RUNNING; status=result.message(); return; }
+                if (MachineOutputLedger.hasPending(c)) { stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return; }
                 if (result.state()==WorkResult.State.BLOCKED) {
                     blockedThisSweep.put(module,result.message());
                     if (blocked==null) blocked=result.message();
@@ -122,6 +132,9 @@ public final class AutomationEngine {
             return;
         }
         WorkResult result=active.tick(c);
+        if (result.state()!=WorkResult.State.BUSY && MachineOutputLedger.hasPending(c)) {
+            stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return;
+        }
         switch (result.state()) {
             case BUSY -> { state=State.RUNNING; status="One-shot " + oneShotFeature + ": " + result.message(); }
             case IDLE -> stop(c,State.COMPLETE,"One-shot " + oneShotFeature + " complete: no eligible work remains");
@@ -130,6 +143,9 @@ public final class AutomationEngine {
     }
     private static boolean hasPendingHaul(Context c) {
         return c.session().magnetHaulPending || !c.session().magnetHaulRemaining.isEmpty();
+    }
+    private static String pendingOutputMessage(Context c) {
+        return "미회수 산출물 "+c.profile().pendingMachineOutputs.size()+"건 — Ctrl+F8 → 실행·기록에서 회수 상태를 확인하세요";
     }
     private static boolean needsCompletedHaul(Feature feature) {
         return feature==Feature.WINE || feature==Feature.PRESERVES || feature==Feature.SLEEP;

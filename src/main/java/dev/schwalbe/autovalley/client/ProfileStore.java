@@ -44,7 +44,7 @@ public final class ProfileStore {
         return directory.resolve(key+".json");
     }
     public static void validate(Profile profile) {
-        if (profile==null || profile.schemaVersion!=1 || profile.pois==null || profile.farms==null || profile.enabled==null
+        if (profile==null || (profile.schemaVersion!=1 && profile.schemaVersion!=2) || profile.pois==null || profile.farms==null || profile.enabled==null
             || profile.nextEligibleDay==null || profile.disposalDirections==null) throw new IllegalArgumentException("Unsupported or incomplete profile");
         if (profile.pois.size()>4096) throw new IllegalArgumentException("Too many registered locations");
         Set<String> farms=new HashSet<>();
@@ -64,6 +64,10 @@ public final class ProfileStore {
             || profile.sleepAtTick<12000 || profile.sleepAtTick>23000) throw new IllegalArgumentException("Profile settings outside supported range");
         for (var entry:profile.nextEligibleDay.entrySet()) if (entry.getKey()==null || entry.getValue()==null || entry.getValue()<0) throw new IllegalArgumentException("Invalid scheduled date");
         for (Look look:profile.disposalDirections.values()) if (look==null || !Float.isFinite(look.yaw()) || !Float.isFinite(look.pitch()) || Math.abs(look.pitch())>90) throw new IllegalArgumentException("Invalid disposal direction");
+        MachineOutputLedger.validate(profile);
         for (Feature feature:Feature.values()) profile.enabled.putIfAbsent(feature,true);
+        // Old clients reject schema 2 instead of silently ignoring an unresolved output.
+        // Legacy schema 1 is upgraded in memory only after all validation succeeds.
+        profile.schemaVersion=2;
     }
 }

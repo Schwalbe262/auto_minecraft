@@ -17,10 +17,11 @@ public final class MachineModule implements AutomationModule {
     private static final int OUTPUT_SETTLE_TICKS = 5;
     private boolean stockReady, freshForHaul;
     private long stockDay, stockTick;
-    private int machineIndex, sourceIndex, containerId = -1, grade = -1, cost, hotbar, inputBefore, outputBefore, withdrawalBefore;
+    private int machineIndex, sourceIndex, containerId = -1, grade = -1, cost, hotbar, inputBefore, withdrawalBefore;
     private Poi source;
     private boolean collected, feeding;
     private String unresolvedInteraction;
+    private String outputOperationId;
 
     public MachineModule(Feature feature) {
         if (feature != Feature.WINE && feature != Feature.PRESERVES) throw new IllegalArgumentException("Machine feature must be WINE or PRESERVES");
@@ -34,6 +35,8 @@ public final class MachineModule implements AutomationModule {
     private BlockData machine(Context c) { return c.world().block(target().pos()); }
 
     @Override public WorkResult tick(Context c) {
+        if (MachineOutputLedger.hasPending(c) && (outputOperationId==null || !MachineOutputLedger.ownsActive(c,feature)))
+            return WorkResult.blocked("Resolve the pending machine output before starting another production run");
         if (unresolvedInteraction != null) return WorkResult.blocked(unresolvedInteraction);
         if (ticket >= 0) {
             ActionOutcome result = c.actions().outcome(ticket);
@@ -188,7 +191,8 @@ public final class MachineModule implements AutomationModule {
                 if (collected && c.world().groundItems().stream().anyMatch(g -> g.item().is(outputId())))
                     return fail("Pick up previously dropped "+outputId()+" before collecting another completed machine");
                 inputBefore = ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
-                outputBefore = ModuleSupport.count(c,i -> i.is(outputId()));
+                // submit() can dispatch immediately: the durable obligation must reach disk first.
+                if (collected) outputOperationId=MachineOutputLedger.prepare(c,feature,target().pos()).id();
                 submit(c,new Action.UseBlock(target().pos(),Action.Use.MACHINE),Pending.USE);
             }
             case VERIFY -> {
@@ -199,12 +203,18 @@ public final class MachineModule implements AutomationModule {
                 if (inputConfirmed && stateConfirmed) {
                     if (feeding) freshForHaul = false;
                     schedule(c,target(),feeding ? (feature == Feature.WINE ? c.profile().wineCycleDays : c.profile().preservesCycleDays) : 1);
-                    if (collected) stage = Stage.PICKUP;
+                    if (collected) {
+                        MachineOutputLedger.confirmMachine(c,outputOperationId);
+                        stage = Stage.PICKUP;
+                    }
                     else { machineIndex++; stage = Stage.MACHINE; }
                 } else if (c.world().tick() - verifySince > c.profile().interactionTimeoutTicks) return fail("Production input or machine state did not synchronize; inspect the machine");
             }
             case PICKUP -> {
-                if (ModuleSupport.count(c,i -> i.is(outputId())) > outputBefore) { machineIndex++; stage = Stage.MACHINE; break; }
+                MachineOutputLedger.reconcile(c);
+                if (!MachineOutputLedger.isPending(c,outputOperationId)) {
+                    outputOperationId=null; machineIndex++; stage = Stage.MACHINE; break;
+                }
                 if (c.world().tick() - verifySince > c.profile().interactionTimeoutTicks) return fail("Completed product was not picked up; inspect the machine output side");
                 Pos observed = c.world().tick()-verifySince < OUTPUT_SETTLE_TICKS ? null : observedPickup(c);
                 if (observed == null) {
@@ -320,11 +330,14 @@ public final class MachineModule implements AutomationModule {
     private void close(Context c, Stage next) { afterClose = next; submit(c,new Action.CloseContainer(c.world().menu().id()),Pending.CLOSE); }
     private boolean closeIfNeeded(Context c, Stage next) { if (!c.world().menu().container()) return false; close(c,next); return true; }
     private WorkResult fail(String message) {
-        // A refill may already have happened even if its response or dropped output is missing.
-        // Keep that uncertainty visible across scheduler passes; only explicit user restart clears it.
+        // A refill may already have happened even if its response is missing. Input-only
+        // uncertainty uses a resettable local latch; collected output uses the durable ledger.
         boolean uncertainInteraction = pending == Pending.USE || stage == Stage.VERIFY || stage == Stage.PICKUP;
+        boolean durableOutput = outputOperationId!=null;
         clearRun();
-        if (uncertainInteraction) unresolvedInteraction = message;
+        // Durable output state is the guard after reset and may be reconciled while OFF.
+        // An unrelated local latch must not keep blocking after that obligation is resolved.
+        if (uncertainInteraction && !durableOutput) unresolvedInteraction = message;
         return WorkResult.blocked(message);
     }
     @Override public void reset() { clearRun(); unresolvedInteraction = null; }
@@ -333,5 +346,6 @@ public final class MachineModule implements AutomationModule {
         machines = List.of(); sources = List.of(); stock.clear(); machineIndex = 0; sourceIndex = 0;
         stockReady = false; freshForHaul = false; stockDay = 0; stockTick = 0;
         source = null; containerId = -1; grade = -1; collected = false; feeding = false;
+        outputOperationId=null;
     }
 }
