@@ -10,10 +10,21 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ConsolidationSafetyTest {
-    private static final int HOE = 4, SCRATCH = 5;
+    private static final int HOE = 4, MATERIAL = 5, SCRATCH = 6;
     private static final ItemData STONE = new ItemData("minecraft:stone", 64, 0, null, false, Integer.MAX_VALUE);
     private static final ItemData TOOL = new ItemData("minecraft:diamond_pickaxe", 1, 0, null, false, 1000);
     private static final ItemData GOLDEN_HOE = new ItemData("minecraft:golden_hoe", 1, 0, null, true, 200);
+
+    @Test void forgedOutputScratchCannotBorrowTheActiveTomatoMaterialSlot() {
+        Fixture f=new Fixture(); f.put(9,wine(1)); f.put(10,wine(50)); f.put(MATERIAL,tomato(52,0)); f.put(SCRATCH,ItemData.EMPTY);
+        ProductionMergePlanner.Plan safe=f.productPlan(9); assertNull(f.rejection(safe));
+        ProductionMergePlanner.Plan forged=new ProductionMergePlanner.Plan(Feature.WINE,ItemData.WINE,9,MATERIAL,List.of(10),f.snapshot());
+        assertTrue(ProductionMergePlanner.matchesSnapshot(forged,f.items));
+        assertFalse(ProductionMergePlanner.protectsProductionSlots(forged,HOE)); assertNotNull(f.rejection(forged));
+        f.put(SCRATCH,tomato(52,0));
+        ProductionMergePlanner.Plan occupied=new ProductionMergePlanner.Plan(Feature.WINE,ItemData.WINE,9,SCRATCH,List.of(10),f.snapshot());
+        assertNotNull(f.rejection(occupied),"no occupied alternate ingredient or tool may become output scratch either");
+    }
 
     @Test void canonicalProductionPlanPassesOnlyItsOwnPermissionGate() {
         Fixture f = winePair(); ProductionMergePlanner.Plan plan = f.productPlan(0);
@@ -30,7 +41,7 @@ class ConsolidationSafetyTest {
     @Test void selectedGradeFallbackRemainsValidEvenWhenAnotherGradeHasAnEasierDirectMerge() {
         Fixture f = new Fixture();
         f.put(0, tomato(1, 0)); f.put(9, tomato(2, 0));
-        f.put(20, tomato(2, 2)); f.put(21, tomato(2, 2)); f.put(SCRATCH, tomato(64, 1));
+        f.put(20, tomato(2, 2)); f.put(21, tomato(2, 2)); f.put(MATERIAL, tomato(64, 1)); f.put(SCRATCH, ItemData.EMPTY);
         ProductionMergePlanner.Plan selected = ProductionMergePlanner.planTomatoes(f.items, Feature.WINE, HOE, 2, 20).orElseThrow();
         assertFalse(selected.direct()); assertEquals(2, selected.expectedItems().get(selected.sourceIndex()).quality());
         ProductionMergePlanner.Plan unrestricted = ProductionMergePlanner.planTomatoes(f.items, Feature.WINE, HOE, 20).orElseThrow();
@@ -111,10 +122,10 @@ class ConsolidationSafetyTest {
         assertTrue(ProductionMergePlanner.matchesSnapshot(plan, f.items)); assertNotNull(f.rejection(plan));
     }
 
-    @Test void toolScratchIsRejectedEvenWhenTheForgedPlanHasTheFreshToolSnapshot() {
-        Fixture f = new Fixture(); f.put(9, wine(10)); f.put(10, wine(50)); f.put(SCRATCH, tomato(12, 0));
+    @Test void ingredientScratchIsRejectedEvenWhenTheForgedPlanHasTheFreshSnapshot() {
+        Fixture f = new Fixture(); f.put(9, wine(10)); f.put(10, wine(50)); f.put(MATERIAL, tomato(12, 0)); f.put(SCRATCH, ItemData.EMPTY);
         ProductionMergePlanner.Plan original = f.productPlan(9); assertFalse(original.direct()); assertNull(f.rejection(original));
-        f.put(SCRATCH, TOOL);
+        f.put(SCRATCH, tomato(52,0));
         ProductionMergePlanner.Plan forged = new ProductionMergePlanner.Plan(original.feature(), original.itemId(), original.sourceIndex(),
                 original.scratchHotbar(), original.destinations(), f.snapshot());
         assertTrue(ProductionMergePlanner.matchesSnapshot(forged, f.items)); assertNotNull(f.rejection(forged));

@@ -11,6 +11,20 @@ class LogisticsTest {
     private static ItemData preserves(int count) { return new ItemData(ItemData.PRESERVES,count,0,null,false,99); }
     private static ItemData wine(int year,int count,int grade) { return new ItemData(ItemData.WINE,count,grade,year,false,999); }
 
+    @Test void outputWithoutAnySafeAlternateHotbarScratchSkipsMergingAndStillCompletesProduction() {
+        for (Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) {
+            Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,12);
+            for (int index=2;index<9;index++) f.inventory[index]=tomato(0,1);
+            f.inventory[9]=feature==Feature.WINE ? wine(f.wineClockYear,1,0) : preserves(1);
+            f.inventory[10]=feature==Feature.WINE ? wine(f.wineClockYear,50,0) : preserves(50);
+            f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,10,true,true,false);
+            AutomationEngine engine=isolatedMachineEngine(feature); engine.startOnce(f.context(),feature); f.runUntilStopped(engine,100);
+            assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status()); assertEquals(1,f.machineClicks());
+            assertTrue(f.history.stream().noneMatch(Action.ConsolidateInventory.class::isInstance));
+            assertTrue(f.inventory[1].is(ItemData.TOMATO)); assertTrue(f.inventory[0].hoe());
+        }
+    }
+
     @Test void lastRecipeInHandIsReplacedByALargerHeldSameGradeStackBeforeMachineUse() {
         for (int recipe=0;recipe<3;recipe++) {
             Feature feature=recipe==0 ? Feature.WINE : Feature.PRESERVES;
@@ -633,6 +647,7 @@ class LogisticsTest {
         for (Feature feature:new Feature[]{Feature.WINE,Feature.PRESERVES}) for (boolean newSlot:new boolean[]{false,true}) {
             Fixture f=new Fixture(); f.equipHoe(); f.pickup=false;
             for (int n=2;n<9;n++) f.inventory[n]=new ItemData("minecraft:tool_"+n,1,0,null,false,999);
+            f.inventory[2]=ItemData.EMPTY; // Output scratch must never borrow the material slot1.
             f.inventory[1]=tomato(2,feature==Feature.WINE ? 6 : 10);
             ItemData old=feature==Feature.WINE ? wine(f.wineClockYear,20,0) : new ItemData(ItemData.PRESERVES,20,0,null,false,99);
             f.inventory[9]=old; f.inventory[10]=old;
@@ -651,6 +666,7 @@ class LogisticsTest {
                 .map(a -> (Action.ConsolidateInventory)a).findFirst().orElseThrow();
             assertEquals(receivedSlot,first.plan().sourceIndex(),"the first equally bounded plan must use the actual pickup delta, not the older partial at slot9");
             assertEquals(newSlot ? 1 : 21,first.plan().expectedItems().get(receivedSlot).count());
+            assertNotEquals(1,first.plan().scratchHotbar()); assertTrue(f.inventory[1].is(ItemData.TOMATO));
             assertTrue(f.profile.pendingMachineOutputs.isEmpty()); assertEquals(1,f.machineClicks());
         }
     }

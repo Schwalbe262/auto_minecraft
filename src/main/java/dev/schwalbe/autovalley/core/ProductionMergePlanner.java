@@ -64,9 +64,11 @@ public final class ProductionMergePlanner {
             return Optional.empty();
         List<ItemData> snapshot = snapshot(inventory);
         if (snapshot.isEmpty()) return Optional.empty();
+        int materialHotbar=(hoeHotbar+1)%HOTBAR_SIZE;
+        int protectedMaterial=ItemData.TOMATO.equals(itemId) ? -1 : materialHotbar;
         List<Integer> sources = new ArrayList<>();
         for (int index = 0; index < INVENTORY_SIZE; index++) {
-            if (index != hoeHotbar && candidate(snapshot.get(index), itemId)
+            if (index != hoeHotbar && index != protectedMaterial && candidate(snapshot.get(index), itemId)
                     && (requiredGrade == null || snapshot.get(index).quality() == requiredGrade)) sources.add(index);
         }
         // A preference only breaks ties between equally bounded plans. A one-click
@@ -79,19 +81,27 @@ public final class ProductionMergePlanner {
             // in the protected hoe slot first, even if other destinations have room.
             if (source >= HOTBAR_SIZE && (snapshot.get(hoeHotbar).empty()
                     || visiblyCompatible(snapshot.get(source), snapshot.get(hoeHotbar)))) continue;
-            List<Integer> destinations = destinations(snapshot, source, hoeHotbar, source < HOTBAR_SIZE);
+            if (source >= HOTBAR_SIZE && protectedMaterial>=0 && (snapshot.get(protectedMaterial).empty()
+                    || visiblyCompatible(snapshot.get(source),snapshot.get(protectedMaterial)))) continue;
+            List<Integer> destinations = destinations(snapshot, source, hoeHotbar, protectedMaterial, source < HOTBAR_SIZE);
             if (fullSourceFits(snapshot, source, destinations))
                 return Optional.of(new Plan(feature, itemId, source, -1, destinations, snapshot));
         }
-        int scratch = (hoeHotbar + 1) % HOTBAR_SIZE;
-        ItemData scratchItem = snapshot.get(scratch);
-        if (scratchItem.empty() || scratchItem.is(ItemData.TOMATO) && !scratchItem.hoe()) {
+        int scratch = -1;
+        for (int offset=2;offset<HOTBAR_SIZE;offset++) {
+            int index=(hoeHotbar+offset)%HOTBAR_SIZE;
+            if (snapshot.get(index).empty()) { scratch=index; break; }
+        }
+        if (scratch<0) for (int offset=2;offset<HOTBAR_SIZE;offset++) {
+            int index=(hoeHotbar+offset)%HOTBAR_SIZE;
+            if (safeScratch(snapshot.get(index),itemId)) { scratch=index; break; }
+        }
+        if (scratch>=0) {
             for (int source : sources) {
                 if (source < HOTBAR_SIZE || source == scratch) continue;
-                // Main-inventory source is temporarily moved into the production hotbar.
-                // The original source then contains only the tomato scratch or EMPTY and
-                // cannot be counted as compatible merge capacity for its own product.
-                List<Integer> destinations = destinations(snapshot, source, hoeHotbar, true);
+                // Never borrow the ingredient hand, a tomato stack, or any hoe.
+                // Prefer EMPTY; other items require the existing exact restore protocol.
+                List<Integer> destinations = destinations(snapshot, source, hoeHotbar, protectedMaterial, true);
                 if (fullSourceFits(snapshot, source, destinations))
                     return Optional.of(new Plan(feature, itemId, source, scratch, destinations, snapshot));
             }
@@ -122,6 +132,24 @@ public final class ProductionMergePlanner {
         return plan != null && plan.expectedItems().equals(snapshot(inventory));
     }
 
+    /** Structural defense for public or forged plans; native tags still need adapter checks. */
+    public static boolean protectsProductionSlots(Plan plan,int hoeHotbar) {
+        if (plan==null || hoeHotbar<0 || hoeHotbar>=HOTBAR_SIZE || plan.expectedItems().size()!=INVENTORY_SIZE
+                || plan.sourceIndex()<0 || plan.sourceIndex()>=INVENTORY_SIZE || plan.sourceIndex()==hoeHotbar
+                || plan.destinations().contains(hoeHotbar)) return false;
+        int materialHotbar=(hoeHotbar+1)%HOTBAR_SIZE;
+        if (!plan.direct() && (plan.scratchHotbar()<0 || plan.scratchHotbar()>=HOTBAR_SIZE
+                || plan.scratchHotbar()==hoeHotbar || plan.scratchHotbar()==materialHotbar
+                || !safeScratch(plan.expectedItems().get(plan.scratchHotbar()),plan.itemId()))) return false;
+        if (!ItemData.TOMATO.equals(plan.itemId())) {
+            if (plan.sourceIndex()==materialHotbar || plan.destinations().contains(materialHotbar)) return false;
+            ItemData material=plan.expectedItems().get(materialHotbar);
+            if (plan.direct() && plan.sourceIndex()>=HOTBAR_SIZE && (material.empty()
+                    || visiblyCompatible(plan.expectedItems().get(plan.sourceIndex()),material))) return false;
+        }
+        return true;
+    }
+
     private static List<ItemData> snapshot(List<ItemSlot> inventory) {
         if (inventory == null || inventory.size() != INVENTORY_SIZE) return List.of();
         ItemData[] items = new ItemData[INVENTORY_SIZE];
@@ -140,6 +168,12 @@ public final class ProductionMergePlanner {
                 && (!ItemData.WINE.equals(itemId) || item.year() != null && item.year() >= 0);
     }
 
+    private static boolean safeScratch(ItemData item,String itemId) {
+        // Swapping the same product into the old source would make it an implicit
+        // native QUICK_MOVE destination. Keep that displaced stack unrelated.
+        return item.empty() || !item.hoe() && !item.is(ItemData.TOMATO) && !item.is(itemId);
+    }
+
     private static boolean visiblyCompatible(ItemData source, ItemData destination) {
         return !destination.empty() && !destination.hoe() && destination.count() < CANDIDATE_STACK_LIMIT
                 && source.id().equals(destination.id()) && source.quality() == destination.quality()
@@ -147,12 +181,12 @@ public final class ProductionMergePlanner {
     }
 
     /** mainDestination=true means native QUICK_MOVE's 9..35 destination region. */
-    private static List<Integer> destinations(List<ItemData> snapshot, int source, int hoeHotbar, boolean mainDestination) {
+    private static List<Integer> destinations(List<ItemData> snapshot, int source, int hoeHotbar, int protectedMaterial, boolean mainDestination) {
         List<Integer> destinations = new ArrayList<>();
         int from = mainDestination ? HOTBAR_SIZE : 0;
         int until = mainDestination ? INVENTORY_SIZE : HOTBAR_SIZE;
         for (int index = from; index < until; index++) {
-            if (index != source && index != hoeHotbar && visiblyCompatible(snapshot.get(source), snapshot.get(index)))
+            if (index != source && index != hoeHotbar && index != protectedMaterial && visiblyCompatible(snapshot.get(source), snapshot.get(index)))
                 destinations.add(index);
         }
         return destinations;

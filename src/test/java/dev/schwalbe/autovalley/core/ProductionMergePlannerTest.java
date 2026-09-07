@@ -10,10 +10,43 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ProductionMergePlannerTest {
-    private static final int HOE = 4, SCRATCH = 5;
+    private static final int HOE = 4, MATERIAL = 5, SCRATCH = 6;
     private static final ItemData STONE = new ItemData("minecraft:stone", 64, 0, null, false, Integer.MAX_VALUE);
     private static final ItemData PICKAXE = new ItemData("minecraft:diamond_pickaxe", 1, 0, null, false, 1500);
     private static final ItemData GOLDEN_HOE = new ItemData("minecraft:golden_hoe", 1, 0, null, true, 200);
+
+    @Test void fullHotbarNeverBorrowsTheActiveFiftyTwoTomatoMaterialStack() {
+        List<ItemSlot> inventory=inventory(); put(inventory,MATERIAL,tomato(52));
+        put(inventory,9,wine(1,12)); put(inventory,10,wine(50,12));
+        ProductionMergePlanner.Plan occupied=ProductionMergePlanner.plan(inventory,Feature.WINE,HOE,9).orElseThrow();
+        assertEquals(SCRATCH,occupied.scratchHotbar()); assertTrue(occupied.requiresRestore()); assertEquals(3,occupied.maximumClicks());
+        assertEquals(STONE,occupied.expectedItems().get(SCRATCH)); assertTrue(ProductionMergePlanner.protectsProductionSlots(occupied,HOE));
+        assertEquals(tomato(52),inventory.get(MATERIAL).item());
+        put(inventory,SCRATCH,ItemData.EMPTY);
+        ProductionMergePlanner.Plan plan=ProductionMergePlanner.plan(inventory,Feature.WINE,HOE,9).orElseThrow();
+        assertEquals(SCRATCH,plan.scratchHotbar()); assertFalse(plan.requiresRestore()); assertEquals(2,plan.maximumClicks());
+        assertTrue(ProductionMergePlanner.protectsProductionSlots(plan,HOE));
+        assertNotEquals(MATERIAL,plan.sourceIndex()); assertFalse(plan.destinations().contains(MATERIAL));
+        assertEquals(tomato(52),plan.expectedItems().get(MATERIAL));
+    }
+
+    @Test void productAlreadyInTheMaterialSlotIsNeitherAMergeSourceNorDestination() {
+        for (ItemData product:List.of(wine(1,12),preserves(1,0))) {
+            Feature feature=product.is(ItemData.WINE) ? Feature.WINE : Feature.PRESERVES;
+            List<ItemSlot> inventory=inventory(); put(inventory,MATERIAL,product); put(inventory,10,product);
+            assertTrue(ProductionMergePlanner.plan(inventory,feature,HOE,MATERIAL).isEmpty());
+        }
+    }
+
+    @Test void directNativeTransferCannotFallBackIntoAnEmptyOrCompatibleMaterialSlot() {
+        List<ItemSlot> inventory=inventory(); put(inventory,20,wine(50,12));
+        for (int index:List.of(0,1,2)) put(inventory,index,wine(40,12));
+        assertEquals(20,ProductionMergePlanner.plan(inventory,Feature.WINE,HOE,20).orElseThrow().sourceIndex());
+        for (ItemData material:List.of(ItemData.EMPTY,wine(10,12))) {
+            put(inventory,MATERIAL,material);
+            assertTrue(ProductionMergePlanner.plan(inventory,Feature.WINE,HOE,20).isEmpty());
+        }
+    }
 
     @Test void hotbarProductCanMergeDirectlyIntoMainInventory() {
         List<ItemSlot> inventory = inventory(); put(inventory, 0, wine(10, 12)); put(inventory, 10, wine(50, 12));
@@ -43,14 +76,14 @@ class ProductionMergePlannerTest {
         assertTrue(plan.direct()); assertEquals(10, plan.sourceIndex());
     }
 
-    @Test void sameRegionProductsUseOnlyTomatoProductionHotbarAndRequireAtMostThreeClicks() {
+    @Test void sameRegionProductsUseAnEmptyAlternateHotbarWithoutMovingTheMaterialStack() {
         List<ItemSlot> inventory = inventory();
-        put(inventory, 9, wine(10, 12)); put(inventory, 10, wine(50, 12)); put(inventory, SCRATCH, tomato(12));
+        put(inventory, 9, wine(10, 12)); put(inventory, 10, wine(50, 12)); put(inventory, MATERIAL, tomato(12)); put(inventory, SCRATCH, ItemData.EMPTY);
         ProductionMergePlanner.Plan plan = ProductionMergePlanner.plan(inventory, Feature.WINE, HOE, 9).orElseThrow();
         assertFalse(plan.direct()); assertEquals(9, plan.sourceIndex()); assertEquals(SCRATCH, plan.scratchHotbar());
         assertEquals(SCRATCH, plan.quickMoveIndex()); assertEquals(List.of(10), plan.destinations());
-        assertTrue(plan.requiresRestore()); assertEquals(3, plan.maximumClicks());
-        assertEquals(tomato(12), plan.expectedItems().get(SCRATCH));
+        assertFalse(plan.requiresRestore()); assertEquals(2, plan.maximumClicks());
+        assertEquals(tomato(12), plan.expectedItems().get(MATERIAL)); assertTrue(plan.expectedItems().get(SCRATCH).empty());
         assertEquals(GOLDEN_HOE, plan.expectedItems().get(HOE));
     }
 
@@ -64,17 +97,17 @@ class ProductionMergePlannerTest {
 
     @Test void scratchWrapsAfterLastHoeSlotWithoutUsingTheHoe() {
         List<ItemSlot> inventory = inventory();
-        put(inventory, 8, GOLDEN_HOE); put(inventory, 0, tomato(12));
+        put(inventory, 8, GOLDEN_HOE); put(inventory, 0, tomato(12)); put(inventory, 1, ItemData.EMPTY);
         put(inventory, 9, wine(10, 12)); put(inventory, 10, wine(50, 12));
         ProductionMergePlanner.Plan plan = ProductionMergePlanner.plan(inventory, Feature.WINE, 8, 9).orElseThrow();
-        assertEquals(0, plan.scratchHotbar()); assertEquals(3, plan.maximumClicks());
+        assertEquals(1, plan.scratchHotbar()); assertEquals(2, plan.maximumClicks());
         assertFalse(plan.destinations().contains(8)); assertNotEquals(8, plan.sourceIndex());
     }
 
-    @Test void toolsRottenTomatoesOtherProductsAndHoeFlaggedTomatoesCannotBeScratch() {
-        for (ItemData scratch : List.of(PICKAXE, GOLDEN_HOE, wine(10, 11), preserves(10, 0),
-                new ItemData(ItemData.ROTTEN, 10, 0, null, false, 0), new ItemData(ItemData.TOMATO, 10, 0, null, true, 0))) {
+    @Test void ingredientHoeAndSameProductCannotBeBorrowedEvenWhenAllOtherHotbarSlotsAreUnsafe() {
+        for (ItemData scratch : List.of(tomato(52), GOLDEN_HOE, wine(10, 11), new ItemData(ItemData.TOMATO, 10, 0, null, true, 0))) {
             List<ItemSlot> inventory = inventory();
+            for (int index=0;index<9;index++) if (index!=HOE) put(inventory,index,tomato(52));
             put(inventory, 9, wine(10, 12)); put(inventory, 10, wine(50, 12)); put(inventory, SCRATCH, scratch);
             assertTrue(ProductionMergePlanner.plan(inventory, Feature.WINE, HOE, 9).isEmpty(), scratch.id());
         }
@@ -137,13 +170,13 @@ class ProductionMergePlannerTest {
 
     @Test void cancellingAfterScratchSwapReplansFromObservedLayoutInsteadOfBlindlyRestoring() {
         List<ItemSlot> inventory = inventory();
-        put(inventory, 9, wine(10, 12)); put(inventory, 10, wine(50, 12)); put(inventory, SCRATCH, tomato(12));
+        put(inventory, 9, wine(10, 12)); put(inventory, 10, wine(50, 12)); put(inventory, SCRATCH, ItemData.EMPTY);
         ProductionMergePlanner.Plan original = ProductionMergePlanner.plan(inventory, Feature.WINE, HOE, 9).orElseThrow();
-        put(inventory, 9, tomato(12)); put(inventory, SCRATCH, wine(10, 12));
+        put(inventory, 9, ItemData.EMPTY); put(inventory, SCRATCH, wine(10, 12));
         assertFalse(ProductionMergePlanner.matchesSnapshot(original, inventory));
         ProductionMergePlanner.Plan resumed = ProductionMergePlanner.plan(inventory, Feature.WINE, HOE, 9).orElseThrow();
         assertTrue(resumed.direct()); assertEquals(SCRATCH, resumed.sourceIndex());
-        assertEquals(List.of(10), resumed.destinations()); assertEquals(tomato(12), resumed.expectedItems().get(9));
+        assertEquals(List.of(10), resumed.destinations()); assertTrue(resumed.expectedItems().get(9).empty());
         assertEquals(1, resumed.maximumClicks());
     }
 
@@ -224,7 +257,7 @@ class ProductionMergePlannerTest {
     @Test void emptyProtectedHoeStillAllowsBoundedScratchPlanIntoMainInventory() {
         List<ItemSlot> inventory = inventory();
         put(inventory, 9, wine(10, 12)); put(inventory, 10, wine(50, 12));
-        put(inventory, SCRATCH, tomato(12)); put(inventory, HOE, ItemData.EMPTY);
+        put(inventory, MATERIAL, tomato(12)); put(inventory, SCRATCH, ItemData.EMPTY); put(inventory, HOE, ItemData.EMPTY);
         ProductionMergePlanner.Plan plan = ProductionMergePlanner.plan(inventory, Feature.WINE, HOE, 9).orElseThrow();
         assertFalse(plan.direct()); assertEquals(SCRATCH, plan.scratchHotbar());
         assertEquals(List.of(10), plan.destinations()); assertTrue(plan.expectedItems().get(HOE).empty());
@@ -252,20 +285,20 @@ class ProductionMergePlannerTest {
         assertTrue(ProductionMergePlanner.planTomatoes(inventory, Feature.WINE, HOE, 4, null).isEmpty());
     }
 
-    @Test void differentGradeScratchIsAllowedButItsOriginalSourceSlotNeverCountsAsCapacity() {
+    @Test void differentGradeMaterialIsPreservedWhileAnEmptyAlternateScratchMergesIngredients() {
         List<ItemSlot> inventory = inventory();
-        put(inventory, 9, tomato(10, 2)); put(inventory, 10, tomato(50, 2)); put(inventory, SCRATCH, tomato(12, 0));
+        put(inventory, 9, tomato(10, 2)); put(inventory, 10, tomato(50, 2)); put(inventory, MATERIAL, tomato(12, 0)); put(inventory, SCRATCH, ItemData.EMPTY);
         ProductionMergePlanner.Plan plan = ProductionMergePlanner.planTomatoes(inventory, Feature.PRESERVES, HOE, 2, 9).orElseThrow();
         assertFalse(plan.direct()); assertEquals(9, plan.sourceIndex()); assertEquals(SCRATCH, plan.scratchHotbar());
         assertNotEquals(plan.sourceIndex(), plan.scratchHotbar()); assertEquals(List.of(10), plan.destinations());
-        assertFalse(plan.destinations().contains(9)); assertEquals(3, plan.maximumClicks());
+        assertFalse(plan.destinations().contains(9)); assertEquals(2, plan.maximumClicks());
     }
 
-    @Test void fullSameGradeScratchCanBeSwappedButIsNotInventedAsDestinationCapacity() {
+    @Test void fullSameGradeMaterialIsPreservedAndNeverInventedAsDestinationCapacity() {
         List<ItemSlot> inventory = inventory();
-        put(inventory, 9, tomato(10)); put(inventory, 10, tomato(50)); put(inventory, SCRATCH, tomato(64));
+        put(inventory, 9, tomato(10)); put(inventory, 10, tomato(50)); put(inventory, MATERIAL, tomato(64)); put(inventory, SCRATCH, ItemData.EMPTY);
         ProductionMergePlanner.Plan plan = ProductionMergePlanner.planTomatoes(inventory, Feature.WINE, HOE, 0, 9).orElseThrow();
-        assertFalse(plan.direct()); assertEquals(List.of(10), plan.destinations()); assertEquals(3, plan.maximumClicks());
+        assertFalse(plan.direct()); assertEquals(List.of(10), plan.destinations()); assertEquals(2, plan.maximumClicks());
         put(inventory, 10, tomato(60));
         assertTrue(ProductionMergePlanner.planTomatoes(inventory, Feature.WINE, HOE, 0, 9).isEmpty());
     }

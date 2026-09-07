@@ -68,6 +68,8 @@ public final class SafetyPolicy {
                 return "Inventory consolidation is outside the selected production job";
             if (plan.sourceIndex()<0 || plan.sourceIndex()>=36 || !ProductionMergePlanner.matchesSnapshot(plan,world.inventory()))
                 return "Inventory consolidation snapshot is stale";
+            if (!ProductionMergePlanner.protectsProductionSlots(plan,profile.hoeHotbarSlot))
+                return "Inventory consolidation must preserve the hoe and material hotbar slots";
             var expected=ItemData.TOMATO.equals(plan.itemId())
                 ? ProductionMergePlanner.planTomatoes(world.inventory(),plan.feature(),profile.hoeHotbarSlot,
                     plan.expectedItems().get(plan.sourceIndex()).quality(),plan.sourceIndex())
