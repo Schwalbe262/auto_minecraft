@@ -566,6 +566,71 @@ class LogisticsTest {
         assertEquals(0,f.machineClicks()); assertEquals(0,f.tomatoWithdrawals);
     }
 
+    @Test void mixedTomatoSourceBlocksBeforeWithdrawingOrUsingHeldIngredients() {
+        for (Feature feature:new Feature[]{Feature.WINE,Feature.PRESERVES}) {
+            Fixture f=new Fixture(); f.inventory[0]=tomato(2,9);
+            Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,64));
+            f.chests.get(source)[1]=wine(8,5,0);
+            ItemData[] before=f.chests.get(source).clone();
+            f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,10,false,false,false);
+            WorkResult result=f.run(new MachineModule(feature),100);
+            assertEquals(WorkResult.State.BLOCKED,result.state()); assertTrue(result.message().contains("non-tomato"));
+            assertArrayEquals(before,f.chests.get(source)); assertEquals(9,f.inventory[0].count());
+            assertEquals(0,f.tomatoWithdrawals); assertEquals(0,f.withdrawnWine); assertEquals(0,f.machineClicks());
+            assertTrue(f.history.stream().noneMatch(Action.QuickMove.class::isInstance)); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+
+    @Test void whollyWrongTomatoSourceBlocksInsteadOfReportingAnIngredientShortage() {
+        Fixture f=new Fixture();
+        ItemData unrelated=new ItemData("minecraft:cobblestone",64,0,null,false,999);
+        Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,unrelated);
+        f.machine(PoiKind.WINE_KEG,10,false,false,false);
+        WorkResult result=f.run(new MachineModule(Feature.WINE),100);
+        assertEquals(WorkResult.State.BLOCKED,result.state()); assertTrue(result.message().contains("non-tomato"));
+        assertEquals(unrelated,f.chests.get(source)[0]); assertEquals(0,f.tomatoWithdrawals); assertEquals(0,f.machineClicks());
+        assertTrue(f.history.stream().noneMatch(Action.QuickMove.class::isInstance)); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void invalidOrMismatchedTomatoSourceGradeBlocksTheEntireSnapshot() {
+        for (int wrongGrade:new int[]{-1,1,4}) {
+            Fixture f=new Fixture(); Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,64));
+            f.chests.get(source)[1]=tomato(wrongGrade,4); ItemData[] before=f.chests.get(source).clone();
+            f.machine(PoiKind.WINE_KEG,10,false,false,false);
+            WorkResult result=f.run(new MachineModule(Feature.WINE),100);
+            assertEquals(WorkResult.State.BLOCKED,result.state()); assertTrue(result.message().contains("grade"));
+            assertArrayEquals(before,f.chests.get(source)); assertEquals(0,f.tomatoWithdrawals); assertEquals(0,f.machineClicks());
+            assertTrue(f.history.stream().noneMatch(Action.QuickMove.class::isInstance));
+        }
+    }
+
+    @Test void pureTomatoSourceWithEmptySlotsAllowsWithdrawalAndIgnoresPlayerTools() {
+        for (Feature feature:new Feature[]{Feature.WINE,Feature.PRESERVES}) {
+            Fixture f=new Fixture(); f.equipHoe();
+            ItemData personalItem=new ItemData("minecraft:cobblestone",64,0,null,false,999); f.inventory[20]=personalItem;
+            int batch=feature==Feature.WINE ? 3 : 5;
+            Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,batch));
+            f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,10,false,false,false);
+            WorkResult result=f.run(new MachineModule(feature),100);
+            assertEquals(WorkResult.State.IDLE,result.state(),result.message()); assertEquals(1,f.tomatoWithdrawals);
+            assertEquals(batch,f.consumed); assertEquals(1,f.machineClicks()); assertTrue(Arrays.stream(f.chests.get(source)).allMatch(ItemData::empty));
+            assertEquals(personalItem,f.inventory[20]); assertTrue(f.inventory[f.profile.hoeHotbarSlot].hoe());
+        }
+    }
+
+    @Test void sourceContaminationAfterInitialCountIsRejectedOnReopenBeforeWithdrawal() {
+        Fixture f=new Fixture(); Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,64));
+        f.machine(PoiKind.WINE_KEG,10,false,false,false); MachineModule module=new MachineModule(Feature.WINE);
+        for (int n=0;n<100 && f.opens.getOrDefault(source,0)<2;n++) { module.tick(f.context()); f.advance(); }
+        assertEquals(2,f.opens.get(source)); assertEquals(0,f.tomatoWithdrawals);
+        ItemData contamination=new ItemData(ItemData.ROTTEN,1,0,null,false,999); f.chests.get(source)[1]=contamination;
+        WorkResult result=module.tick(f.context());
+        assertEquals(WorkResult.State.BLOCKED,result.state()); assertTrue(result.message().contains("non-tomato"));
+        assertEquals(64,f.chests.get(source)[0].count()); assertEquals(contamination,f.chests.get(source)[1]);
+        assertEquals(0,f.tomatoWithdrawals); assertEquals(0,f.machineClicks());
+        assertTrue(f.history.stream().noneMatch(Action.QuickMove.class::isInstance));
+    }
+
     @Test void bulkWithdrawalWaitsForAcknowledgementAndRechecksTheNextSourceStack() {
         Fixture f=new Fixture(); f.equipHoe();
         Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,64)); f.chests.get(source)[1]=tomato(2,64);

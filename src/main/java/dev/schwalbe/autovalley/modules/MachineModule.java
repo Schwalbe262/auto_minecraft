@@ -393,7 +393,8 @@ public final class MachineModule implements AutomationModule {
     }
     private String snapshot(Context c, Poi poi) {
         int[] counts = new int[4];
-        for (ItemSlot s : c.world().menu().slots()) if (!s.player() && s.item().is(ItemData.TOMATO)) {
+        for (ItemSlot s : c.world().menu().slots()) if (!s.player() && !s.item().empty()) {
+            if (!s.item().is(ItemData.TOMATO)) return "Tomato source contains a non-tomato item; inspect its registered classification";
             int q = s.item().quality();
             if (q < 0 || q > 3 || !Objects.equals(poi.classifier(),q)) return "Tomato source contains a grade different from its registered classification";
             counts[q] += s.item().count();
