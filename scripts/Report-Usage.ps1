@@ -40,12 +40,27 @@ $rows = @([pscustomobject]@{
     Workstream='core-and-integration'; Tokens=([long]$rootUsage.Last.payload.info.total_token_usage.total_tokens-$baselineTokens)
     LastRecorded=$rootUsage.Last.timestamp; WeeklyStart=(Weekly $rootUsage.Baseline); WeeklyEnd=(Weekly $rootUsage.Last)
 })
+$taskSessionMetadata = @()
 foreach ($file in Get-ChildItem -LiteralPath (Split-Path -Parent $rootPath) -Filter '*.jsonl' -File) {
     if ($file.FullName -eq $rootPath) { continue }
     $meta = Get-Content -LiteralPath $file.FullName -TotalCount 1 -Encoding UTF8 | ConvertFrom-Json
-    $spawn = $meta.payload.source.subagent.thread_spawn
-    if ($spawn.parent_thread_id -ne $rootMeta.payload.id) { continue }
-    $usage = Read-UsageEvents $file.FullName ([DateTimeOffset]$rootUsage.Start)
+    $taskSessionMetadata += [pscustomobject]@{Path=$file.FullName;Meta=$meta}
+}
+$taskDescendantIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+[void]$taskDescendantIds.Add([string]$rootMeta.payload.id)
+do {
+    $taskAddedDescendant=$false
+    foreach ($entry in $taskSessionMetadata) {
+        $spawn=$entry.Meta.payload.source.subagent.thread_spawn
+        if ($spawn -and $taskDescendantIds.Contains([string]$spawn.parent_thread_id)) {
+            if ($taskDescendantIds.Add([string]$entry.Meta.payload.id)) { $taskAddedDescendant=$true }
+        }
+    }
+} while ($taskAddedDescendant)
+foreach ($entry in $taskSessionMetadata) {
+    if (-not $taskDescendantIds.Contains([string]$entry.Meta.payload.id)) { continue }
+    $spawn=$entry.Meta.payload.source.subagent.thread_spawn
+    $usage = Read-UsageEvents $entry.Path ([DateTimeOffset]$rootUsage.Start)
     if (-not $usage.Last -or [DateTimeOffset]$usage.Last.timestamp -le [DateTimeOffset]$rootUsage.Start) { continue }
     $childBaselineTokens = if ($usage.Baseline) { [long]$usage.Baseline.payload.info.total_token_usage.total_tokens } else { 0 }
     $childTokens = [long]$usage.Last.payload.info.total_token_usage.total_tokens - $childBaselineTokens
@@ -60,7 +75,7 @@ $report = [pscustomobject]@{
     IncludesCachedInput=$true; TotalRecordedTokens=($rows | Measure-Object -Property Tokens -Sum).Sum
     WeeklyStart=(Weekly $rootUsage.Baseline); WeeklyEnd=(Weekly $rootUsage.Last)
     ExactPerWorkstreamWeeklyShare=$null
-    Note='Token totals are recorded per agent workstream, including repeated/cached input and review. Reused child sessions subtract their last recorded token total at or before the task start. Weekly percentages are shared-account snapshots, not attributable per-stream shares. Final response and unflushed events are excluded.'
+    Note='Token totals are recorded per agent workstream, including repeated/cached input and review. All descendant sessions found in the same session-day directory are included; reused sessions subtract their last recorded total at or before the task start. Weekly percentages are shared-account snapshots, not attributable per-stream shares. Final response, later-day session files and unflushed events are excluded.'
     Workstreams=$rows
 }
 $json = $report | ConvertTo-Json -Depth 6
