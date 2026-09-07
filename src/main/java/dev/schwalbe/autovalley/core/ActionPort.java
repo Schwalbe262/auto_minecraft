@@ -10,4 +10,6 @@ public interface ActionPort {
     default String pauseReason() { return null; }
     /** Explicit manual resume may clear an already-resolved failure, never a late-ACK fence. */
     default String startRejection() { return pauseReason(); }
+    /** Moving/aiming separation must be supported before a module overlaps harvest and walking. */
+    default boolean supportsMovingHarvest() { return false; }
 }

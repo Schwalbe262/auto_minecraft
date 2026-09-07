@@ -15,6 +15,8 @@ public interface WorldAccess {
     default List<GroundItem> groundItems() { return List.of(); }
     /** Vinery's live clock, not Minecraft's sleep-skipping dayTime. Null means unavailable. */
     default Integer wineYear() { return null; }
+    /** Unknown adapters cannot assume that a modded hoe affects only its clicked block. */
+    default HarvestFootprint harvestFootprint(Pos target) { return HarvestFootprint.UNKNOWN; }
     MenuData menu();
     boolean mayPlace(int menuSlot, ItemData item);
     default boolean canInteract(Pos target, double reach) { return player().distance(target) <= reach; }

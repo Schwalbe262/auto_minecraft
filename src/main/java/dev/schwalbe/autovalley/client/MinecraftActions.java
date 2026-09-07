@@ -25,6 +25,7 @@ public final class MinecraftActions implements ActionPort {
     private MenuData beforeMenu;
     private List<ItemSlot> beforeInventory;
     private BlockData beforeBlock;
+    private PlayerState beforePlayer;
     private Movement movement;
     private long movementAt;
     private Pos ownedContainer;
@@ -39,6 +40,7 @@ public final class MinecraftActions implements ActionPort {
     public void context(Context context) { this.context=context; }
     public void enabled(boolean enabled) { if (!enabled) stopMovement(); this.enabled=enabled; }
     public boolean busy() { return pending!=null; }
+    @Override public boolean supportsMovingHarvest() { return true; }
     public Movement movement() { return enabled && world.tick()-movementAt<=2 ? movement : null; }
     public boolean ownsContainer() {
         MenuData menu=world.menu();
@@ -66,6 +68,7 @@ public final class MinecraftActions implements ActionPort {
         pendingTicket=ticket; pending=action; started=world.tick(); beforeSequence=observations.sequence();
         openingShape=requestedShape;
         beforeMenu=world.menu(); beforeInventory=world.inventory();
+        beforePlayer=world.player();
         beforeBlock=action instanceof Action.UseBlock use ? world.block(use.pos()) : null;
         put(ticket,ActionOutcome.State.PENDING,"");
         try { execute(action); }
@@ -280,14 +283,21 @@ public final class MinecraftActions implements ActionPort {
         mc.player.setXRot((float)-Math.toDegrees(Math.atan2(delta.y,Math.sqrt(delta.x*delta.x+delta.z*delta.z))));
     }
     public void move(Movement intent) {
-        if (!enabled || pending!=null || pauseReason()!=null || mc.player==null || world.menu().container() || (!context.profile().allowBackground && !mc.isWindowActive())) { stopMovement(); return; }
+        boolean harvesting=pending instanceof Action.UseBlock use && use.purpose()==Action.Use.HARVEST;
+        if (!enabled || intent==null || !Float.isFinite(intent.yaw()) || !Float.isFinite(intent.pitch())
+            || pending!=null && !harvesting || pauseReason()!=null || mc.player==null || world.menu().container()
+            || (!context.profile().allowBackground && !mc.isWindowActive())) { stopMovement(); return; }
+        // Only a short grounded harvest continuation can overlap a server ACK. Inventory,
+        // machine, door and sleep operations continue to exclude all movement.
+        if (harvesting && !HarvestMovementRules.mayOverlap(pending,intent,beforePlayer,world.player(),world.tick()-started,
+            context.profile().magnetOverflowHarvest && context.session().allows(context.profile(),Feature.HARVEST))) { stopMovement(); return; }
         // Navigation cannot gain permission to jump or leave the approved farm/corridor.
         Pos feet=world.player().feet();
         if (!ProfileBounds.contains(context.profile(),feet) || intent.jump()) { stopMovement(); return; }
         movement=new Movement(intent.yaw(),intent.pitch(),intent.forward(),intent.sprint(),false,intent.sneak());
         movementAt=world.tick();
-        mc.player.setYRot(intent.yaw()); mc.player.setXRot(intent.pitch());
-        mc.player.setSprinting(intent.sprint() && intent.forward());
+        if (!harvesting) { mc.player.setYRot(intent.yaw()); mc.player.setXRot(intent.pitch()); }
+        mc.player.setSprinting(intent.sprint() && intent.forward() && MovementAxes.from(intent,mc.player.getYRot()).forward()>.8f);
     }
     public void stopMovement() { movement=null; if (mc.player!=null && enabled) mc.player.setSprinting(false); }
     public void cancel() {

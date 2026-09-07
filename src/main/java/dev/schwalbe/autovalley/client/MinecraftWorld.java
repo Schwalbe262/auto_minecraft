@@ -26,6 +26,7 @@ public final class MinecraftWorld implements WorldAccess {
     public long tick() { return ticks; }
     public long dayTime() { return mc.level==null ? 0 : mc.level.getDayTime(); }
     public Integer wineYear() { return VineryClock.year(mc.level); }
+    public HarvestFootprint harvestFootprint(Pos target) { return NativeHarvestFootprint.inspect(mc.player,mc.level,target); }
     public List<GroundItem> groundItems() {
         if (mc.level==null || mc.player==null) return List.of();
         return mc.level.getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,mc.player.getBoundingBox().inflate(48))

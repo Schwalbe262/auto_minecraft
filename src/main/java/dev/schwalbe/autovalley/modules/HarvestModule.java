@@ -2,6 +2,7 @@ package dev.schwalbe.autovalley.modules;
 
 import dev.schwalbe.autovalley.core.*;
 import dev.schwalbe.autovalley.navigation.LocalNavigator;
+import dev.schwalbe.autovalley.navigation.HarvestRoutePlanner;
 import java.util.*;
 
 /** Right-click-only tomato harvest, with verified inventory or magnet-carried ground output. */
@@ -11,6 +12,11 @@ public final class HarvestModule implements AutomationModule {
     private final Deque<Pos> pending = new ArrayDeque<>();
     private final Set<String> harvestedThisPass = new HashSet<>();
     private Pos target;
+    private Pos continuation;
+    private boolean continuationMoving;
+    private boolean continuationStopped;
+    private int harvestRadius;
+    private long useStarted;
     private long ticket = -1;
     private long cooldownUntil;
     private long cooldownDay = Long.MIN_VALUE;
@@ -23,6 +29,7 @@ public final class HarvestModule implements AutomationModule {
     private int useAttempts;
     private int sweep;
     private boolean active;
+    private boolean routeOrdered;
     private boolean calibration;
     private Profile calibrationProfile;
     private boolean sampleSprint;
@@ -107,6 +114,10 @@ public final class HarvestModule implements AutomationModule {
                 ticket = actions.submit(new Action.SelectHotbar(hotbar));
                 return WorkResult.busy("괭이를 듭니다.");
             }
+            if (!routeOrdered) {
+                orderPending(context);
+                routeOrdered = true;
+            }
             stage = Stage.APPROACH;
         }
         if (stage == Stage.APPROACH) {
@@ -119,6 +130,7 @@ public final class HarvestModule implements AutomationModule {
                     if (sweep++ == 0) {
                         String error = scan(context);
                         if (error != null) return fail(context, error);
+                        orderPending(context);
                         if (!pending.isEmpty()) return WorkResult.busy("남아 있는 익은 토마토를 다시 확인합니다.");
                     }
                     return finish(context);
@@ -141,6 +153,9 @@ public final class HarvestModule implements AutomationModule {
             if (arrival == Navigation.Result.BLOCKED) return fail(context, navigationFailure(context));
             if (arrival == Navigation.Result.MOVING) return WorkResult.busy(sampleSprint ? "달리며 익은 토마토에 접근합니다." : "익은 토마토에 접근합니다.");
             if (actions.busy()) return WorkResult.busy("이전 조작을 기다립니다.");
+            String footprintRejection = HarvestSafety.rejection(context,target);
+            if (footprintRejection != null) return fail(context,footprintRejection);
+            harvestRadius = world.harvestFootprint(target).radius();
             beforePickup = harvestItems(world);
             beforeGround = 0;
             beforeObservedByItem = Map.of();
@@ -153,14 +168,28 @@ public final class HarvestModule implements AutomationModule {
             ticket = actions.submit(new Action.UseBlock(target, Action.Use.HARVEST));
             useAttempts++;
             stage = Stage.USING;
+            useStarted = world.tick();
+            continuation = null;
+            continuationStopped = false;
+            continuationMoving = false;
+            // The use has already been dispatched, so no lookahead can steal
+            // its slot with a door click. Native aiming remains on this crop.
+            if (!actions.outcome(ticket).done()) continueHarvestMovement(context);
             return WorkResult.busy("괭이 우클릭 수확 결과를 기다립니다.");
         }
         if (stage == Stage.USING) {
             ActionOutcome outcome = actions.outcome(ticket);
-            if (!outcome.done()) return WorkResult.busy("토마토 성장 상태 변경을 기다립니다.");
+            if (!outcome.done()) {
+                continueHarvestMovement(context);
+                return WorkResult.busy("토마토 성장 상태 변경을 기다립니다.");
+            }
             ticket = -1;
             if (!outcome.success() || isMature(world, target)) {
-                if (useAttempts < 2 && isMature(world, target)) { stage = Stage.APPROACH; return WorkResult.busy("우클릭 수확을 한 번 다시 확인합니다."); }
+                if (useAttempts < 2 && isMature(world, target)) {
+                    stopContinuation(context);
+                    stage = Stage.APPROACH;
+                    return WorkResult.busy("우클릭 수확을 한 번 다시 확인합니다.");
+                }
                 recordSample(context, true);
                 if (!isMature(world,target)) unresolvedOutput = "작물은 바뀌었지만 수확 응답이 확인되지 않았습니다. 수확물을 확인한 뒤 F8로 다시 시작하세요.";
                 return fail(context, unresolvedOutput != null ? unresolvedOutput : "우클릭 수확이 확인되지 않았습니다: " + outcome.message());
@@ -169,6 +198,7 @@ public final class HarvestModule implements AutomationModule {
             stage = Stage.PICKUP;
         }
         if (stage == Stage.PICKUP) {
+            if (profile.magnetOverflowHarvest) continueHarvestMovement(context);
             HarvestObservation observation = profile.magnetOverflowHarvest ? observeHarvest(world) : null;
             int inventoryNow = observation == null ? harvestItems(world) : observation.inventoryCount();
             int groundNow = observation == null ? 0 : observation.groundCount();
@@ -180,13 +210,14 @@ public final class HarvestModule implements AutomationModule {
                 if (observation != null) recordMagnetOutput(context,observation);
                 recordSample(context, false);
                 markCompletedFarm(context,target);
-                actions.stopMovement();
-                context.navigation().reset();
+                if (!continuationMoving) {
+                    actions.stopMovement();
+                    context.navigation().reset();
+                }
                 target = null;
                 stage = Stage.APPROACH;
                 return WorkResult.busy(groundNow > 0 ? "수확물 생성을 확인했습니다. 자석 운반을 유지하며 수확합니다." : "토마토를 주웠습니다.");
             }
-            if (profile.magnetOverflowHarvest) actions.stopMovement();
             if (!profile.magnetOverflowHarvest && !outputConfirmed && elapsed >= 10) {
                 Pos pickup = pickupFeet(world, target);
                 if (pickup == null) { recordSample(context, true); return fail(context, "수확물 옆에 안전하게 설 자리가 없습니다."); }
@@ -206,6 +237,40 @@ public final class HarvestModule implements AutomationModule {
             return WorkResult.busy(profile.magnetOverflowHarvest ? "자석이 운반할 수확물 생성을 확인하고 있습니다." : "바닥에 나온 토마토를 줍습니다.");
         }
         return WorkResult.busy("수확 준비 중입니다.");
+    }
+
+    private void continueHarvestMovement(Context context) {
+        WorldAccess world = context.world();
+        if (calibration || !context.profile().magnetOverflowHarvest || !context.actions().supportsMovingHarvest()
+            || world.tick()-useStarted>=10 || continuationStopped) {
+            stopContinuation(context);
+            return;
+        }
+        if (continuation != null && !isMature(world,continuation)) continuation = null;
+        if (continuation == null) {
+            double maximumDistance = harvestRadius*2+2;
+            for (Pos next:pending) {
+                if (!world.loaded(next) || !isMature(world,next)
+                    || HarvestRoutePlanner.withinFootprint(target,next,harvestRadius)
+                    || Math.abs((long)next.y()-target.y())>1
+                    || Math.hypot((long)next.x()-target.x(),(long)next.z()-target.z())>maximumDistance) continue;
+                continuation = next;
+                break;
+            }
+        }
+        if (continuation == null) {
+            stopContinuation(context);
+            return;
+        }
+        Navigation.Result result = context.navigation().moveToWithoutInteraction(continuation,2.15,context);
+        continuationMoving = result == Navigation.Result.MOVING;
+        if (result != Navigation.Result.MOVING) stopContinuation(context);
+    }
+
+    private void stopContinuation(Context context) {
+        context.actions().stopMovement();
+        continuationMoving = false;
+        continuationStopped = true;
     }
 
     private String scan(Context context) {
@@ -236,6 +301,22 @@ public final class HarvestModule implements AutomationModule {
                 + (harvestedThisPass.contains(farmKey(farm)) ? Math.max(1,context.profile().harvestCycleDays) : 1));
         }
         return null;
+    }
+
+    private void orderPending(Context context) {
+        // Calibration compares the existing short approaches, not two different
+        // coverage routes; normal harvest uses the now-selected native hoe hint.
+        if (calibration || pending.isEmpty()) return;
+        HarvestFootprint footprint = context.world().harvestFootprint(pending.getFirst());
+        if (footprint == null || !footprint.known() || footprint.radius() <= 0) return;
+        LinkedHashSet<Pos> remaining = new LinkedHashSet<>(pending);
+        pending.clear();
+        for (Farm farm:context.profile().farms) {
+            List<Pos> sector = remaining.stream().filter(farm::contains).toList();
+            pending.addAll(HarvestRoutePlanner.order(sector,footprint.radius()));
+            remaining.removeAll(sector);
+        }
+        pending.addAll(remaining);
     }
 
     private void markCompletedFarm(Context context, Pos harvested) {
@@ -324,9 +405,14 @@ public final class HarvestModule implements AutomationModule {
 
     private void clearWork() {
         active = false;
+        routeOrdered = false;
         pending.clear();
         harvestedThisPass.clear();
         target = null;
+        continuation = null;
+        continuationMoving = false;
+        continuationStopped = false;
+        harvestRadius = 0;
         ticket = -1;
         sweep = 0;
         useAttempts = 0;

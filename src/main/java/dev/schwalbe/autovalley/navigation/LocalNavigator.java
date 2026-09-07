@@ -30,6 +30,15 @@ public final class LocalNavigator implements Navigation {
     }
 
     @Override public Result moveTo(Pos target, double reach, Context context) {
+        return moveTo(target,reach,context,true);
+    }
+
+    /** Harvest lookahead must never open a door while another click is being verified. */
+    @Override public Result moveToWithoutInteraction(Pos target,double reach,Context context) {
+        return moveTo(target,reach,context,false);
+    }
+
+    private Result moveTo(Pos target,double reach,Context context,boolean allowDoors) {
         WorldAccess world = context.world();
         ActionPort actions = context.actions();
         PlayerState player = world.player();
@@ -86,6 +95,7 @@ public final class LocalNavigator implements Navigation {
         if (door != null) {
             actions.stopMovement();
             previousMoving = false;
+            if (!allowDoors) return blocked(actions,"수확 이동을 이어가려면 문을 열어야 하므로 잠시 멈춥니다.");
             if (!world.canInteract(door, 4.25)) return blocked(actions, "문에 손이 닿지 않습니다.");
             if (actions.busy()) return Result.MOVING;
             doorTicket = actions.submit(new Action.UseBlock(door, Action.Use.DOOR));

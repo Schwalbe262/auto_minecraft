@@ -2,6 +2,7 @@ package dev.schwalbe.autovalley.client;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import dev.schwalbe.autovalley.core.Movement;
+import dev.schwalbe.autovalley.core.MovementAxes;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraftforge.client.event.*;
@@ -59,8 +60,9 @@ public final class ClientEvents {
         if (event.getEntity()!=Minecraft.getInstance().player || !runtime().running()) return;
         Movement intent=runtime().movement();
         var input=event.getInput();
-        input.forwardImpulse=intent!=null && intent.forward() ? 1 : 0;
-        input.leftImpulse=0; input.up=input.forwardImpulse>0; input.down=false; input.left=false; input.right=false;
+        MovementAxes axes=MovementAxes.from(intent,event.getEntity().getYRot());
+        input.forwardImpulse=axes.forward(); input.leftImpulse=axes.left();
+        input.up=axes.forward()>0; input.down=axes.forward()<0; input.left=axes.left()>0; input.right=axes.left()<0;
         input.jumping=false; input.shiftKeyDown=intent!=null && intent.sneak();
     }
     @SubscribeEvent public void hud(RenderGuiEvent.Post event) {

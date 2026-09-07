@@ -189,6 +189,7 @@ class EngineSafetyTest {
         Context context() { return new Context(this,this,this,profile); }
         @Override public long tick() { return ticks; }
         @Override public long dayTime() { return 13000; }
+        @Override public HarvestFootprint harvestFootprint(Pos target) { return HarvestFootprint.single(target); }
         @Override public PlayerState player() { return new PlayerState(.5,64,.5,0,0,true,false,20,20,0,connected,focused); }
         @Override public BlockData block(Pos p) { return block; }
         @Override public boolean loaded(Pos p) { return true; }

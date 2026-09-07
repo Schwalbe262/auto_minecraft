@@ -198,6 +198,169 @@ class NavigationHarvestTest {
         assertEquals(1, actions.submitted.size(), "Immature tomatoes are never clicked");
     }
 
+    @Test void areaHarvestUsesSeparatedCentersAndSkipsOnlyObservedNeighbourChanges() {
+        FakeWorld world = areaWorld(6,3);
+        FakeActions actions = new FakeActions();
+        HarvestModule module = new HarvestModule();
+        Context context = new Context(world,actions,new ArrivedNavigation(),farmProfile(new Pos(5,0,2)));
+        WorkResult result = null;
+        for (int tick=0;tick<100;tick++) {
+            result = module.tick(context);
+            assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());
+            if (actions.busy()) {
+                Pos clicked = ((Action.UseBlock)actions.submitted.get(actions.submitted.size()-1)).pos();
+                for (Pos crop:List.copyOf(world.blocks.keySet()))
+                    if (HarvestRoutePlanner.withinFootprint(clicked,crop,1)) world.tomato(crop,0);
+                world.put(1,new ItemData(ItemData.TOMATO,actions.submitted.size()*9,0,null,false,0));
+                actions.complete(true);
+            }
+            world.now++;
+            if (result.state()==WorkResult.State.IDLE) break;
+        }
+        assertNotNull(result);
+        assertEquals(WorkResult.State.IDLE,result.state());
+        assertEquals(List.of(new Pos(1,0,1),new Pos(4,0,1)),actions.submitted.stream().map(a -> ((Action.UseBlock)a).pos()).toList());
+        assertEquals(1L,context.profile().nextEligibleDay.get("harvest:first"));
+    }
+
+    @Test void nativeCoverageHintWithoutNeighbourChangesRetainsEveryFallbackClick() {
+        FakeWorld world = areaWorld(3,3);
+        FakeActions actions = new FakeActions();
+        HarvestModule module = new HarvestModule();
+        Context context = new Context(world,actions,new ArrivedNavigation(),farmProfile(new Pos(2,0,2)));
+        Set<Pos> clicked = new HashSet<>();
+        for (int tick=0;tick<200;tick++) {
+            WorkResult result = module.tick(context);
+            assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());
+            if (actions.busy()) {
+                Pos crop = ((Action.UseBlock)actions.submitted.get(actions.submitted.size()-1)).pos();
+                clicked.add(crop);
+                world.tomato(crop,0); // Server applied ONLY the selected crop, not the local area hint.
+                world.put(1,new ItemData(ItemData.TOMATO,actions.submitted.size(),0,null,false,0));
+                actions.complete(true);
+            }
+            world.now++;
+            if (result.state()==WorkResult.State.IDLE) break;
+        }
+        assertEquals(new Pos(1,0,1),((Action.UseBlock)actions.submitted.get(0)).pos());
+        assertEquals(9,clicked.size());
+        assertEquals(9,actions.submitted.size());
+    }
+
+    @Test void unknownNativeAreaOrForeignCropBlocksBeforeAnyUse() {
+        FakeWorld world = areaWorld(3,3);
+        world.footprintKnown = false;
+        FakeActions actions = new FakeActions();
+        Context context = new Context(world,actions,new ArrivedNavigation(),farmProfile(new Pos(2,0,2)));
+        assertEquals(WorkResult.State.BLOCKED,new HarvestModule().tick(context).state());
+        assertTrue(actions.submitted.isEmpty());
+        world.footprintKnown = true;
+        Pos foreign = new Pos(1,1,1);
+        world.blocks.put(foreign,new BlockData(foreign,"minecraft:wheat",Map.of("age","7")));
+        assertEquals(WorkResult.State.BLOCKED,new HarvestModule().tick(context).state());
+        assertTrue(actions.submitted.isEmpty(),"An upper fallback crop must not receive the area use");
+    }
+
+    @Test void movingHarvestMaintainsSteeringThroughPendingAckAndMagnetOutputSettle() {
+        FakeWorld world = areaWorld(6,3);
+        FakeActions actions = new FakeActions();
+        actions.movingHarvest = true;
+        HarvestModule module = new HarvestModule();
+        Context context = new Context(world,actions,new LocalNavigator(),farmProfile(new Pos(5,0,2)));
+        assertEquals(WorkResult.State.BUSY,module.tick(context).state());
+        assertEquals(1,actions.submitted.size());
+        assertNotNull(actions.movement,"A separated next center can be approached in the same tick as use");
+        assertFalse(actions.movement.jump());
+        world.now = 1;
+        module.tick(context);
+        assertNotNull(actions.movement);
+        assertEquals(1,actions.submitted.size(),"Moving must not create a second pending click");
+        Pos clicked = ((Action.UseBlock)actions.submitted.get(0)).pos();
+        for (Pos crop:List.copyOf(world.blocks.keySet()))
+            if (HarvestRoutePlanner.withinFootprint(clicked,crop,1)) world.tomato(crop,0);
+        world.put(1,new ItemData(ItemData.TOMATO,9,0,null,false,0));
+        actions.complete(true);
+        world.now = 2;
+        module.tick(context);
+        assertNotNull(actions.movement,"ACK alone should not force a stop while output settles");
+        world.now = 4;
+        module.tick(context);
+        assertNotNull(actions.movement,"Confirmed output leaves safe lookahead steering for the next tick");
+        assertEquals(1,actions.submitted.size());
+    }
+
+    @Test void longHarvestAckStopsLookaheadWithoutRetryingOrClaimingCompletion() {
+        FakeWorld world = areaWorld(6,3);
+        FakeActions actions = new FakeActions();
+        actions.movingHarvest = true;
+        HarvestModule module = new HarvestModule();
+        Context context = new Context(world,actions,new LocalNavigator(),farmProfile(new Pos(5,0,2)));
+        module.tick(context);
+        assertNotNull(actions.movement);
+        world.now = 10;
+        assertEquals(WorkResult.State.BUSY,module.tick(context).state());
+        assertNull(actions.movement);
+        world.now = 15;
+        module.tick(context);
+        assertNull(actions.movement);
+        assertEquals(1,actions.submitted.size());
+        assertTrue(context.profile().nextEligibleDay.isEmpty());
+    }
+
+    @Test void movingHarvestOptInAndMagnetAreBothRequired() {
+        for (boolean magnet:List.of(false,true)) {
+            FakeWorld world = areaWorld(6,3);
+            FakeActions actions = new FakeActions();
+            actions.movingHarvest = !magnet;
+            Profile profile = farmProfile(new Pos(5,0,2));
+            profile.magnetOverflowHarvest = magnet;
+            Context context = new Context(world,actions,new LocalNavigator(),profile);
+            new HarvestModule().tick(context);
+            assertEquals(1,actions.submitted.size());
+            assertNull(actions.movement);
+        }
+    }
+
+    @Test void absentOrDistantContinuationStopsSoftlyWithoutBlockingCurrentHarvest() {
+        for (Pos next:List.of(new Pos(1,0,0),new Pos(8,0,0))) {
+            FakeWorld world = new FakeWorld();
+            world.harvestRadius = 1;
+            world.tomato(ORIGIN,3);
+            world.tomato(next,3);
+            FakeActions actions = new FakeActions();
+            actions.movingHarvest = true;
+            Context context = new Context(world,actions,new LocalNavigator(),farmProfile(next));
+            assertEquals(WorkResult.State.BUSY,new HarvestModule().tick(context).state());
+            assertEquals(1,actions.submitted.size());
+            assertNull(actions.movement);
+        }
+    }
+
+    @Test void noInteractionNavigatorNeverOpensDoorBeforeOrAfterHarvestAck() {
+        FakeWorld world = new FakeWorld();
+        Pos door = new Pos(1,0,0);
+        world.blocks.put(door,new BlockData(door,"minecraft:oak_door",Map.of("open","false")));
+        FakeActions actions = new FakeActions();
+        LocalNavigator navigation = new LocalNavigator();
+        Context context = new Context(world,actions,navigation,farmProfile(new Pos(5,0,0)));
+        actions.submit(new Action.UseBlock(ORIGIN,Action.Use.HARVEST));
+        assertEquals(Navigation.Result.BLOCKED,navigation.moveToWithoutInteraction(new Pos(5,0,0),.4,context));
+        assertEquals(1,actions.submitted.size());
+        assertNull(actions.movement);
+        actions.complete(true);
+        navigation.reset();
+        assertEquals(Navigation.Result.BLOCKED,navigation.moveToWithoutInteraction(new Pos(5,0,0),.4,context));
+        assertEquals(1,actions.submitted.size());
+        assertNull(actions.movement);
+    }
+
+    private static FakeWorld areaWorld(int width,int depth) {
+        FakeWorld world = new FakeWorld();
+        world.harvestRadius = 1;
+        for (int x=0;x<width;x++) for (int z=0;z<depth;z++) world.tomato(new Pos(x,0,z),3);
+        return world;
+    }
+
     @Test void unripeFarmWaitsUntilNextGameDayEvenAfterReset() {
         FakeWorld world = new FakeWorld();
         FakeActions actions = new FakeActions();
@@ -655,6 +818,8 @@ class NavigationHarvestTest {
         final Map<Long,ActionOutcome> outcomes = new HashMap<>();
         long current;
         Movement movement;
+        boolean movingHarvest;
+        public boolean supportsMovingHarvest() { return movingHarvest; }
         public boolean busy() { return current > 0 && !outcomes.get(current).done(); }
         public long submit(Action action) {
             if (busy()) throw new AssertionError("Overlapping action");
@@ -674,6 +839,8 @@ class NavigationHarvestTest {
         long day = 5000;
         double x = .5, y, z = .5, supportOffset;
         int selected;
+        int harvestRadius;
+        boolean footprintKnown = true;
         int goalChecks;
         boolean focused = true, connected = true;
         boolean allowAscent = true, allowCurrentInteraction = true;
@@ -698,6 +865,16 @@ class NavigationHarvestTest {
         public List<BlockData> scan(Pos center,int radius,int vertical) { return List.copyOf(blocks.values()); }
         public List<ItemSlot> inventory() { return slots; }
         public List<GroundItem> groundItems() { return ground; }
+        public HarvestFootprint harvestFootprint(Pos target) {
+            if (!footprintKnown) return HarvestFootprint.UNKNOWN;
+            if (harvestRadius==0) return HarvestFootprint.single(target);
+            Set<Pos> candidates = new LinkedHashSet<>();
+            candidates.add(target);
+            for (BlockData block:blocks.values())
+                if ((block.tomato() || block.id().equals("minecraft:wheat")) && HarvestRoutePlanner.withinFootprint(target,block.pos(),harvestRadius))
+                    candidates.add(block.pos());
+            return new HarvestFootprint(true,harvestRadius,List.copyOf(candidates));
+        }
         public MenuData menu() { return new MenuData(0,0,slots,ItemData.EMPTY,false); }
         public boolean mayPlace(int slot,ItemData item) { return true; }
         public boolean canInteract(Pos target,double reach) { return allowCurrentInteraction && WorldAccess.super.canInteract(target,reach); }

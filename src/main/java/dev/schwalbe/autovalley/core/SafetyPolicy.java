@@ -22,7 +22,8 @@ public final class SafetyPolicy {
                     ItemData held = held(world);
                     boolean inFarm = profile.farms.stream().anyMatch(f -> f.contains(use.pos()));
                     yield !context.session().allows(profile,Feature.HARVEST) || !inFarm || !block.matureTomato() || !held.hoe()
-                        ? "Harvest requires a mature registered tomato and the selected hoe" : null;
+                        || held.durability()<=1 || player.selectedSlot()!=profile.hoeHotbarSlot
+                        ? "Harvest requires a mature registered tomato and the selected usable hoe" : HarvestSafety.rejection(context,use.pos());
                 }
                 case MACHINE -> {
                     boolean wine = block.id().equals("society:wine_keg");
