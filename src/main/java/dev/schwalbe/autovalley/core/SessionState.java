@@ -16,6 +16,12 @@ public final class SessionState {
     public final Map<String,Integer> magnetHaulRemaining=new HashMap<>();
     /** Operator reconciliation is not recorded as successful delivery or machine-output pickup. */
     public Map<String,Integer> lastManuallyResolvedHaul=Map.of();
+    /** Capacity-policy audit only: these quantities are not confirmed deposits or manual resolutions. */
+    public Map<String,Integer> lastCapacityReleasedHaul=Map.of();
+    public long lastCapacityReleaseTick=-1;
+    public String magnetCapacityStatus="not_observed";
+    long magnetCapacityObservedTick=Long.MIN_VALUE;
+    int magnetFreeCapacityTicks;
     public final Map<Integer,WineSalePermit> wineSalePermits=new HashMap<>();
     /** Local inspection evidence, not permission to transfer; retained after a one-shot finishes. */
     public final Map<Pos,StorageSurveyObservation> storageSurveyObservations=new java.util.LinkedHashMap<>();

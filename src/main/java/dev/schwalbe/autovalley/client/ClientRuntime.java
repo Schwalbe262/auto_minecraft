@@ -218,6 +218,7 @@ public final class ClientRuntime {
         // can move the bottle out of inventory. Reconnect has no live proof tokens.
         if (persistenceError==null) try { MachineOutputLedger.reconcile(context); }
         catch (RuntimeException e) { pause("산출물 회수 확인 저장 실패 — 자동화 중지"); }
+        MagnetCapacityPolicy.observe(context);
         recorder.tick();
         ClientControl.tick(this);
         if (running() && anglesValid && mc.isWindowActive() && wasFocused && !mc.player.isSleeping() && !wasSleeping && !actions.expectingSleep()
