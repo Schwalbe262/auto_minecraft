@@ -29,12 +29,14 @@ public final class ClientControl {
     /** Call only on the client thread; this method never sends raw input or edits a profile. */
     public static void tick(ClientRuntime runtime) {
         long now = System.nanoTime();
-        if (now < nextPoll) return;
+        if (!EmergencyStartGate.shouldPoll(runtime.automationStartBlocked(),now,nextPoll)) return;
         nextPoll = now + POLL_NANOS;
+        boolean requestSettled=false;
         try {
             Path directory = FMLPaths.CONFIGDIR.get().toAbsolutePath().normalize().resolve("autovalley");
             Path request = directory.resolve("control.request.json");
-            if (!Files.exists(request,LinkOption.NOFOLLOW_LINKS)) return;
+            // exists=false also means access is unknown. Only proven absence clears a stop fence.
+            if (Files.notExists(request,LinkOption.NOFOLLOW_LINKS)) { requestSettled=true; return; }
             if (!Files.isRegularFile(request,LinkOption.NOFOLLOW_LINKS)) {
                 logOnce("Non-regular control request ignored");
                 return;
@@ -47,6 +49,7 @@ public final class ClientControl {
             }
             // Consume exactly this explicit request before any gameplay state transition.
             if (!Files.deleteIfExists(request)) return;
+            requestSettled=true;
             Request parsed;
             try {
                 parsed = parseRequest(content);
@@ -56,6 +59,10 @@ public final class ClientControl {
                 return;
             }
             try {
+                if (EmergencyStartGate.rejectsCommand(runtime.automationStartBlocked(),parsed.command())) {
+                    writeResult(directory,runtime,parsed,true,false,"Emergency stop priority; start request discarded");
+                    return;
+                }
                 boolean acknowledged = switch (parsed.command()) {
                     case "start" -> {
                         if (!runtime.running()) runtime.toggle();
@@ -85,6 +92,10 @@ public final class ClientControl {
             }
         } catch (IOException | RuntimeException e) {
             logOnce("Local control I/O failed: " + e.getClass().getSimpleName());
+        } finally {
+            // Keep the old request fenced through I/O errors, non-regular paths and
+            // unknown existence. Resolve only after confirmed absence or consumption.
+            runtime.emergencyControlChecked(requestSettled);
         }
     }
 

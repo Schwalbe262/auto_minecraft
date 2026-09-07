@@ -33,6 +33,7 @@ public final class ClientRuntime {
     private Connection connection;
     private volatile boolean attackFence;
     private long attackFenceUntil;
+    private final EmergencyStartGate emergencyStartGate=new EmergencyStartGate();
     private float expectedYaw,expectedPitch;
     private boolean anglesValid;
     private int savedScheduleHash;
@@ -74,6 +75,7 @@ public final class ClientRuntime {
         notifyUser("기록 저장: config/autovalley/recordings/"+path.getFileName());
     }
     public boolean runOnce(Feature feature) {
+        if (automationStartBlocked()) { notifyUser("긴급 정지를 처리 중입니다. 잠시 후 새 실행 요청을 보내세요."); return false; }
         if (recording()) { notifyUser("직접 플레이 기록을 저장한 뒤 자동 작업을 실행하세요."); return false; }
         if (persistenceError!=null || mc.screen!=null) { notifyUser("열린 화면이나 설정 오류를 먼저 해결하세요."); return false; }
         pause("한 번 실행 준비");
@@ -102,6 +104,7 @@ public final class ClientRuntime {
     public void toggle() {
         if (running()) pause("단축키로 일시정지");
         else if (persistenceError==null) {
+            if (automationStartBlocked()) return;
             if (recording()) { notifyUser("직접 플레이 기록을 저장한 뒤 자동화를 시작하세요."); return; }
             if (mc.screen!=null) { notifyUser("설정/인벤토리 화면을 닫은 뒤 F8을 누르세요."); return; }
             engine.start(context); actions.enabled(engine.running()); anglesValid=false; attackFence=engine.running();
@@ -117,7 +120,12 @@ public final class ClientRuntime {
             try { saveProfile(); } catch (RuntimeException e) { persistenceError=e.getMessage(); }
         }
     }
-    public void emergencyStop() { pause("긴급 정지 — 다시 시작하려면 F8"); }
+    public boolean automationStartBlocked() { return emergencyStartGate.blockedAt(world.tick()); }
+    public void emergencyControlChecked(boolean settled) { emergencyStartGate.controlChecked(world.tick(),settled); }
+    public void emergencyStop() {
+        emergencyStartGate.stopAt(world.tick());
+        pause("긴급 정지 — 다시 시작하려면 F8");
+    }
     public void manualInput(boolean attack) {
         if (!running()) return;
         if (attack) attackFenceUntil=world.tick()+3;
