@@ -18,12 +18,13 @@ public final class ClientRuntime {
     private static final ClientRuntime INSTANCE=new ClientRuntime();
     private final Minecraft mc=Minecraft.getInstance();
     private final MinecraftWorld world=new MinecraftWorld();
+    private final ClientRecorder recorder=new ClientRecorder(world,this::notifyUser);
     private final ServerObservations observations=new ServerObservations();
     private final MinecraftActions actions=new MinecraftActions(world,observations);
     private final LocalNavigator navigator=new LocalNavigator();
     private final HarvestModule harvest=new HarvestModule();
     private final AutomationEngine engine=new AutomationEngine(List.of(new DisposalModule(),new TomatoStorageModule(),
-        new WineStorageModule(),new ShippingModule(),harvest,new MachineModule(Feature.WINE),new MachineModule(Feature.PRESERVES),new SleepModule()));
+        new WineStorageModule(),new WineSurplusShippingModule(),new ShippingModule(),harvest,new MachineModule(Feature.WINE),new MachineModule(Feature.PRESERVES),new SleepModule()));
     private final ProfileStore store=new ProfileStore(FMLPaths.CONFIGDIR.get().resolve("autovalley"));
     private Profile profile=new Profile();
     private Context context=new Context(world,actions,navigator,profile);
@@ -47,11 +48,49 @@ public final class ClientRuntime {
     public MinecraftWorld world() { return world; }
     public String status() { return persistenceError==null ? engine.status() : persistenceError; }
     public boolean running() { return engine.running(); }
+    public boolean recording() { return recorder.recording(); }
+    public String recordingStatus() { return recorder.status(); }
+    public boolean recordingActive() { return recorder.capturing(); }
+    public String executionMode() { return engine.mode().name(); }
+    public void startRecording() {
+        pause("직접 플레이 기록 준비");
+        recorder.start();
+        notifyUser("REC 시작 — 직접 플레이한 뒤 Ctrl+F8 → 실행·기록에서 이름을 붙여 저장하세요.");
+    }
+    public void stopRecording(String name) {
+        var path=recorder.save(name);
+        notifyUser("기록 저장: config/autovalley/recordings/"+path.getFileName());
+    }
+    public boolean runOnce(Feature feature) {
+        if (recording()) { notifyUser("직접 플레이 기록을 저장한 뒤 자동 작업을 실행하세요."); return false; }
+        if (persistenceError!=null || mc.screen!=null) { notifyUser("열린 화면이나 설정 오류를 먼저 해결하세요."); return false; }
+        pause("한 번 실행 준비");
+        PoiKind destination=feature==null ? null : switch (feature) {
+            case WINE -> PoiKind.WINE_KEG;
+            case PRESERVES -> PoiKind.PRESERVES_JAR;
+            case TOMATO_STORAGE -> PoiKind.TOMATO_CHEST;
+            case WINE_STORAGE -> PoiKind.WINE_CHEST;
+            case SHIPPING, WINE_SURPLUS_SHIPPING -> PoiKind.SHIPPING_BIN;
+            case DISPOSAL -> PoiKind.DISPOSAL;
+            case SLEEP -> PoiKind.BED;
+            default -> null;
+        };
+        if (feature==null || feature==Feature.HARVEST && profile.farms.isEmpty()
+            || destination!=null && profile.pois(destination).isEmpty()) {
+            pause("선택한 작업의 밭/설비/목적지를 먼저 등록하세요."); notifyUser(engine.status()); return false;
+        }
+        engine.startOnce(context,feature);
+        actions.enabled(engine.running()); anglesValid=false; attackFence=engine.running();
+        updateBackgroundPause();
+        if (!running()) notifyUser(engine.status());
+        return running();
+    }
     public boolean blockAttacks() { return attackFence; }
     public Movement movement() { return actions.movement(); }
     public void toggle() {
         if (running()) pause("단축키로 일시정지");
         else if (persistenceError==null) {
+            if (recording()) { notifyUser("직접 플레이 기록을 저장한 뒤 자동화를 시작하세요."); return; }
             if (mc.screen!=null) { notifyUser("설정/인벤토리 화면을 닫은 뒤 F8을 누르세요."); return; }
             engine.start(context); actions.enabled(engine.running()); anglesValid=false; attackFence=engine.running();
             updateBackgroundPause();
@@ -124,6 +163,7 @@ public final class ClientRuntime {
         String key=ProfileStore.key(identity);
         Connection current=mc.getConnection().getConnection();
         if (!key.equals(connectionKey) || current!=connection) connect(key,current);
+        recorder.tick();
         ClientControl.tick(this);
         if (running() && anglesValid && mc.isWindowActive() && wasFocused && !mc.player.isSleeping() && !wasSleeping && !actions.expectingSleep()
             && (Math.abs(net.minecraft.util.Mth.wrapDegrees(mc.player.getYRot()-expectedYaw))>0.05 || Math.abs(mc.player.getXRot()-expectedPitch)>0.05))
@@ -163,11 +203,12 @@ public final class ClientRuntime {
         try { profile=store.load(key); }
         catch (IOException e) { profile=new Profile(); persistenceError="기존 설정 파일을 읽지 못했습니다. 원본을 보존하고 자동화를 중지합니다."; }
         context=new Context(world,actions,navigator,profile); actions.context(context);
-        observations.clear(); PacketObserver.install(current,observations,() -> attackFence);
+        observations.clear(); PacketObserver.install(current,observations,() -> attackFence,recorder);
         engine.stop(context,AutomationEngine.State.OFF,"OFF — Ctrl+F8 설정 / F8 시작");
         actions.enabled(false); anglesValid=false; savedScheduleHash=scheduleHash();
     }
     private void disconnect() {
+        recorder.stopCapture("disconnected_or_dimension_changed");
         engine.stop(context,AutomationEngine.State.OFF,"접속 종료 — 자동화 OFF");
         updateBackgroundPause();
         actions.enabled(false); attackFence=false; anglesValid=false;

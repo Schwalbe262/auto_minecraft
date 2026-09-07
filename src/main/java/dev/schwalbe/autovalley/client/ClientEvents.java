@@ -54,6 +54,7 @@ public final class ClientEvents {
         var mc=Minecraft.getInstance();
         if (mc.player==null || mc.options.hideGui || mc.screen!=null) return;
         String text="Auto Valley " + (runtime().running() ? "ON" : "OFF") + " | " + runtime().status();
+        if (runtime().recording()) text="Auto Valley "+runtime().recordingStatus()+" | Ctrl+F8 → 실행·기록";
         int max=Math.max(100,mc.getWindow().getGuiScaledWidth()-20);
         text=mc.font.plainSubstrByWidth(text,max);
         // Society owns the upper-left calendar; keep automation status above the hotbar instead.

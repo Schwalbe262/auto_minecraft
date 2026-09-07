@@ -6,6 +6,7 @@ run/
 *.log
 *.hprof
 config/autovalley/
+**/recordings/*.jsonl
 .idea/
 *.iml
 out/
