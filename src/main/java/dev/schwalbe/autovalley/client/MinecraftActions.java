@@ -296,6 +296,8 @@ public final class MinecraftActions implements ActionPort {
     private record ContainerShape(Pos canonical,String blockId,Map<Pos,BlockState> chestStates,int chestSlots) {
         private ContainerShape { chestStates=Map.copyOf(chestStates); }
         boolean matches(MenuData menu) {
+            if (SmartShippingRules.BLOCK_ID.equals(blockId))
+                return chestSlots==SmartShippingRules.STORAGE_SLOTS && SmartShippingRules.matchesMenu(menu);
             return chestSlots==0 || menu.slots().stream().filter(s -> !s.player()).count()==chestSlots;
         }
     }
@@ -304,6 +306,10 @@ public final class MinecraftActions implements ActionPort {
         BlockData block=world.block(pos);
         if (!block.flag("container")) return null;
         var state=mc.level.getBlockState(MinecraftWorld.nativePos(pos));
+        if (SmartShippingRules.BLOCK_ID.equals(block.id())) {
+            int slots=NativeSmartShippingInventory.expectedSlots(block.id(),mc.level.getBlockEntity(MinecraftWorld.nativePos(pos)));
+            return slots==SmartShippingRules.STORAGE_SLOTS ? new ContainerShape(pos,block.id(),Map.of(pos,state),slots) : null;
+        }
         if (!(state.getBlock() instanceof ChestBlock)) return new ContainerShape(pos,block.id(),Map.of(),0);
         if (state.getValue(ChestBlock.TYPE)==ChestType.SINGLE)
             return new ContainerShape(pos,block.id(),Map.of(pos,state),27);

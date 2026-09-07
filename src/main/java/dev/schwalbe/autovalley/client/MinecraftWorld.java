@@ -46,8 +46,11 @@ public final class MinecraftWorld implements WorldAccess {
         Map<String,String> properties=new HashMap<>();
         state.getValues().forEach((key,value) -> properties.put(key.getName(),value.toString().toLowerCase(Locale.ROOT)));
         var entity=mc.level.getBlockEntity(bp);
-        if (entity instanceof Container || entity instanceof MenuProvider) properties.put("container","true");
-        return new BlockData(pos,BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString(),properties);
+        String blockId=BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+        if (entity instanceof Container || entity instanceof MenuProvider
+                || NativeSmartShippingInventory.expectedSlots(blockId,entity)==SmartShippingRules.STORAGE_SLOTS)
+            properties.put("container","true");
+        return new BlockData(pos,blockId,properties);
     }
     public boolean loaded(Pos p) { return mc.level!=null && mc.level.hasChunkAt(nativePos(p)) && p.y()>=mc.level.getMinBuildHeight() && p.y()<mc.level.getMaxBuildHeight(); }
     private boolean door(BlockState state) { return state.getBlock() instanceof DoorBlock && !state.is(Blocks.IRON_DOOR); }
