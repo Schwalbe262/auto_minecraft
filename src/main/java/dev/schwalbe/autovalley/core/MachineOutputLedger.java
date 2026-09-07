@@ -1,7 +1,7 @@
 package dev.schwalbe.autovalley.core;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -19,7 +19,11 @@ public final class MachineOutputLedger {
     private static final int MAX_HISTORY = 64;
     private static final int MAX_INVENTORY_COUNT = 36 * 64;
 
-    public enum Resolution { AUTOMATIC_PICKUP, RECOVERED_AND_HANDLED, CONFIRMED_LOST }
+    public enum Resolution {
+        AUTOMATIC_PICKUP, RECOVERED_AND_HANDLED, CONFIRMED_LOST,
+        /** User-disabled wine pickup tracking; deliberately makes no recovery or loss claim. */
+        WINE_PICKUP_TRACKING_DISABLED
+    }
 
     public record ResolutionEntry(PendingMachineOutput output, Resolution resolution, long resolvedDay) { }
 
@@ -92,6 +96,27 @@ public final class MachineOutputLedger {
         return !c.profile().pendingMachineOutputs.isEmpty();
     }
 
+    /**
+     * Explicit compatibility migration after the user disabled wine pickup tracking.
+     * Run with the loaded profile before reconciliation/start gates, never from a query.
+     * Only historical WINE obligations are archived. This does not inspect inventory,
+     * infer collection, acknowledge native actions, modify cooldowns, or permit sales.
+     * The ordinary bounded resolution-history retention policy still applies.
+     */
+    public static int archiveWinePickupTrackingDisabled(Context c) {
+        validate(c.profile());
+        List<PendingMachineOutput> wine=c.profile().pendingMachineOutputs.values().stream()
+                .filter(output -> output.feature()==Feature.WINE).toList();
+        if (wine.isEmpty()) return 0;
+        if (!c.world().player().connected())
+            throw new IllegalStateException("Wine ledger migration requires the loaded world context");
+        day(c); // Validate the archive date before mutating any ledger field.
+        checkpoint(c, () -> {
+            for (PendingMachineOutput output: wine) resolve(c,output,Resolution.WINE_PICKUP_TRACKING_DISABLED);
+        });
+        return wine.size();
+    }
+
     public static boolean ownsActive(Context c, Feature feature) {
         String id = c.session().activeMachineOutputId;
         PendingMachineOutput output = id == null ? null : c.profile().pendingMachineOutputs.get(id);
@@ -149,7 +174,7 @@ public final class MachineOutputLedger {
 
     /** Restore every ledger-owned mutable field if validation or persistence fails. */
     private static void checkpoint(Context c, Runnable mutation) {
-        Map<String, PendingMachineOutput> pending = new HashMap<>(c.profile().pendingMachineOutputs);
+        Map<String, PendingMachineOutput> pending = new LinkedHashMap<>(c.profile().pendingMachineOutputs);
         List<ResolutionEntry> history = new ArrayList<>(c.profile().machineOutputResolutions);
         Set<String> live = new HashSet<>(c.session().liveMachineOutputs);
         String active = c.session().activeMachineOutputId;
@@ -184,6 +209,8 @@ public final class MachineOutputLedger {
             if (entry == null || entry.resolution() == null || entry.resolvedDay() < 0)
                 throw new IllegalArgumentException("Invalid machine-output resolution");
             validateOutput(entry.output());
+            if (entry.resolution() == Resolution.WINE_PICKUP_TRACKING_DISABLED && entry.output().feature() != Feature.WINE)
+                throw new IllegalArgumentException("Disabled wine pickup tracking cannot resolve preserves output");
             if (!ids.add(entry.output().id())) throw new IllegalArgumentException("Duplicate machine-output operation ID");
             if (entry.resolution() == Resolution.AUTOMATIC_PICKUP
                     && entry.output().phase() != PendingMachineOutput.Phase.AWAITING_PICKUP)

@@ -216,7 +216,10 @@ public final class ClientRuntime {
         if (manualScreen || world.menu().container() && !managedContainer) manualOutputInteraction();
         // Observe recovery while paused too, before any control request or consumer
         // can move the bottle out of inventory. Reconnect has no live proof tokens.
-        if (persistenceError==null) try { MachineOutputLedger.reconcile(context); }
+        if (persistenceError==null) try {
+            MachineOutputLedger.archiveWinePickupTrackingDisabled(context);
+            MachineOutputLedger.reconcile(context);
+        }
         catch (RuntimeException e) { pause("산출물 회수 확인 저장 실패 — 자동화 중지"); }
         MagnetCapacityPolicy.observe(context);
         recorder.tick();

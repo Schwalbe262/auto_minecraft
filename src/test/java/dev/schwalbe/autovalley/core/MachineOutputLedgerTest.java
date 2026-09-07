@@ -308,6 +308,81 @@ class MachineOutputLedgerTest {
         }
     }
 
+    @Test void disabledWineTrackingArchivesBothPhasesWithoutClaimingPickupAndPreservesAllJarDebts() {
+        Fixture f=new Fixture(); f.year=null;
+        PendingMachineOutput unconfirmed=output(Feature.WINE,AWAITING_MACHINE_CONFIRMATION);
+        PendingMachineOutput confirmed=output(Feature.WINE,AWAITING_PICKUP);
+        PendingMachineOutput jars=output(Feature.PRESERVES,AWAITING_PICKUP);
+        for(var pending:List.of(unconfirmed,jars,confirmed)) f.profile.pendingMachineOutputs.put(pending.id(),pending);
+        f.session.liveMachineOutputs.addAll(List.of(unconfirmed.id(),jars.id(),confirmed.id()));
+        f.session.activeMachineOutputId=jars.id();
+        f.profile.nextEligibleDay.put("wine:1:64:2",99L);
+        f.ground.add(ground(wine(1,null))); // Neither nearby items nor native wine year are evidence for this migration.
+        assertEquals(2,MachineOutputLedger.archiveWinePickupTrackingDisabled(f.context()));
+        assertEquals(Map.of(jars.id(),jars),f.profile.pendingMachineOutputs);
+        assertEquals(java.util.Set.of(jars.id()),f.session.liveMachineOutputs);
+        assertEquals(jars.id(),f.session.activeMachineOutputId); assertTrue(MachineOutputLedger.hasPending(f.context()));
+        assertEquals(Map.of("wine:1:64:2",99L),f.profile.nextEligibleDay); assertEquals(1,f.saves);
+        assertEquals(List.of(unconfirmed,confirmed),f.profile.machineOutputResolutions.stream().map(MachineOutputLedger.ResolutionEntry::output).toList());
+        assertTrue(f.profile.machineOutputResolutions.stream().allMatch(r -> r.resolution()==WINE_PICKUP_TRACKING_DISABLED));
+        assertEquals(0,f.inventoryReads); assertEquals(0,f.groundReads);
+    }
+
+    @Test void migrationOfRestoredWineIsIdempotentAndDoesNotNeedInventedLiveEvidence() {
+        Fixture f=new Fixture(); PendingMachineOutput wine=output(Feature.WINE,AWAITING_PICKUP);
+        f.profile.pendingMachineOutputs.put(wine.id(),wine); f.session=new SessionState();
+        assertTrue(MachineOutputLedger.hasPending(f.context()),"queries must not silently migrate");
+        assertEquals(1,MachineOutputLedger.archiveWinePickupTrackingDisabled(f.context()));
+        assertFalse(MachineOutputLedger.hasPending(f.context())); assertNull(f.session.activeMachineOutputId);
+        assertEquals(0,MachineOutputLedger.archiveWinePickupTrackingDisabled(f.context())); assertEquals(1,f.saves);
+        assertEquals(1,f.profile.machineOutputResolutions.size());
+    }
+
+    @Test void wineMigrationClearsOnlyWineActiveTokenAndDoesNotGrantPreservesOwnership() {
+        Fixture f=new Fixture(); PendingMachineOutput wine=output(Feature.WINE,AWAITING_PICKUP),jars=output(Feature.PRESERVES,AWAITING_PICKUP);
+        f.profile.pendingMachineOutputs.put(wine.id(),wine); f.profile.pendingMachineOutputs.put(jars.id(),jars);
+        f.session.activeMachineOutputId=wine.id(); f.session.liveMachineOutputs.add(wine.id());
+        MachineOutputLedger.archiveWinePickupTrackingDisabled(f.context());
+        assertNull(f.session.activeMachineOutputId); assertFalse(MachineOutputLedger.ownsActive(f.context(),Feature.PRESERVES));
+        assertTrue(f.session.liveMachineOutputs.isEmpty()); assertEquals(jars,f.profile.pendingMachineOutputs.get(jars.id()));
+    }
+
+    @Test void wineMigrationSaveFailureRestoresPendingOrderHistoryAndEveryLiveToken() {
+        Fixture f=new Fixture(); PendingMachineOutput wine=output(Feature.WINE,AWAITING_MACHINE_CONFIRMATION),jars=output(Feature.PRESERVES,AWAITING_PICKUP);
+        f.profile.pendingMachineOutputs.put(wine.id(),wine); f.profile.pendingMachineOutputs.put(jars.id(),jars);
+        f.session.activeMachineOutputId=wine.id(); f.session.liveMachineOutputs.addAll(List.of(wine.id(),jars.id()));
+        var previous=new MachineOutputLedger.ResolutionEntry(output(Feature.PRESERVES,AWAITING_PICKUP),CONFIRMED_LOST,3);
+        f.profile.machineOutputResolutions.add(previous); f.failSave=true;
+        assertThrows(IllegalStateException.class,() -> MachineOutputLedger.archiveWinePickupTrackingDisabled(f.context()));
+        assertEquals(List.of(wine,jars),List.copyOf(f.profile.pendingMachineOutputs.values()));
+        assertEquals(List.of(previous),f.profile.machineOutputResolutions);
+        assertEquals(java.util.Set.of(wine.id(),jars.id()),f.session.liveMachineOutputs); assertEquals(wine.id(),f.session.activeMachineOutputId);
+        assertTrue(MachineOutputLedger.hasPending(f.context()));
+    }
+
+    @Test void noWineMigrationNeverWritesOrDismissesPreserves() {
+        Fixture f=new Fixture(); PendingMachineOutput jars=output(Feature.PRESERVES,AWAITING_MACHINE_CONFIRMATION);
+        f.profile.pendingMachineOutputs.put(jars.id(),jars); f.failSave=true; f.connected=false;
+        assertEquals(0,MachineOutputLedger.archiveWinePickupTrackingDisabled(f.context()));
+        assertEquals(0,f.saves); assertEquals(Map.of(jars.id(),jars),f.profile.pendingMachineOutputs);
+    }
+
+    @Test void disabledWineReasonCannotBeForgedForJarsOrSelectedAsManualRecovery() {
+        Fixture f=new Fixture(); PendingMachineOutput jars=output(Feature.PRESERVES,AWAITING_PICKUP);
+        f.profile.machineOutputResolutions.add(new MachineOutputLedger.ResolutionEntry(jars,WINE_PICKUP_TRACKING_DISABLED,3));
+        assertThrows(IllegalArgumentException.class,() -> MachineOutputLedger.validate(f.profile));
+        f.profile.machineOutputResolutions.clear(); f.profile.pendingMachineOutputs.put(jars.id(),jars);
+        assertThrows(IllegalArgumentException.class,() -> MachineOutputLedger.resolveByUser(f.context(),jars.id(),WINE_PICKUP_TRACKING_DISABLED));
+        assertEquals(0,f.saves); assertEquals(jars,f.profile.pendingMachineOutputs.get(jars.id()));
+    }
+
+    @Test void disconnectedWineMigrationFailsWithoutChangingProfile() {
+        Fixture f=new Fixture(); f.connected=false; PendingMachineOutput wine=output(Feature.WINE,AWAITING_PICKUP);
+        f.profile.pendingMachineOutputs.put(wine.id(),wine);
+        assertThrows(IllegalStateException.class,() -> MachineOutputLedger.archiveWinePickupTrackingDisabled(f.context()));
+        assertEquals(Map.of(wine.id(),wine),f.profile.pendingMachineOutputs); assertTrue(f.profile.machineOutputResolutions.isEmpty()); assertEquals(0,f.saves);
+    }
+
     private static PendingMachineOutput output(Feature feature, PendingMachineOutput.Phase phase) {
         return new PendingMachineOutput(UUID.randomUUID().toString(), feature, MACHINE, 3,
                 feature == Feature.WINE ? 12 : null, 1, phase);
@@ -324,7 +399,7 @@ class MachineOutputLedgerTest {
         final List<GroundItem> ground = new ArrayList<>();
         Integer year = 12;
         boolean connected = true, failSave;
-        int saves;
+        int saves,inventoryReads,groundReads;
         Runnable onCheckpoint = () -> { };
 
         Context context() { return new Context(this, this, this, profile, session, () -> {
@@ -343,8 +418,8 @@ class MachineOutputLedgerTest {
         @Override public boolean canStand(Pos feet) { return true; }
         @Override public boolean canTraverse(Pos from, Pos to) { return true; }
         @Override public List<BlockData> scan(Pos center, int horizontalRadius, int verticalRadius) { return List.of(); }
-        @Override public List<ItemSlot> inventory() { return items; }
-        @Override public List<GroundItem> groundItems() { return ground; }
+        @Override public List<ItemSlot> inventory() { inventoryReads++; return items; }
+        @Override public List<GroundItem> groundItems() { groundReads++; return ground; }
         @Override public Integer wineYear() { return year; }
         @Override public MenuData menu() { return new MenuData(0, 0, items, ItemData.EMPTY, false); }
         @Override public boolean mayPlace(int menuSlot, ItemData item) { return true; }

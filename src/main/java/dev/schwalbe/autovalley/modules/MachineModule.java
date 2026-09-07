@@ -11,6 +11,7 @@ public final class MachineModule implements AutomationModule {
     private Stage stage = Stage.START, afterClose;
     private Pending pending;
     private long ticket = -1, verifySince;
+    private long useSettleAt = -1;
     private List<Poi> machines = List.of(), sources = List.of();
     private final Map<Poi,int[]> stock = new LinkedHashMap<>();
     private static final int STOCK_REFRESH_TICKS = 1200;
@@ -63,7 +64,7 @@ public final class MachineModule implements AutomationModule {
                     if (invalid != null) return fail(invalid);
                     stage = Stage.FETCH;
                 }
-                case SWAP, SELECT -> stage = Stage.EQUIP;
+                case SWAP, SELECT -> { useSettleAt = -1; stage = Stage.EQUIP; }
                 case USE -> { stage = Stage.VERIFY; verifySince = c.world().tick(); }
                 case INPUT_MERGE -> {
                     if (result.confirmedCount()==0 && !pendingReposition) rejectedInputMerge=pendingMergeState;
@@ -221,10 +222,13 @@ public final class MachineModule implements AutomationModule {
                     if (!block.id().equals(blockId())) return fail("Production machine changed");
                     if (block.flag("working") && !block.flag("mature")) { machineIndex++; stage = Stage.MACHINE; break; }
                     if (!feeding && !block.flag("mature")) { machineIndex++; stage = Stage.MACHINE; break; }
+                    c.actions().stopMovement();
+                    useSettleAt = -1;
                     hotbar = (c.profile().hoeHotbarSlot + 1) % 9; stage = Stage.EQUIP;
                 }
             }
             case EQUIP -> {
+                c.actions().stopMovement();
                 if (c.world().menu().container() || !c.world().menu().carried().empty()) return fail("Close inventory screens and clear the cursor before production");
                 ItemSlot selected = c.world().inventory().stream().filter(s -> s.inventoryIndex() == hotbar).findFirst().orElse(null);
                 boolean correct = feeding ? selected != null && ModuleSupport.tomatoGrade(selected.item(),grade) && selected.item().count() >= cost
@@ -240,20 +244,33 @@ public final class MachineModule implements AutomationModule {
                 if (block.flag("working") && !block.flag("mature")) { machineIndex++; stage = Stage.MACHINE; break; }
                 collected = block.flag("mature");
                 if (!feeding && !collected) { machineIndex++; stage = Stage.MACHINE; break; }
-                // Output quality/year can differ from existing items: reserve a real free slot.
-                if (collected && !ModuleSupport.hasEmptyInventorySlot(c)) return fail("Free an inventory slot to collect the completed product");
-                // A pickup of an older product (even another wine cohort) would make a
-                // simple inventory increase look like confirmation of this new output.
-                if (collected && c.world().groundItems().stream().anyMatch(g -> g.item().is(outputId())))
+                // Preserves still require durable pickup evidence. Wine pickup tracking,
+                // including speculative capacity/ground-product gates, is user-disabled.
+                if (collected && feature==Feature.PRESERVES && !ModuleSupport.hasEmptyInventorySlot(c)) return fail("Free an inventory slot to collect the completed product");
+                // An older dropped preserves product must not impersonate its new output.
+                if (collected && feature==Feature.PRESERVES && c.world().groundItems().stream().anyMatch(g -> g.item().is(outputId())))
                     return fail("Pick up previously dropped "+outputId()+" before collecting another completed machine");
+                // Arrival is not a lease on reach: inventory selection takes multiple
+                // ticks and residual movement can leave the native hit ray out of range.
+                // Stop, allow two real game ticks to settle, then check the actual ray
+                // immediately before a write-ahead obligation or any machine dispatch.
+                if (useSettleAt < 0) useSettleAt = c.world().tick();
+                if (c.world().tick() - useSettleAt < 2)
+                    return WorkResult.busy("Settling before production interaction");
+                if (!c.world().loaded(target().pos()) || !c.world().canInteract(target().pos(),4.0)) {
+                    useSettleAt = -1; c.navigation().reset(); stage = Stage.RETURN;
+                    return WorkResult.busy("Reapproaching production machine before interaction");
+                }
                 inputBefore = ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
-                // submit() can dispatch immediately: the durable obligation must reach disk first.
+                // submit() can dispatch immediately: preserves obligations reach disk first.
                 if (collected) {
                     Map<Integer,ItemData> before=new HashMap<>();
                     for (ItemSlot slot:c.world().inventory()) before.put(slot.inventoryIndex(),slot.item());
                     inventoryBeforeOutput=Map.copyOf(before);
-                    PendingMachineOutput output=MachineOutputLedger.prepare(c,feature,target().pos());
-                    outputOperationId=output.id(); outputWineYear=output.expectedWineYear();
+                    if (feature==Feature.PRESERVES) {
+                        PendingMachineOutput output=MachineOutputLedger.prepare(c,feature,target().pos());
+                        outputOperationId=output.id(); outputWineYear=output.expectedWineYear();
+                    } else outputWineYear=c.world().wineYear(); // Optional merge preference only.
                 }
                 submit(c,new Action.UseBlock(target().pos(),Action.Use.MACHINE),Pending.USE);
             }
@@ -265,9 +282,12 @@ public final class MachineModule implements AutomationModule {
                 if (inputConfirmed && stateConfirmed) {
                     if (feeding) { freshForHaul = false; inputMergeAttempts=0; }
                     schedule(c,target(),feeding ? (feature == Feature.WINE ? c.profile().wineCycleDays : c.profile().preservesCycleDays) : 1);
-                    if (collected) {
+                    if (collected && feature==Feature.PRESERVES) {
                         MachineOutputLedger.confirmMachine(c,outputOperationId);
                         stage = Stage.PICKUP;
+                    } else if (collected) {
+                        preferredOutputSource=outputWineYear==null ? null : newlyReceivedOutput(c);
+                        outputMergeAttempts=0; stage=Stage.OUTPUT;
                     }
                     else { machineIndex++; stage = Stage.MACHINE; }
                 } else if (c.world().tick() - verifySince > c.profile().interactionTimeoutTicks) return fail("Production input or machine state did not synchronize; inspect the machine");
@@ -293,7 +313,7 @@ public final class MachineModule implements AutomationModule {
                 }
             }
             case OUTPUT -> {
-                // The durable output obligation is already resolved and checkpointed.
+                // Preserves pickup was checkpointed; wine intentionally has no pickup gate.
                 // Inventory-only merging is not a warehouse deposit or a sale.
                 String fingerprint=mergeState(c,outputId(),null);
                 if (outputMergeAttempts<36 && !fingerprint.equals(rejectedOutputMerge)) {
@@ -468,7 +488,7 @@ public final class MachineModule implements AutomationModule {
     }
     @Override public void reset() { clearRun(); unresolvedInteraction = null; rejectedInputMerge=null; rejectedOutputMerge=null; repositionedInputState=null; }
     private void clearRun() {
-        stage = Stage.START; afterClose = null; pending = null; ticket = -1; verifySince = 0;
+        stage = Stage.START; afterClose = null; pending = null; ticket = -1; verifySince = 0; useSettleAt = -1;
         machines = List.of(); sources = List.of(); stock.clear(); machineIndex = 0; sourceIndex = 0;
         stockReady = false; freshForHaul = false; stockDay = 0; stockTick = 0;
         source = null; containerId = -1; grade = -1; collected = false; feeding = false;
