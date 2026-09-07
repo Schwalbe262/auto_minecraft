@@ -246,3 +246,18 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   and no native failure fence. The final cancelled request was caused by the
   explicit pause. There was no complete trace of the preceding repetition, so
   that snapshot does not establish the exact cause of the reported stall.
+- The same instance was normally restarted with this build. Quick Play stopped
+  at its failure screen; a normal in-client connection to the configured server
+  then succeeded. No second client or desktop-input automation was used.
+- The live WINE one-shot completed all **133 remaining mature kegs**. Retained
+  native receipts confirmed **133 machine interactions** and **128 inventory
+  consolidations**, all successful. Inventory changed from zero wine to 133;
+  448 withdrawn tomatoes became 49 remaining (399 = 133 x 3 consumed). All 384
+  registered kegs were subsequently observed working, with zero mature kegs.
+- The one-second trace shows one 32-container source survey, followed by a single
+  supply trip and uninterrupted carried-batch use to completion. There was no
+  return to stock counting during production, including beyond the former
+  1,200-tick refresh threshold. The run took less than two minutes including
+  its initial navigation and supply work; this is one observed run, not a general
+  throughput guarantee. A subsequent TOMATO_STORAGE one-shot returned all 49
+  leftover tomatoes and completed with none remaining in inventory.
