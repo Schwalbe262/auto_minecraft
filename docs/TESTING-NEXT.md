@@ -429,3 +429,27 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   Earlier interruption/setup time is excluded. At this checkpoint the requested
   three-hour continuous window remains incomplete; later cycles still need
   verification. Private raw inventory identities and coordinates are not published.
+
+### Live common-cycle wine pass: all 384 kegs, game day 339
+
+- On day 338, 378 mature kegs waited for common due day 339 without an early
+  wine visit. Once all 384 were mature, the continuous run completed one source
+  survey, withdrew 1,152 grade-1 tomatoes, and consumed all of them in 384 refills.
+- All 384 new bottles were observed with raw production cohort 10 before
+  storage; confirmed transfers of five times 64, then 63 and 1 deposited all 384.
+  The engine returned to normal waiting with no ingredients or products left.
+  The common next date became 345, exactly six days after the final feed.
+- The scoped 895 consecutive action IDs all reached success with none missing:
+  32 source open/close pairs, acquisition, 384 production interactions, hotbar/
+  stack organization, and storage. Full-rack state changes and ingredient/product
+  conservation corroborate the generic interaction receipts. Temporary PENDING
+  observations were subsequently confirmed, not counted as additional actions.
+- First sampled wine activity through post-storage waiting took **254.128
+  seconds (4 minutes 14 seconds)**. No OFF state, native failure fence, navigation
+  error, missing output obligation or observer write failure occurred in this
+  scoped pass. It was followed by normal automatic sleep and next-day harvesting.
+- Briefly uninitialized wine metadata resolved before storage without stopping
+  production. The trace does not independently prove every transient race absent,
+  reconstruct the entire warehouse grade-total table, identify the final physical
+  storage barrel, or verify its rotating UI label. It is not evidence of surplus
+  wine sales: storage had accepted all bottles. The three-hour soak remains open.
