@@ -149,7 +149,8 @@ public final class AutomationEngine {
         }
         switch (result.state()) {
             case BUSY -> { state=State.RUNNING; status="One-shot " + oneShotFeature + ": " + result.message(); }
-            case IDLE -> stop(c,State.COMPLETE,"One-shot " + oneShotFeature + " complete: no eligible work remains");
+            case IDLE -> stop(c,State.COMPLETE,"One-shot " + oneShotFeature + " complete: no eligible work remains"
+                + (result.message()==null || result.message().isBlank() ? "" : " — "+result.message()));
             case BLOCKED -> stop(c,State.PAUSED,"One-shot " + oneShotFeature + " paused: " + result.message());
         }
     }

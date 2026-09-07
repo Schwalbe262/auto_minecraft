@@ -5,7 +5,7 @@ import java.util.*;
 
 /** Sells carried surplus only after every reserve container in its age cohort is full. */
 public final class WineSurplusShippingModule implements AutomationModule {
-    private enum Stage { FIND, RESERVE, INSPECT, PERMIT, SHIPPING, TRANSFER, FINISH }
+    private enum Stage { FIND, RESERVE, INSPECT, PERMIT, SHIPPING, TRANSFER, NEXT, FINISH }
     private enum Pending { CLOSE, OPEN_RESERVE, OPEN_SHIPPING, SELL }
     private Stage stage=Stage.FIND, afterClose;
     private Pending pending;
@@ -17,6 +17,10 @@ public final class WineSurplusShippingModule implements AutomationModule {
     private Set<Pos> reservePositions=Set.of();
     private int reserveIndex, shippingIndex, containerId=-1, beforeDestination, beforeAllowance, sentCount;
     private WorkResult finishResult;
+    private final Deque<Integer> cohorts=new ArrayDeque<>();
+    private final Set<Integer> visited=new LinkedHashSet<>(), retained=new LinkedHashSet<>();
+    private boolean started, yieldAfterSweep;
+    private int soldCount;
 
     public WineSurplusShippingModule() { }
     @Override public Feature feature() { return Feature.WINE_SURPLUS_SHIPPING; }
@@ -43,15 +47,20 @@ public final class WineSurplusShippingModule implements AutomationModule {
                     WineSalePermit remaining=session.wineSalePermits.get(cohort);
                     // The action adapter is the sole allowance consumer, including magnet refills.
                     if (remaining!=null && remaining.inventoryLimit()>beforeAllowance-transferred) return fail("Surplus wine allowance was not updated after transfer");
+                    soldCount+=transferred;
                     stage=Stage.TRANSFER;
                 }
             }
             pending=null;
         }
-        if (stage!=Stage.FIND && stage!=Stage.FINISH) {
+        if (stage!=Stage.FINISH) {
+            String invalid=heldWineError(c);
+            if (invalid!=null) return finish(c,WorkResult.blocked(invalid));
+        }
+        if (stage!=Stage.FIND && stage!=Stage.FINISH && stage!=Stage.NEXT) {
             Integer current=c.world().wineYear();
             if (current==null || cohort==null || cohort<0 || cohort>current) return finish(c,WorkResult.blocked("Wine age is unavailable; surplus sales are paused"));
-            if (!registeredReserves(c).equals(reservePositions) || gameDay(c)!=verificationDay) {
+            if (!registeredReserves(c).equals(reservePositions) || registeredReserveCount(c)!=reservePositions.size() || gameDay(c)!=verificationDay) {
                 revoke();
                 return finish(c,WorkResult.blocked("Wine reserve registrations or game day changed; verification must restart"));
             }
@@ -59,9 +68,25 @@ public final class WineSurplusShippingModule implements AutomationModule {
         }
         switch (stage) {
             case FIND -> {
-                ItemSlot held=ModuleSupport.inventoryItem(c,i -> i.is(ItemData.WINE));
-                if (held==null) return WorkResult.idle();
-                exemplar=held.item(); cohort=exemplar.year();
+                // The scheduler revisits its priority list after an active module
+                // finishes. Let lower priorities run before rescanning retained wine.
+                if (yieldAfterSweep) { yieldAfterSweep=false; return WorkResult.idle(); }
+                if (!started) {
+                    if (MachineOutputLedger.hasPending(c)) return fail("Resolve pending machine output before selling surplus wine");
+                    // A run checks its initial inventory cohorts once, not an unbounded
+                    // stream of new magnet pickups. Every cohort gets a fresh reserve scan.
+                    LinkedHashSet<Integer> initial=new LinkedHashSet<>();
+                    for (ItemSlot item:c.world().inventory()) if (item.item().is(ItemData.WINE)) initial.add(item.item().year());
+                    if (initial.size()>36) return fail("Too many wine cohorts in the current inventory");
+                    session.wineSalePermits.clear(); cohorts.addAll(initial); started=true;
+                }
+                ItemSlot held=null;
+                while (held==null && !cohorts.isEmpty()) {
+                    cohort=cohorts.removeFirst(); visited.add(cohort);
+                    held=ModuleSupport.inventoryItem(c,i -> i.is(ItemData.WINE) && Objects.equals(i.year(),cohort));
+                }
+                if (held==null) return finish(c,runResult(c));
+                exemplar=held.item();
                 Integer current=c.world().wineYear();
                 if (current==null || cohort==null || cohort<0 || cohort>current) return fail("Wine age is unknown or invalid; surplus sales are paused");
                 reserves=ModuleSupport.nearest(c,c.profile().pois(PoiKind.WINE_CHEST).stream().filter(p -> Objects.equals(p.classifier(),cohort)).toList());
@@ -86,14 +111,14 @@ public final class WineSurplusShippingModule implements AutomationModule {
                 if (slots.stream().anyMatch(s -> !s.item().empty() && (!s.item().is(ItemData.WINE) || !Objects.equals(s.item().year(),cohort))))
                     return finish(c,WorkResult.blocked("Wine reserve contains another age group or another item; no surplus may be sold"));
                 if (slots.stream().anyMatch(s -> s.item().empty() || s.item().count()!=64))
-                    return finish(c,WorkResult.blocked("Reserved wine storage still has room; fill it before selling surplus"));
+                    return nextCohort(c,true);
                 if (firstVerifiedTick<0) firstVerifiedTick=c.world().tick();
                 reserveIndex++; close(c,Stage.RESERVE);
             }
             case PERMIT -> {
                 if (firstVerifiedTick<0 || c.world().tick()-firstVerifiedTick>=1200) return fail("Wine reserve verification expired; retry before selling");
                 int held=heldCount(c);
-                if (held<=0) { clear(); return WorkResult.idle(); }
+                if (held<=0) return nextCohort(c,false);
                 session.wineSalePermits.put(cohort,new WineSalePermit(cohort,held,firstVerifiedTick,verificationDay,Set.copyOf(reservePositions)));
                 shipping=ModuleSupport.nearest(c,c.profile().pois(PoiKind.SHIPPING_BIN)); shippingIndex=0;
                 if (shipping.isEmpty()) return fail("Register a shipping bin for surplus wine");
@@ -108,7 +133,7 @@ public final class WineSurplusShippingModule implements AutomationModule {
             case TRANSFER -> {
                 if (!validMenu(c)) return fail("Shipping container changed; surplus transfer cancelled");
                 ItemSlot held=ModuleSupport.menuPlayerItem(c,i -> i.is(ItemData.WINE) && Objects.equals(i.year(),cohort));
-                if (held==null) return finish(c,WorkResult.idle());
+                if (held==null) return nextCohort(c,false);
                 if (!permitFresh(c)) return finish(c,WorkResult.blocked("Surplus wine permission expired or was consumed; verify reserves again"));
                 WineSalePermit permit=session.wineSalePermits.get(cohort);
                 if (held.item().count()>permit.inventoryLimit()) return finish(c,WorkResult.blocked("New wine joined the held stack; verify reserves again before selling it"));
@@ -120,8 +145,9 @@ public final class WineSurplusShippingModule implements AutomationModule {
                 submit(c,new Action.QuickMove(containerId,held.index()),Pending.SELL);
             }
             case FINISH -> {
-                WorkResult result=finishResult; clear(); return result;
+                WorkResult result=finishResult; clear(); yieldAfterSweep=result.state()==WorkResult.State.IDLE; return result;
             }
+            case NEXT -> clearCohort();
         }
         return WorkResult.busy("Verifying reserves and shipping surplus wine");
     }
@@ -136,6 +162,32 @@ public final class WineSurplusShippingModule implements AutomationModule {
         for (Poi poi:c.profile().pois(PoiKind.WINE_CHEST)) if (Objects.equals(poi.classifier(),cohort)) result.add(poi.pos());
         return result;
     }
+    private long registeredReserveCount(Context c) {
+        return c.profile().pois(PoiKind.WINE_CHEST).stream().filter(p -> Objects.equals(p.classifier(),cohort)).count();
+    }
+    private static String heldWineError(Context c) {
+        Integer current=c.world().wineYear();
+        for (ItemSlot slot:c.world().inventory()) if (slot.item().is(ItemData.WINE)) {
+            Integer year=slot.item().year();
+            if (current==null || year==null || year<0 || year>current)
+                return "Wine age is unknown or invalid; surplus sales are paused";
+        }
+        return null;
+    }
+    private WorkResult nextCohort(Context c,boolean keep) {
+        if (keep) retained.add(cohort);
+        revoke();
+        if (validMenu(c)) close(c,Stage.NEXT);
+        else clearCohort();
+        return WorkResult.busy(keep ? "This wine cohort has reserve space; retaining it and checking the next cohort" : "Checking the next carried wine cohort");
+    }
+    private WorkResult runResult(Context c) {
+        int kept=ModuleSupport.count(c,i -> i.is(ItemData.WINE) && retained.contains(i.year()));
+        if (ModuleSupport.inventoryItem(c,i -> i.is(ItemData.WINE) && !retained.contains(i.year()))!=null)
+            return WorkResult.blocked("New wine remains outside this run's verified cohorts; sold "+soldCount+" bottle(s). Recheck reserves before another sale.");
+        return new WorkResult(WorkResult.State.IDLE,"Checked "+visited.size()+" wine cohort(s); sold "+soldCount
+            +" bottle(s); retained "+kept+" bottle(s) because their reserves still have room");
+    }
     private boolean permitFresh(Context c) {
         WineSalePermit permit=session.wineSalePermits.get(cohort);
         return permit!=null && permit.inventoryLimit()>0 && permit.gameDay()==gameDay(c)
@@ -149,11 +201,14 @@ public final class WineSurplusShippingModule implements AutomationModule {
     private WorkResult finish(Context c,WorkResult result) {
         revoke();
         if (validMenu(c)) { finishResult=result; close(c,Stage.FINISH); return WorkResult.busy("Closing verified wine container"); }
-        clear(); return result;
+        clear(); yieldAfterSweep=result.state()==WorkResult.State.IDLE; return result;
     }
     private void revoke() { if (session!=null && cohort!=null) session.wineSalePermits.remove(cohort); }
     private WorkResult fail(String message) { clear(); return WorkResult.blocked(message); }
     private void clear() {
+        clearCohort(); cohorts.clear(); visited.clear(); retained.clear(); started=false; yieldAfterSweep=false; soldCount=0;
+    }
+    private void clearCohort() {
         revoke(); stage=Stage.FIND; afterClose=null; pending=null; ticket=-1; firstVerifiedTick=-1; cohort=null; exemplar=null;
         reserves=List.of(); shipping=List.of(); reservePositions=Set.of(); reserveIndex=0; shippingIndex=0; containerId=-1; finishResult=null;
     }

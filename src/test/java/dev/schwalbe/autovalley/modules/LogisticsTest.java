@@ -82,7 +82,8 @@ class LogisticsTest {
         Fixture f=new Fixture(); f.inventory[0]=wine(8,5,0); f.fullWineReserve(0,8,27);
         Pos partial=f.fullWineReserve(1,8,27); f.chests.get(partial)[26]=wine(8,63,3);
         f.chest(PoiKind.SHIPPING_BIN,2,null,ItemData.EMPTY);
-        assertEquals(WorkResult.State.BLOCKED,f.run(new WineSurplusShippingModule(),100).state());
+        WorkResult result=f.run(new WineSurplusShippingModule(),100);
+        assertEquals(WorkResult.State.IDLE,result.state()); assertTrue(result.message().contains("retained 5"));
         assertEquals(0,f.soldWine); assertEquals(0,f.withdrawnWine); assertTrue(f.session.wineSalePermits.isEmpty());
     }
 
@@ -90,7 +91,7 @@ class LogisticsTest {
         for (ItemData conflict:new ItemData[]{ItemData.EMPTY,wine(9,64,0),tomato(0,64)}) {
             Fixture f=new Fixture(); f.inventory[0]=wine(8,5,0); Pos barrel=f.fullWineReserve(0,8,27);
             f.chests.get(barrel)[3]=conflict; f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
-            assertEquals(WorkResult.State.BLOCKED,f.run(new WineSurplusShippingModule(),60).state());
+            assertEquals(conflict.empty() ? WorkResult.State.IDLE : WorkResult.State.BLOCKED,f.run(new WineSurplusShippingModule(),60).state());
             assertEquals(0,f.soldWine); assertTrue(f.session.wineSalePermits.isEmpty());
         }
     }
@@ -139,7 +140,7 @@ class LogisticsTest {
         int actions=f.history.size(); module.reset(); f.cancel();
         assertTrue(f.session.wineSalePermits.isEmpty()); assertEquals(actions,f.history.size());
         f.chests.get(barrel)[0]=wine(8,63,0);
-        assertEquals(WorkResult.State.BLOCKED,f.run(module,60).state()); assertEquals(0,f.soldWine);
+        assertEquals(WorkResult.State.IDLE,f.run(module,60).state()); assertEquals(0,f.soldWine);
     }
 
     @Test void destinationAcknowledgementConsumesAllowanceDespiteInstantMagnetRefill() {
@@ -156,6 +157,147 @@ class LogisticsTest {
         while (!f.session.wineSalePermits.containsKey(8)) { module.tick(f.context()); f.advance(); }
         f.inventory[0]=wine(8,9,0);
         assertEquals(WorkResult.State.BLOCKED,f.run(module,30).state()); assertEquals(0,f.soldWine);
+    }
+
+    @Test void surplusOneShotChecksAndSellsEveryInitiallyHeldCohortWithFullReserves() {
+        Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0); f.inventory[1]=wine(7,7,2);
+        Pos fresh=f.fullWineReserve(0,8,27), aged=f.fullWineReserve(1,7,54);
+        Pos bin=f.chest(PoiKind.SHIPPING_BIN,2,null,ItemData.EMPTY);
+        AutomationEngine engine=isolatedSurplusEngine(); engine.startOnce(f.context(),Feature.WINE_SURPLUS_SHIPPING);
+        f.runUntilStopped(engine,250);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(12,f.soldWine); assertEquals(0,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE)));
+        assertEquals(1,f.opens.get(fresh)); assertEquals(1,f.opens.get(aged)); assertEquals(2,f.opens.get(bin));
+        assertEquals(1728,Arrays.stream(f.chests.get(fresh)).mapToInt(ItemData::count).sum());
+        assertEquals(3456,Arrays.stream(f.chests.get(aged)).mapToInt(ItemData::count).sum());
+        assertEquals(0,f.withdrawnWine); assertTrue(f.session.wineSalePermits.isEmpty());
+    }
+
+    @Test void nonFullFirstCohortIsRetainedWhileLaterFullCohortStillShips() {
+        Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0); f.inventory[1]=wine(7,7,2);
+        Pos fresh=f.fullWineReserve(0,8,27); f.chests.get(fresh)[0]=wine(8,63,0);
+        Pos aged=f.fullWineReserve(1,7,27); f.chest(PoiKind.SHIPPING_BIN,2,null,ItemData.EMPTY);
+        WorkResult result=f.run(new WineSurplusShippingModule(),200);
+        assertEquals(WorkResult.State.IDLE,result.state(),result.message());
+        assertTrue(result.message().contains("Checked 2")); assertTrue(result.message().contains("sold 7")); assertTrue(result.message().contains("retained 5"));
+        assertEquals(7,f.soldWine); assertEquals(5,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE)));
+        assertEquals(5,f.inventory[0].count()); assertTrue(f.inventory[1].empty());
+        assertEquals(1,f.opens.get(fresh)); assertEquals(1,f.opens.get(aged)); assertEquals(63,f.chests.get(fresh)[0].count());
+        assertEquals(0,f.withdrawnWine); assertTrue(f.session.wineSalePermits.isEmpty());
+    }
+
+    @Test void surplusOneShotCompletionReportsRetainedWineInsteadOfImplyingAllWasSold() {
+        Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0); f.inventory[1]=wine(7,7,0);
+        Pos partial=f.fullWineReserve(0,8,27); f.chests.get(partial)[0]=wine(8,63,0);
+        f.fullWineReserve(1,7,27); f.chest(PoiKind.SHIPPING_BIN,2,null,ItemData.EMPTY);
+        AutomationEngine engine=isolatedSurplusEngine(); engine.startOnce(f.context(),Feature.WINE_SURPLUS_SHIPPING);
+        f.runUntilStopped(engine,250);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state());
+        assertTrue(engine.status().contains("sold 7")); assertTrue(engine.status().contains("retained 5"));
+        assertEquals(7,f.soldWine); assertEquals(5,f.inventory[0].count());
+    }
+
+    @Test void retainedWineYieldsToLowerPrioritiesThenGetsFreshlyVerifiedOnTheNextSweep() {
+        Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0);
+        Pos reserve=f.fullWineReserve(0,8,27); f.chests.get(reserve)[0]=wine(8,63,0);
+        f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
+        int[] lowerPriorityTicks={0};
+        AutomationModule lower=new AutomationModule() {
+            @Override public Feature feature() { return Feature.SHIPPING; }
+            @Override public int priority() { return 40; }
+            @Override public WorkResult tick(Context c) { lowerPriorityTicks[0]++; return WorkResult.idle(); }
+            @Override public void reset() { }
+        };
+        AutomationEngine engine=new AutomationEngine(List.of(new WineSurplusShippingModule(),lower)); engine.start(f.context());
+        for (int n=0;n<150 && lowerPriorityTicks[0]==0;n++) { engine.tick(f.context()); f.advance(); }
+        assertTrue(lowerPriorityTicks[0]>0,"an immediate re-scan of retained wine must not starve the next scheduler priority");
+        assertEquals(1,f.opens.get(reserve)); assertEquals(0,f.soldWine); assertEquals(5,f.inventory[0].count());
+        f.chests.get(reserve)[0]=wine(8,64,0); f.ticks+=25;
+        for (int n=0;n<150 && f.soldWine<5;n++) { engine.tick(f.context()); f.advance(); }
+        assertEquals(5,f.soldWine); assertEquals(2,f.opens.get(reserve),"next sweep must freshly reopen the changed reserve");
+    }
+
+    @Test void laterCohortIsFreshlyRecheckedInsteadOfBorrowingThePreviousCohortsVerification() {
+        Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0); f.inventory[1]=wine(7,7,0);
+        f.fullWineReserve(0,8,27); Pos later=f.fullWineReserve(1,7,27); f.chest(PoiKind.SHIPPING_BIN,2,null,ItemData.EMPTY);
+        WineSurplusShippingModule module=new WineSurplusShippingModule();
+        while (!f.session.wineSalePermits.containsKey(8)) { module.tick(f.context()); f.advance(); }
+        f.chests.get(later)[10]=wine(7,63,0);
+        WorkResult result=f.run(module,200);
+        assertEquals(WorkResult.State.IDLE,result.state()); assertEquals(5,f.soldWine);
+        assertEquals(7,f.inventory[1].count()); assertTrue(result.message().contains("retained 7"));
+        assertEquals(1,f.opens.get(later)); assertTrue(f.session.wineSalePermits.isEmpty());
+    }
+
+    @Test void changedSecondCohortRegistrationAfterItsPermitStopsBeforeAnySaleOfThatCohort() {
+        Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0); f.inventory[1]=wine(7,7,0);
+        f.fullWineReserve(0,8,27); f.fullWineReserve(1,7,27); f.chest(PoiKind.SHIPPING_BIN,2,null,ItemData.EMPTY);
+        WineSurplusShippingModule module=new WineSurplusShippingModule();
+        for (int n=0;n<200 && !f.session.wineSalePermits.containsKey(7);n++) { module.tick(f.context()); f.advance(); }
+        assertTrue(f.session.wineSalePermits.containsKey(7)); assertFalse(f.session.wineSalePermits.containsKey(8)); assertEquals(5,f.soldWine);
+        f.chest(PoiKind.WINE_CHEST,3,7,ItemData.EMPTY);
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,30).state());
+        assertEquals(5,f.soldWine); assertEquals(7,f.inventory[1].count()); assertTrue(f.session.wineSalePermits.isEmpty());
+    }
+
+    @Test void unknownWineInAnyInitialSlotBlocksTheWholeSaleRunBeforeOpeningContainers() {
+        for (Integer invalid:new Integer[]{null,-1,9}) {
+            Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0); f.inventory[1]=wine(invalid);
+            f.fullWineReserve(0,8,27); f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
+            assertEquals(WorkResult.State.BLOCKED,f.run(new WineSurplusShippingModule(),30).state());
+            assertEquals(0,f.soldWine); assertTrue(f.history.isEmpty()); assertTrue(f.session.wineSalePermits.isEmpty());
+        }
+    }
+
+    @Test void laterUnsafeCohortPausesInsteadOfSilentlyClaimingAllWineWasHandled() {
+        for (boolean missingYear:new boolean[]{false,true}) {
+            Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0); f.inventory[1]=wine(7,7,0);
+            f.fullWineReserve(0,8,27); Pos unsafe=f.fullWineReserve(1,7,27); f.chest(PoiKind.SHIPPING_BIN,2,null,ItemData.EMPTY);
+            if (missingYear) f.chests.get(unsafe)[0]=wine((Integer)null); else f.unloaded.add(unsafe);
+            assertEquals(WorkResult.State.BLOCKED,f.run(new WineSurplusShippingModule(),200).state());
+            assertEquals(5,f.soldWine); assertEquals(7,f.inventory[1].count()); assertEquals(0,f.withdrawnWine);
+            assertTrue(f.session.wineSalePermits.isEmpty());
+        }
+    }
+
+    @Test void newCohortArrivingDuringTheRunIsNotSoldWithoutANewBoundedVerificationPass() {
+        Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0);
+        f.fullWineReserve(0,8,27); f.fullWineReserve(1,7,27); f.chest(PoiKind.SHIPPING_BIN,2,null,ItemData.EMPTY);
+        WineSurplusShippingModule module=new WineSurplusShippingModule();
+        while (!f.session.wineSalePermits.containsKey(8)) { module.tick(f.context()); f.advance(); }
+        f.inventory[1]=wine(7,7,0);
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state()); assertEquals(5,f.soldWine); assertEquals(7,f.inventory[1].count());
+        assertEquals(WorkResult.State.IDLE,f.run(module,100).state()); assertEquals(12,f.soldWine);
+        assertEquals(0,f.withdrawnWine); assertTrue(f.session.wineSalePermits.isEmpty());
+    }
+
+    @Test void unknownWineArrivingAfterAPermitRevokesItBeforeAnyFurtherSale() {
+        Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0);
+        f.fullWineReserve(0,8,27); f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
+        WineSurplusShippingModule module=new WineSurplusShippingModule();
+        while (!f.session.wineSalePermits.containsKey(8)) { module.tick(f.context()); f.advance(); }
+        f.inventory[1]=wine((Integer)null);
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,30).state());
+        assertEquals(0,f.soldWine); assertTrue(f.session.wineSalePermits.isEmpty());
+    }
+
+    @Test void pendingMachineOutputBlocksSurplusBeforeTheCohortQueueStarts() {
+        Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0);
+        f.fullWineReserve(0,8,27); f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
+        MachineOutputLedger.prepare(f.context(),Feature.WINE,new Pos(10,64,0));
+        assertEquals(WorkResult.State.BLOCKED,new WineSurplusShippingModule().tick(f.context()).state());
+        assertTrue(f.history.isEmpty()); assertEquals(0,f.soldWine); assertEquals(1,f.profile.pendingMachineOutputs.size());
+    }
+
+    private static AutomationEngine isolatedSurplusEngine() {
+        List<AutomationModule> modules=new ArrayList<>(); modules.add(new WineSurplusShippingModule());
+        for (Feature other:Feature.values()) if (other!=Feature.WINE_SURPLUS_SHIPPING) modules.add(new AutomationModule() {
+            @Override public Feature feature() { return other; }
+            @Override public int priority() { return 0; }
+            @Override public WorkResult tick(Context context) { fail("Surplus-only run invoked another feature: "+other); return WorkResult.idle(); }
+            @Override public void reset() { }
+        });
+        return new AutomationEngine(modules);
     }
 
     @Test void largeFarmServices397KegsBefore144JarsWithoutCountingEveryChestForEveryMachine() {
