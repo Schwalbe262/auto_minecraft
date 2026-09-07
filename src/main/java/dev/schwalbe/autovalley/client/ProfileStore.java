@@ -33,6 +33,7 @@ public final class ProfileStore {
         Path file=path(key), temp=Files.createTempFile(directory,key,".tmp");
         try {
             Files.writeString(temp,GSON.toJson(profile),StandardCharsets.UTF_8);
+            if (Files.size(temp)>2_000_000) throw new IOException("Profile is too large; previous file preserved");
             if (Files.exists(file)) Files.copy(file,directory.resolve(key+".json.bak"),StandardCopyOption.REPLACE_EXISTING);
             try { Files.move(temp,file,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING); }
             catch (AtomicMoveNotSupportedException e) { Files.move(temp,file,StandardCopyOption.REPLACE_EXISTING); }
@@ -45,7 +46,7 @@ public final class ProfileStore {
     public static void validate(Profile profile) {
         if (profile==null || profile.schemaVersion!=1 || profile.pois==null || profile.farms==null || profile.enabled==null
             || profile.nextEligibleDay==null || profile.disposalDirections==null) throw new IllegalArgumentException("Unsupported or incomplete profile");
-        if (profile.farms.size()>2 || profile.pois.size()>4096) throw new IllegalArgumentException("Too many registered locations");
+        if (profile.pois.size()>4096) throw new IllegalArgumentException("Too many registered locations");
         Set<String> farms=new HashSet<>();
         for (Farm farm:profile.farms) {
             if (farm==null || farm.first()==null || farm.second()==null || farm.name()==null || farm.name().isBlank()

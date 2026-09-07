@@ -2,6 +2,7 @@ package dev.schwalbe.autovalley.ui;
 
 import dev.schwalbe.autovalley.core.*;
 import java.util.*;
+import java.util.function.Predicate;
 
 /** Pure registration checks, independent of the game client. */
 public final class RegistrationRules {
@@ -29,13 +30,24 @@ public final class RegistrationRules {
     }
 
     public static Integer classifier(PoiKind kind, String text) {
+        return classifier(kind, text, null);
+    }
+
+    /** Wine input is displayed AGE or +N future years; profiles continue to store the production cohort. */
+    public static Integer classifier(PoiKind kind, String text, Integer currentWineYear) {
         if (kind != PoiKind.TOMATO_CHEST && kind != PoiKind.WINE_CHEST) return null;
+        if (kind == PoiKind.WINE_CHEST) return WineCohortRules.parse(text, currentWineYear);
         int number;
         try { number = Integer.parseInt(text.trim()); }
         catch (RuntimeException e) { throw new IllegalArgumentException("autovalley.error.classifier"); }
-        if (number < 0 || (kind == PoiKind.TOMATO_CHEST && number > 3))
+        if (number < 0 || number > 3)
             throw new IllegalArgumentException("autovalley.error.classifier");
         return number;
+    }
+
+    public static Integer wineAge(Integer cohort, Integer currentWineYear) {
+        WineCohortRules.Display display = WineCohortRules.describe(cohort, currentWineYear);
+        return display == null || display.future() ? null : display.years();
     }
 
     public static boolean validBounds(Pos first, Pos second) {
@@ -54,6 +66,56 @@ public final class RegistrationRules {
                     <= Math.min(Math.max(first.first().y(), first.second().y()), Math.max(second.first().y(), second.second().y()))
             && Math.max(Math.min(first.first().z(), first.second().z()), Math.min(second.first().z(), second.second().z()))
                     <= Math.min(Math.max(first.first().z(), first.second().z()), Math.max(second.first().z(), second.second().z()));
+    }
+
+    /** Conservative warning: suggestions cannot establish a complete field across unobserved chunks. */
+    public static boolean mayBePartial(Farm farm, Pos center, int horizontal, int vertical, Predicate<Pos> loaded) {
+        return mayBePartial(farm, center, horizontal, vertical, loaded, 2);
+    }
+
+    public static boolean mayBePartial(Farm farm, Pos center, int horizontal, int vertical, Predicate<Pos> loaded, int neighborhood) {
+        if (neighborhood < 1 || neighborhood > 3) throw new IllegalArgumentException("Invalid grouping neighborhood");
+        int minX = Math.min(farm.first().x(), farm.second().x()), maxX = Math.max(farm.first().x(), farm.second().x());
+        int minY = Math.min(farm.first().y(), farm.second().y()), maxY = Math.max(farm.first().y(), farm.second().y());
+        int minZ = Math.min(farm.first().z(), farm.second().z()), maxZ = Math.max(farm.first().z(), farm.second().z());
+        if (minX <= center.x() - horizontal || maxX >= center.x() + horizontal
+                || minZ <= center.z() - horizontal || maxZ >= center.z() + horizontal
+                || minY <= center.y() - vertical || maxY >= center.y() + vertical) return true;
+        // Check the same two-block row neighborhood used by grouping, including interior chunk holes.
+        // Loaded chunks cover entire vertical columns; upper/lower checks also detect build-height edges.
+        for (int x = minX - neighborhood; x <= maxX + neighborhood; x++) for (int z = minZ - neighborhood; z <= maxZ + neighborhood; z++) {
+            if (!loaded.test(new Pos(x, minY - 1, z)) || !loaded.test(new Pos(x, maxY + 1, z))) return true;
+        }
+        return false;
+    }
+
+    /** Only explicit artisan machine types may be bulk registered; storage never receives inferred grades/ages. */
+    public static List<BlockData> connectedMachines(List<BlockData> candidates, BlockData selected) {
+        if (!selected.id().equals("society:wine_keg") && !selected.id().equals("society:preserves_jar")) return List.of();
+        Map<Pos,BlockData> remaining = new HashMap<>();
+        for (BlockData candidate : candidates) if (candidate.id().equals(selected.id())) remaining.put(candidate.pos(),candidate);
+        BlockData seed = remaining.remove(selected.pos());
+        if (seed == null) return List.of();
+        List<BlockData> group = new ArrayList<>();
+        ArrayDeque<BlockData> queue = new ArrayDeque<>(); queue.add(seed);
+        while (!queue.isEmpty()) {
+            BlockData current = queue.removeFirst(); group.add(current);
+            for (int dx = -3; dx <= 3; dx++) for (int dy = -3; dy <= 3; dy++) for (int dz = -3; dz <= 3; dz++) {
+                if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 3) continue;
+                BlockData neighbor = remaining.remove(current.pos().offset(dx,dy,dz));
+                if (neighbor != null) queue.add(neighbor);
+            }
+        }
+        group.sort(Comparator.comparingInt((BlockData b) -> b.pos().x()).thenComparingInt(b -> b.pos().y()).thenComparingInt(b -> b.pos().z()));
+        return List.copyOf(group);
+    }
+
+    public static Farm blockBounds(List<BlockData> blocks) {
+        if (blocks.isEmpty()) throw new IllegalArgumentException("Cannot bound an empty group");
+        IntSummaryStatistics x = blocks.stream().mapToInt(b -> b.pos().x()).summaryStatistics();
+        IntSummaryStatistics y = blocks.stream().mapToInt(b -> b.pos().y()).summaryStatistics();
+        IntSummaryStatistics z = blocks.stream().mapToInt(b -> b.pos().z()).summaryStatistics();
+        return new Farm("",new Pos(x.getMin(),y.getMin(),z.getMin()),new Pos(x.getMax(),y.getMax(),z.getMax()));
     }
 
     /** Adjacent vines and crop rows separated by one block form a suggestion, never a registration. */

@@ -21,6 +21,7 @@ import java.util.*;
 /** All registration is local and explicit. Opening settings never starts game actions. */
 public final class ValleyScreen extends Screen {
     private enum Tab { MODULES, REGISTER, FARMS, SAVED }
+    private enum ToolPage { MENU, RECORD_NAME, RUN_ONCE }
     private static Tab rememberedTab = Tab.MODULES;
     private static Profile draftOwner;
     private static Pos draftFirst;
@@ -36,14 +37,26 @@ public final class ValleyScreen extends Screen {
     private List<Farm> suggestions = List.of();
     private Set<Farm> partialSuggestions = Set.of();
     private int scannedTomatoBlocks;
+    private Pos lastScanCenter;
+    private int lastScanRadius = 32;
+    private boolean machineBatchEditor;
+    private List<BlockData> machineBatch = List.of();
+    private Farm machineBatchBounds;
+    private int machineBatchGroupCount;
+    private boolean machineBatchPartial;
+    private String machineBatchLabel = "";
     private RegistrationRules.Group filter = RegistrationRules.Group.ALL;
     private BlockData selected;
     private PoiKind selectedKind;
+    private Integer classifierWineYear;
     private Poi editingPoi;
     private boolean containerChecked;
     private boolean farmEditor;
     private boolean showSuggestions;
     private boolean scheduleEditor;
+    private boolean toolsEditor;
+    private ToolPage toolPage = ToolPage.MENU;
+    private String recordingNameDraft = "";
     private EditBox nameInput, classifierInput;
     private String feedback = "";
     private boolean feedbackError;
@@ -51,6 +64,8 @@ public final class ValleyScreen extends Screen {
     public ValleyScreen() { super(tr("title")); }
 
     @Override protected void init() {
+        String previousName = nameInput == null ? null : nameInput.getValue();
+        String previousClassifier = classifierInput == null ? null : classifierInput.getValue();
         runtime.pause(tr("settings.paused").getString());
         if (draftOwner != runtime.profile()) {
             draftOwner = runtime.profile(); draftFirst = null; draftSecond = null; draftName = ""; draftOriginal = null;
@@ -58,6 +73,10 @@ public final class ValleyScreen extends Screen {
         panelWidth = Math.min(620, width - 24);
         left = (width - panelWidth) / 2;
         rebuild();
+        if (selected != null) {
+            if (nameInput != null && previousName != null) nameInput.setValue(previousName);
+            if (classifierInput != null && previousClassifier != null) classifierInput.setValue(previousClassifier);
+        }
     }
 
     private void rebuild() {
@@ -68,13 +87,13 @@ public final class ValleyScreen extends Screen {
             Tab target = tabs[i];
             Button button = button(left + i * (tabWidth + gap), 28, tabWidth, tr("tab." + target.name().toLowerCase(Locale.ROOT)), () -> {
                 rememberDraft(); tab = target; rememberedTab = target; page = 0;
-                selected = null; farmEditor = false; showSuggestions = false; scheduleEditor = false; rebuild();
+                selected = null; farmEditor = false; showSuggestions = false; scheduleEditor = false; toolsEditor = false; machineBatchEditor = false; rebuild();
             });
             button.active = target != tab;
         }
         switch (tab) {
-            case MODULES -> { if (scheduleEditor) scheduleEditor(); else modules(); }
-            case REGISTER -> { if (selected == null) registration(); else poiEditor(); }
+            case MODULES -> { if (toolsEditor) toolsEditor(); else if (scheduleEditor) scheduleEditor(); else modules(); }
+            case REGISTER -> { if (machineBatchEditor) machineBatchEditor(); else if (selected == null) registration(); else poiEditor(); }
             case FARMS -> { if (farmEditor) farmEditor(); else if (showSuggestions) suggestionList(); else farms(); }
             case SAVED -> saved();
         }
@@ -84,9 +103,11 @@ public final class ValleyScreen extends Screen {
     private void modules() {
         int half = (panelWidth - 6) / 2;
         Feature[] features = Feature.values();
+        int columns = 3;
+        int featureWidth = (panelWidth - (columns - 1) * 6) / columns;
         for (int i = 0; i < features.length; i++) {
             Feature feature = features[i];
-            button(left + (i % 2) * (half + 6), 54 + (i / 2) * 23, half,
+            Button featureButton = button(left + (i % columns) * (featureWidth + 6), 54 + (i / columns) * 23, featureWidth,
                 Component.translatable(feature.translationKey()).append(": ").append(tr(runtime.profile().enabled(feature) ? "on" : "off")),
                 () -> {
                     boolean before = runtime.profile().enabled(feature);
@@ -94,23 +115,114 @@ public final class ValleyScreen extends Screen {
                     catch (RuntimeException e) { runtime.profile().enabled.put(feature, before); error("error.save"); }
                     rebuild();
                 });
+            if (feature == Feature.WINE_SURPLUS_SHIPPING) featureButton.setTooltip(Tooltip.create(tr("surplus.hint")));
         }
-        int y = 149;
+        int y = 54 + ((features.length + columns - 1) / columns) * 23 + 4;
         button(left, y, half, tr("hoe.capture"), this::captureHoe);
         button(left + half + 6, y, half, tr("calibrate"), () -> {
             onClose(); runtime.startCalibration();
         });
-        text(174, tr("hoe.status", runtime.profile().hoeHotbarSlot + 1,
+        text(y + 25, tr("hoe.status", runtime.profile().hoeHotbarSlot + 1,
                 tr(runtime.profile().sprintCalibrated && runtime.profile().sprintHarvest ? "sprint" : "walk")));
-        button(left, 190, half, tr("schedule.open"), () -> { scheduleEditor = true; rebuild(); });
-        button(left + half + 6, 190, half, tr("background.toggle", tr(runtime.profile().allowBackground ? "on" : "off")), () -> {
+        int settingsY = y + 41;
+        button(left, settingsY, half, tr("schedule.open"), () -> { scheduleEditor = true; rebuild(); });
+        button(left + half + 6, settingsY, half, tr("background.toggle", tr(runtime.profile().allowBackground ? "on" : "off")), () -> {
             runtime.pause(tr("settings.paused").getString());
             boolean before = runtime.profile().allowBackground;
             runtime.profile().allowBackground = !before;
             persist(() -> runtime.profile().allowBackground = before); rebuild();
         }).setTooltip(Tooltip.create(tr("background.hint")));
-        if (height >= 256) text(216, tr("background.hint"));
-        if (height >= 285) text(233, tr("modules.hint"));
+        int magnetY = settingsY + 24;
+        button(left, magnetY, half, tr("magnet.toggle", tr(runtime.profile().magnetOverflowHarvest ? "on" : "off")), () -> {
+            runtime.pause(tr("settings.paused").getString());
+            boolean before = runtime.profile().magnetOverflowHarvest;
+            runtime.profile().magnetOverflowHarvest = !before;
+            persist(() -> runtime.profile().magnetOverflowHarvest = before); rebuild();
+        }).setTooltip(Tooltip.create(tr("magnet.hint")));
+        button(left + half + 6, magnetY, half, tr("tools.open"), () -> { toolsEditor = true; toolPage = ToolPage.MENU; rebuild(); });
+        if (magnetY + 33 < height - 25) text(magnetY + 24, tr("magnet.hint"));
+        if (magnetY + 50 < height - 25) text(magnetY + 41, tr("modules.hint"));
+    }
+
+    private void toolsEditor() {
+        switch (toolPage) {
+            case MENU -> recordingTools();
+            case RECORD_NAME -> recordingName();
+            case RUN_ONCE -> runOnceChooser();
+        }
+    }
+
+    private void recordingTools() {
+        text(55, tr("tools.title"));
+        text(74, tr("record.status", runtime.recordingStatus()));
+        button(left, 92, panelWidth, tr(runtime.recording() ? "record.stop_name" : "record.start"), () -> {
+            if (runtime.recording()) {
+                toolPage = ToolPage.RECORD_NAME; rebuild();
+                return;
+            }
+            try {
+                runtime.startRecording();
+                if (!runtime.recording()) { error("record.error_start"); return; }
+                recordingNameDraft = ""; onClose();
+            } catch (RuntimeException e) { error("record.error_start"); }
+        });
+        button(left, 118, panelWidth, tr("once.open"), () -> { toolPage = ToolPage.RUN_ONCE; rebuild(); });
+        text(147, tr("record.local"));
+        text(162, tr("record.contents"));
+        text(177, tr("record.no_replay"));
+        button(left, 190, panelWidth, tr("back"), () -> { toolsEditor = false; rebuild(); });
+    }
+
+    private void recordingName() {
+        text(55, tr("record.save_title"));
+        text(75, tr("record.status", runtime.recordingStatus()));
+        text(94, tr("record.name_label"));
+        EditBox recordingName = input(left, 107, panelWidth, tr("record.name_label"), 64);
+        recordingName.setValue(recordingNameDraft.isBlank() ? tr("record.default_name").getString() : recordingNameDraft);
+        recordingName.setResponder(value -> recordingNameDraft = value);
+        int half = (panelWidth - 6) / 2;
+        button(left, 145, half, tr("back"), () -> { toolPage = ToolPage.MENU; rebuild(); });
+        button(left + half + 6, 145, half, tr("record.save"), () -> {
+            String label = recordingName.getValue().trim();
+            if (label.isEmpty()) { error("record.error_name"); return; }
+            try {
+                runtime.stopRecording(label);
+                if (runtime.recording()) { error("record.error_save"); return; }
+                feedback = tr("record.saved", label).getString(); feedbackError = false;
+                recordingNameDraft = ""; toolPage = ToolPage.MENU; rebuild();
+            } catch (RuntimeException e) { error("record.error_save"); }
+        });
+        text(179, tr("record.name_hint"));
+        if (height >= 256) text(197, tr("record.local"));
+    }
+
+    private void runOnceChooser() {
+        text(55, tr("once.title"));
+        text(73, tr("once.hint"));
+        int columns = 3;
+        int featureWidth = (panelWidth - (columns - 1) * 6) / columns;
+        Feature[] features = Feature.values();
+        for (int i = 0; i < features.length; i++) {
+            Feature feature = features[i];
+            Button choose = button(left + (i % columns) * (featureWidth + 6), 92 + (i / columns) * 24, featureWidth,
+                    Component.translatable(feature.translationKey()), () -> runOnce(feature));
+            Component hint = tr(feature == Feature.WINE ? "once.wine_hint" : "once.hint");
+            if (feature == Feature.WINE_SURPLUS_SHIPPING) hint = tr("surplus.hint");
+            choose.setTooltip(Tooltip.create(Component.translatable(feature.translationKey()).append("\n").append(hint)));
+        }
+        int backY = 92 + ((features.length + columns - 1) / columns) * 24 + 14;
+        button(left, backY, panelWidth, tr("back"), () -> { toolPage = ToolPage.MENU; rebuild(); });
+    }
+
+    private void runOnce(Feature feature) {
+        if (runtime.recording()) { error("once.recording_first"); return; }
+        onClose();
+        try {
+            if (runtime.runOnce(feature)) return;
+            feedback = runtime.status(); feedbackError = true;
+        } catch (RuntimeException e) { error("once.error_start"); }
+        // Return to this chooser when starting was refused; the recording, if any, remains in the runtime.
+        if (Minecraft.getInstance().screen == null) Minecraft.getInstance().setScreen(this);
     }
 
     private void scheduleEditor() {
@@ -176,6 +288,7 @@ public final class ValleyScreen extends Screen {
     private void selectCandidate(BlockData block) { selectCandidate(block, false); }
 
     private void selectCandidate(BlockData original, boolean editing) {
+        if (!chestPairReady(original)) { error("error.chest_pair"); return; }
         BlockData block = canonicalBlock(original);
         if (block.tomato()) {
             if (draftFirst == null) draftFirst = block.pos(); else draftSecond = block.pos();
@@ -188,11 +301,17 @@ public final class ValleyScreen extends Screen {
         if (existing != null && !editing) { error("error.registered"); return; }
         selected = block; editingPoi = editing ? existing : null;
         selectedKind = existing != null && kinds.contains(existing.kind()) ? existing.kind() : kinds.get(0);
+        classifierWineYear = selectedKind == PoiKind.WINE_CHEST ? runtime.world().wineYear() : null;
         containerChecked = false;
         rebuild();
         if (existing != null) {
             nameInput.setValue(existing.label());
-            if (classifierInput != null && existing.classifier() != null) classifierInput.setValue(existing.classifier().toString());
+            if (classifierInput != null && existing.classifier() != null) {
+                String displayed = selectedKind == PoiKind.WINE_CHEST
+                        ? WineCohortRules.editValue(existing.classifier(), classifierWineYear) : existing.classifier().toString();
+                classifierInput.setValue(displayed == null ? "" : displayed);
+                if (displayed == null) error("error.wine_clock");
+            }
         }
     }
 
@@ -201,6 +320,7 @@ public final class ValleyScreen extends Screen {
         List<PoiKind> kinds = RegistrationRules.kinds(selected);
         button(left, 68, panelWidth, tr("kind", poiName(selectedKind)), () -> {
             selectedKind = kinds.get((kinds.indexOf(selectedKind) + 1) % kinds.size());
+            classifierWineYear = selectedKind == PoiKind.WINE_CHEST ? runtime.world().wineYear() : null;
             containerChecked = false; rebuild();
         }).active = kinds.size() > 1;
         text(92, tr("label"));
@@ -212,7 +332,8 @@ public final class ValleyScreen extends Screen {
             int fieldWidth = Math.max(70, panelWidth / 3);
             text(128, tr(selectedKind == PoiKind.TOMATO_CHEST ? "classifier.grade" : "classifier.year"));
             classifierInput = input(left, 140, fieldWidth, tr("classifier"), 10);
-            if (selectedKind == PoiKind.TOMATO_CHEST) classifierInput.setValue("0");
+            classifierInput.setValue("0");
+            if (selectedKind == PoiKind.WINE_CHEST) classifierInput.setTooltip(Tooltip.create(tr("classifier.wine_hint")));
             button(left + fieldWidth + 6, 140, panelWidth - fieldWidth - 6,
                     tr(containerChecked ? "container.checked" : "container.check"), () -> {
                         containerChecked = !containerChecked;
@@ -224,7 +345,64 @@ public final class ValleyScreen extends Screen {
         int half = (panelWidth - 6) / 2;
         button(left, actionY, half, tr("back"), () -> { selected = null; rebuild(); });
         button(left + half + 6, actionY, half, tr("confirm"), this::savePoi);
+        if (selectedKind == PoiKind.WINE_KEG || selectedKind == PoiKind.PRESERVES_JAR)
+            button(left, actionY + 27, panelWidth, tr("machines.bulk_prepare"), this::prepareMachineBatch);
         if (height >= 285 && classified) text(actionY + 27, tr("container.hint"));
+    }
+
+    private void prepareMachineBatch() {
+        if (selectedKind != PoiKind.WINE_KEG && selectedKind != PoiKind.PRESERVES_JAR) return;
+        machineBatchLabel = nameInput.getValue().trim();
+        if (machineBatchLabel.isEmpty()) machineBatchLabel = poiName(selectedKind).getString();
+        try {
+            if (lastScanCenter == null || candidates.stream().noneMatch(b -> b.pos().equals(selected.pos()) && b.id().equals(selected.id()))) {
+                lastScanCenter = runtime.world().player().feet();
+                lastScanRadius = Math.max(1, Math.min(32, runtime.profile().scanRadius));
+                candidates = runtime.world().scan(lastScanCenter, lastScanRadius, 16).stream()
+                        .filter(b -> RegistrationRules.group(b) != null).map(this::canonicalBlock).distinct().toList();
+            }
+            List<BlockData> group = RegistrationRules.connectedMachines(candidates, selected);
+            if (group.isEmpty()) { error("error.changed"); return; }
+            Set<Pos> registered = new HashSet<>(); runtime.profile().pois.forEach(p -> registered.add(p.pos()));
+            machineBatch = group.stream().filter(b -> !registered.contains(b.pos())).toList();
+            if (machineBatch.isEmpty()) { error("machines.bulk_empty"); return; }
+            if (runtime.profile().pois.size() + machineBatch.size() > 4096) { error("error.poi_limit"); return; }
+            machineBatchGroupCount = group.size();
+            machineBatchBounds = RegistrationRules.blockBounds(group);
+            machineBatchPartial = RegistrationRules.mayBePartial(machineBatchBounds, lastScanCenter, lastScanRadius, 16, runtime.world()::loaded, 3);
+            machineBatchEditor = true; rebuild();
+        } catch (RuntimeException e) { error("error.scan"); }
+    }
+
+    private void machineBatchEditor() {
+        text(55, tr("machines.bulk_kind", poiName(selectedKind)));
+        text(73, tr("machines.bulk_counts", machineBatchGroupCount, machineBatch.size()));
+        text(91, tr("machines.bulk_bounds", coords(machineBatchBounds.first()), coords(machineBatchBounds.second())));
+        text(111, tr(machineBatchPartial ? "machines.bulk_partial" : "machines.bulk_hint"));
+        text(130, tr("machines.bulk_name", machineBatchLabel));
+        int half = (panelWidth - 6) / 2;
+        button(left, 156, half, tr("back"), () -> { machineBatchEditor = false; rebuild(); nameInput.setValue(machineBatchLabel); });
+        button(left + half + 6, 156, half, tr("machines.bulk_confirm", machineBatch.size()), this::saveMachineBatch);
+        text(185, tr("machines.bulk_paused"));
+    }
+
+    private void saveMachineBatch() {
+        if (selectedKind != PoiKind.WINE_KEG && selectedKind != PoiKind.PRESERVES_JAR) return;
+        runtime.pause(tr("settings.paused").getString());
+        if (machineBatch.isEmpty()) { error("machines.bulk_empty"); return; }
+        if (runtime.profile().pois.size() + machineBatch.size() > 4096) { error("error.poi_limit"); return; }
+        Set<Pos> registered = new HashSet<>(); runtime.profile().pois.forEach(p -> registered.add(p.pos()));
+        for (BlockData block : machineBatch) {
+            if (registered.contains(block.pos()) || !runtime.world().loaded(block.pos())
+                    || !runtime.world().block(block.pos()).id().equals(selected.id())) { error("error.changed"); return; }
+        }
+        List<Poi> before = new ArrayList<>(runtime.profile().pois);
+        int nextName = runtime.profile().pois(selectedKind).size() + 1;
+        for (BlockData block : machineBatch) runtime.profile().pois.add(new Poi(block.pos(), selectedKind, machineBatchLabel + " " + nextName++, null));
+        if (persist(() -> { runtime.profile().pois.clear(); runtime.profile().pois.addAll(before); })) {
+            feedback = tr("machines.bulk_saved", machineBatch.size()).getString();
+            machineBatchEditor = false; machineBatch = List.of(); selected = null; tab = Tab.SAVED; rememberedTab = tab; page = 0; rebuild();
+        }
     }
 
     private void savePoi() {
@@ -233,8 +411,14 @@ public final class ValleyScreen extends Screen {
         if (!runtime.world().loaded(selected.pos()) || !RegistrationRules.kinds(runtime.world().block(selected.pos())).contains(selectedKind)) {
             error("error.changed"); return;
         }
+        BlockData current = runtime.world().block(selected.pos());
+        if (!chestPairReady(current) || !canonicalBlock(current).pos().equals(selected.pos())) { error("error.chest_pair"); return; }
         Integer classifier;
-        try { classifier = RegistrationRules.classifier(selectedKind, classified ? classifierInput.getValue() : ""); }
+        try {
+            classifier = selectedKind == PoiKind.WINE_CHEST
+                    ? WineCohortRules.parseChecked(classifierInput.getValue(), classifierWineYear, runtime.world().wineYear())
+                    : RegistrationRules.classifier(selectedKind, classified ? classifierInput.getValue() : "", classifierWineYear);
+        }
         catch (IllegalArgumentException e) { error(e.getMessage().replace("autovalley.", "")); return; }
         String label = nameInput.getValue().trim();
         if (label.isEmpty()) label = poiName(selectedKind).getString();
@@ -252,21 +436,29 @@ public final class ValleyScreen extends Screen {
         int half = (panelWidth - 6) / 2;
         button(left, 54, half, tr("farms.manual"), () -> { farmEditor = true; rebuild(); });
         button(left + half + 6, 54, half, tr("farms.suggest"), () -> scan(true));
-        text(81, tr("farms.count", runtime.profile().farms.size()));
-        for (int i = 0; i < runtime.profile().farms.size(); i++) {
-            Farm farm = runtime.profile().farms.get(i);
-            int y = 95 + i * 23;
-            button(left, y, panelWidth - 58, clipped(Component.literal(farm.name() + "  " + coords(farm.first()) + " → " + coords(farm.second())), panelWidth - 70), () -> {
+        List<Farm> fields = List.copyOf(runtime.profile().farms);
+        text(81, tr("farms.count", fields.size()));
+        text(96, tr("farms.hint"));
+        int listTop = 110;
+        int rows = rowsFrom(listTop), start = pageStart(fields.size(), rows);
+        if (fields.isEmpty()) text(listTop + 7, tr("farms.empty"));
+        for (int i = start; i < Math.min(start + rows, fields.size()); i++) {
+            Farm farm = fields.get(i);
+            int y = listTop + (i - start) * 23;
+            Component caption = Component.literal(farm.name() + "  " + coords(farm.first()) + " → " + coords(farm.second()));
+            button(left, y, panelWidth - 58, clipped(caption, panelWidth - 70), () -> {
                 draftFirst = farm.first(); draftSecond = farm.second(); draftName = farm.name(); draftOriginal = farm; farmEditor = true; rebuild();
-            });
+            }).setTooltip(Tooltip.create(caption.copy().append("\n").append(tr("farms.replace_hint"))));
             button(left + panelWidth - 54, y, 54, tr("remove"), () -> {
                 List<Farm> before = new ArrayList<>(runtime.profile().farms);
                 runtime.profile().farms.remove(farm);
-                persist(() -> { runtime.profile().farms.clear(); runtime.profile().farms.addAll(before); }); rebuild();
+                if (persist(() -> { runtime.profile().farms.clear(); runtime.profile().farms.addAll(before); }) && farm.equals(draftOriginal)) {
+                    draftFirst = null; draftSecond = null; draftName = ""; draftOriginal = null;
+                }
+                rebuild();
             });
         }
-        text(147, tr("farms.hint"));
-        if (height >= 275) text(164, tr("farms.reopen_hint"));
+        pagination(fields.size(), rows);
     }
 
     private void farmEditor() {
@@ -277,10 +469,12 @@ public final class ValleyScreen extends Screen {
         text(93, Component.literal("A: " + coords(draftFirst) + "   B: " + coords(draftSecond)));
         text(109, tr("label"));
         nameInput = input(left, 120, panelWidth, tr("label"), 64);
-        nameInput.setValue(draftName.isBlank() ? tr("farms.default_name", runtime.profile().farms.size() + 1).getString() : draftName);
+        nameInput.setValue(draftName.isBlank() ? nextFarmName() : draftName);
         nameInput.setResponder(value -> draftName = value);
-        button(left, 147, half, tr("back_to_world"), this::onClose);
-        button(left + half + 6, 147, half, tr("farms.save"), this::saveFarm);
+        int third = (panelWidth - 12) / 3;
+        button(left, 147, third, tr("back"), () -> { rememberDraft(); farmEditor = false; showSuggestions = false; rebuild(); });
+        button(left + third + 6, 147, third, tr("back_to_world"), this::onClose);
+        button(left + (third + 6) * 2, 147, third, tr("farms.save"), this::saveFarm);
         text(175, tr("farms.reopen_hint"));
         button(left, 190, panelWidth, tr("farms.clear_draft"), () -> {
             draftFirst = null; draftSecond = null; draftName = ""; draftOriginal = null; rebuild();
@@ -304,12 +498,21 @@ public final class ValleyScreen extends Screen {
         List<Farm> before = new ArrayList<>(runtime.profile().farms);
         Farm replaced = before.contains(draftOriginal) ? draftOriginal : null;
         if (before.stream().anyMatch(f -> f != replaced && f.name().equals(label))) { error("error.label_used"); return; }
-        if (replaced == null && before.size() >= 2) { error("error.farm_limit"); return; }
         if (before.stream().anyMatch(f -> f != replaced && RegistrationRules.overlap(f, candidate))) { error("error.farm_overlap"); return; }
-        runtime.profile().farms.remove(replaced);
-        runtime.profile().farms.add(candidate);
+        if (replaced == null) runtime.profile().farms.add(candidate);
+        else runtime.profile().farms.set(before.indexOf(replaced), candidate);
         if (persist(() -> { runtime.profile().farms.clear(); runtime.profile().farms.addAll(before); })) {
+            page = runtime.profile().farms.indexOf(candidate) / rowsFrom(110);
             draftFirst = null; draftSecond = null; draftName = ""; draftOriginal = null; farmEditor = false; showSuggestions = false; rebuild();
+        }
+    }
+
+    private String nextFarmName() {
+        Set<String> names = new HashSet<>();
+        for (Farm farm : runtime.profile().farms) names.add(farm.name());
+        for (int index = 1; ; index++) {
+            String candidate = tr("farms.default_name", index).getString();
+            if (!names.contains(candidate)) return candidate;
         }
     }
 
@@ -345,7 +548,12 @@ public final class ValleyScreen extends Screen {
             Poi poi = pois.get(i);
             int y = 94 + (i - start) * 23;
             Component caption = Component.literal(poi.label() + " · ").append(poiName(poi.kind()));
-            if (poi.classifier() != null) caption = caption.copy().append(" " + poi.classifier());
+            if (poi.kind() == PoiKind.WINE_CHEST) {
+                WineCohortRules.Display display = WineCohortRules.describe(poi.classifier(), runtime.world().wineYear());
+                Component wineLabel = display == null ? tr("classifier.age_unknown")
+                        : tr(display.future() ? "classifier.future_value" : "classifier.age_value", display.years());
+                caption = caption.copy().append(" · ").append(wineLabel);
+            } else if (poi.classifier() != null) caption = caption.copy().append(" " + poi.classifier());
             caption = caption.copy().append(" · " + coords(poi.pos()));
             button(left, y, panelWidth - 58, clipped(caption, panelWidth - 70), () -> {
                 if (poi.kind() == PoiKind.DISPOSAL) { updateDisposalFacing(poi); return; }
@@ -409,6 +617,7 @@ public final class ValleyScreen extends Screen {
             Pos feet = runtime.world().player().feet();
             int horizontalRadius = Math.max(1, Math.min(32, runtime.profile().scanRadius));
             int verticalRadius = 16;
+            lastScanCenter = feet; lastScanRadius = horizontalRadius;
             candidates = runtime.world().scan(feet, horizontalRadius, verticalRadius).stream()
                     .filter(b -> RegistrationRules.group(b) != null).map(this::canonicalBlock).distinct()
                     .sorted(Comparator.comparingDouble(b -> b.pos().distanceSquared(feet))).toList();
@@ -419,7 +628,7 @@ public final class ValleyScreen extends Screen {
                 suggestions = RegistrationRules.suggestFarms(tomatoes);
                 partialSuggestions = new HashSet<>();
                 for (Farm farm : suggestions) {
-                    if (touchesScanBoundary(farm, feet, horizontalRadius, verticalRadius)) partialSuggestions.add(farm);
+                    if (RegistrationRules.mayBePartial(farm, feet, horizontalRadius, verticalRadius, runtime.world()::loaded)) partialSuggestions.add(farm);
                 }
                 showSuggestions = true;
                 feedback = tr("farms.scan_done", suggestions.size(), scannedTomatoBlocks).getString();
@@ -427,15 +636,6 @@ public final class ValleyScreen extends Screen {
             } else feedback = tr("scan.done", candidates.size()).getString();
             feedbackError = false; rebuild();
         } catch (RuntimeException e) { error("error.scan"); }
-    }
-
-    private static boolean touchesScanBoundary(Farm farm, Pos center, int horizontal, int vertical) {
-        return Math.min(farm.first().x(), farm.second().x()) <= center.x() - horizontal
-                || Math.max(farm.first().x(), farm.second().x()) >= center.x() + horizontal
-                || Math.min(farm.first().z(), farm.second().z()) <= center.z() - horizontal
-                || Math.max(farm.first().z(), farm.second().z()) >= center.z() + horizontal
-                || Math.min(farm.first().y(), farm.second().y()) <= center.y() - vertical
-                || Math.max(farm.first().y(), farm.second().y()) >= center.y() + vertical;
     }
 
     private void captureHoe() {
@@ -480,6 +680,23 @@ public final class ValleyScreen extends Screen {
         return order.compare(other, block.pos()) < 0 ? runtime.world().block(other) : block;
     }
 
+    private boolean chestPairReady(BlockData block) {
+        Minecraft client = Minecraft.getInstance();
+        if (client.level == null || !runtime.world().loaded(block.pos())) return false;
+        BlockPos pos = new BlockPos(block.pos().x(), block.pos().y(), block.pos().z());
+        BlockState state = client.level.getBlockState(pos);
+        if (!(state.getBlock() instanceof ChestBlock) || state.getValue(ChestBlock.TYPE) == ChestType.SINGLE) return true;
+        BlockPos neighbor = pos.relative(ChestBlock.getConnectedDirection(state));
+        Pos other = new Pos(neighbor.getX(), neighbor.getY(), neighbor.getZ());
+        if (!runtime.world().loaded(other)) return false;
+        BlockState paired = client.level.getBlockState(neighbor);
+        return paired.getBlock() == state.getBlock() && paired.hasProperty(ChestBlock.TYPE)
+                && paired.getValue(ChestBlock.TYPE) != ChestType.SINGLE
+                && paired.getValue(ChestBlock.TYPE) != state.getValue(ChestBlock.TYPE)
+                && paired.getValue(ChestBlock.FACING) == state.getValue(ChestBlock.FACING)
+                && neighbor.relative(ChestBlock.getConnectedDirection(paired)).equals(pos);
+    }
+
     private boolean persist(Runnable rollback) {
         try { runtime.saveProfile(); success("saved"); return true; }
         catch (RuntimeException e) { rollback.run(); error("error.save"); return false; }
@@ -494,7 +711,11 @@ public final class ValleyScreen extends Screen {
         renderBackground(graphics);
         graphics.fill(left - 8, 7, left + panelWidth + 8, height - 4, 0xE0192522);
         graphics.fill(left - 8, 7, left + panelWidth + 8, 9, 0xFF83C89B);
-        graphics.drawString(font, title, left, 15, 0xE6F5E9, false);
+        boolean recordingActive = runtime.recording();
+        Component recordingLabel = tr(runtime.recordingActive() ? "record.active" : "record.pending");
+        int indicatorWidth = recordingActive ? font.width(recordingLabel) + 12 : 0;
+        graphics.drawString(font, clipped(title, panelWidth - indicatorWidth), left, 15, 0xE6F5E9, false);
+        if (recordingActive) graphics.drawString(font, recordingLabel, left + panelWidth - font.width(recordingLabel), 15, 0xFFBE8A, false);
         for (TextLine line : lines) graphics.drawString(font, clipped(line.message(), panelWidth), left, line.y(), 0xCBD9CC, false);
         String status = feedback.isEmpty() ? runtime.status() : feedback;
         graphics.drawString(font, font.plainSubstrByWidth(status, Math.max(10, panelWidth - 82)), left, height - 19,

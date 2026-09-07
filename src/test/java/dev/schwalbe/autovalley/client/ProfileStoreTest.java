@@ -69,4 +69,17 @@ class ProfileStoreTest {
         assertThrows(IllegalArgumentException.class,() -> store.save("../outside",new Profile()));
         assertNotNull(store.load(key));
     }
+
+    @Test void arbitraryFarmListRoundTripsAndKeepsExistingDestinations() throws Exception {
+        Profile profile=new Profile();
+        for (int n=0;n<25;n++) profile.farms.add(new Farm("field "+n,new Pos(n*10,64,0),new Pos(n*10+5,65,5)));
+        profile.pois.add(new Poi(new Pos(1,64,9),PoiKind.BED,"bed",null));
+        profile.pois.add(new Poi(new Pos(3,64,9),PoiKind.SHIPPING_BIN,"shipping",null));
+        ProfileStore store=new ProfileStore(directory); String key=ProfileStore.key("many-fields");
+        store.save(key,profile); Profile loaded=store.load(key);
+        assertEquals(profile.farms,loaded.farms); assertEquals(profile.pois,loaded.pois);
+        loaded.farms.remove(12); store.save(key,loaded);
+        assertEquals(24,store.load(key).farms.size());
+        assertEquals(profile.farms.get(24),store.load(key).farms.get(23));
+    }
 }

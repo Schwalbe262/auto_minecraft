@@ -4,7 +4,10 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.mojang.logging.LogUtils;
 import dev.schwalbe.autovalley.core.*;
+import dev.schwalbe.autovalley.ui.RegistrationRules;
 import net.minecraft.client.Minecraft;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraftforge.fml.loading.FMLPaths;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -16,12 +19,15 @@ import java.util.*;
 public final class ClientDiagnostics {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().serializeNulls().create();
     private static final long POLL_NANOS = 1_000_000_000L;
-    private static final int RADIUS = 32, VERTICAL = 16, MAX_CANDIDATES = 256, MAX_MENU_SLOTS = 256;
+    private static final int RADIUS = 32, VERTICAL = 16, MAX_CANDIDATES = 256, MAX_PER_KIND = 512, MAX_MENU_SLOTS = 256;
     private static long nextPoll;
     private static boolean errorReported;
 
     private record Candidate(String kind, Pos pos, String id, Map<String,String> properties) { }
+    private record CandidateGroup(int count, boolean truncated, List<Candidate> candidates) { }
+    private record AimedBlock(Pos pos, String id, Map<String,String> properties, double distance) { }
     private record CropCluster(Pos first, Pos second, int blocks, int matureBlocks) { }
+    private record UiFieldSuggestion(Pos first, Pos second, boolean partial) { }
 
     private ClientDiagnostics() { }
 
@@ -56,6 +62,10 @@ public final class ClientDiagnostics {
         report.put("capturedAt",Instant.now().toString());
         report.put("connected",connected);
         report.put("running",runtime.running());
+        report.put("executionMode",runtime.executionMode());
+        report.put("recording",runtime.recording());
+        report.put("recordingActive",runtime.recordingActive());
+        report.put("recordingStatus",runtime.recordingStatus());
         report.put("status",runtime.status());
         report.put("screenClass",mc.screen == null ? null : mc.screen.getClass().getName());
         report.put("screenTitle",mc.screen == null ? null : mc.screen.getTitle().getString());
@@ -66,8 +76,12 @@ public final class ClientDiagnostics {
             observed.put("health",player.health()); observed.put("food",player.food());
             observed.put("focused",player.focused());
             observed.put("dayTime",world.dayTime()); observed.put("selectedHotbar",player.selectedSlot());
+            observed.put("wineCalendarYear",world.wineYear());
+            observed.put("heldDisplayName",mc.player.getMainHandItem().isEmpty() ? null : mc.player.getMainHandItem().getHoverName().getString());
             report.put("player",observed);
+            report.put("aimedBlock",aimedBlock(mc,world));
             report.put("inventory",world.inventory().stream().limit(36).toList());
+            report.put("groundItems",world.groundItems().stream().limit(512).toList());
             MenuData menu = world.menu();
             Map<String,Object> menuReport = new LinkedHashMap<>();
             if (menu != null) {
@@ -82,6 +96,7 @@ public final class ClientDiagnostics {
             report.put("nearby",nearby(world,player.feet()));
         } else {
             report.put("player",null);
+            report.put("aimedBlock",null);
             report.put("inventory",List.of());
             report.put("menu",null);
             report.put("nearby",null);
@@ -95,6 +110,14 @@ public final class ClientDiagnostics {
         registration.put("poisByKind",byKind);
         report.put("registrations",registration);
         return report;
+    }
+
+    private static AimedBlock aimedBlock(Minecraft mc, WorldAccess world) {
+        if (!(mc.hitResult instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return null;
+        Pos pos = new Pos(hit.getBlockPos().getX(),hit.getBlockPos().getY(),hit.getBlockPos().getZ());
+        if (!world.loaded(pos)) return null;
+        BlockData block = world.block(pos);
+        return new AimedBlock(pos,block.id(),new TreeMap<>(block.properties()),mc.player.getEyePosition().distanceTo(hit.getLocation()));
     }
 
     private static Map<String,Object> nearby(WorldAccess world, Pos center) {
@@ -118,9 +141,26 @@ public final class ClientDiagnostics {
         scan.put("recognizedCount",recognized.size()); scan.put("blockCounts",blockCounts);
         scan.put("candidates",recognized.stream().limit(MAX_CANDIDATES).toList());
         scan.put("candidatesTruncated",recognized.size() > MAX_CANDIDATES);
+        Map<String,List<Candidate>> perKind = new TreeMap<>();
+        for (String kind : List.of("tomato","wine_keg","preserves_jar","shipping_bin","bed","container")) perKind.put(kind,new ArrayList<>());
+        for (Candidate candidate : recognized) perKind.computeIfAbsent(candidate.kind(),ignored -> new ArrayList<>()).add(candidate);
+        Comparator<Candidate> nearest = Comparator.comparingDouble((Candidate c) -> c.pos().distanceSquared(center))
+            .thenComparingInt(c -> c.pos().x()).thenComparingInt(c -> c.pos().y()).thenComparingInt(c -> c.pos().z());
+        Map<String,CandidateGroup> groupedCandidates = new TreeMap<>();
+        perKind.forEach((kind,items) -> {
+            items.sort(nearest);
+            groupedCandidates.put(kind,new CandidateGroup(items.size(),items.size() > MAX_PER_KIND,items.stream().limit(MAX_PER_KIND).toList()));
+        });
+        scan.put("maxCandidatesPerKind",MAX_PER_KIND);
+        scan.put("candidatesByKind",groupedCandidates);
         scan.put("tomatoClusterCount",clusters.size());
         scan.put("tomatoClusters",clusters.stream().limit(32).toList());
         scan.put("tomatoClustersTruncated",clusters.size() > 32);
+        List<Farm> uiFields = RegistrationRules.suggestFarms(new ArrayList<>(crops.values()));
+        scan.put("uiFieldSuggestionCount",uiFields.size());
+        scan.put("uiFieldSuggestions",uiFields.stream().limit(32).map(farm -> new UiFieldSuggestion(farm.first(),farm.second(),
+            RegistrationRules.mayBePartial(farm,center,RADIUS,VERTICAL,world::loaded))).toList());
+        scan.put("uiFieldSuggestionsTruncated",uiFields.size() > 32);
         return scan;
     }
 
