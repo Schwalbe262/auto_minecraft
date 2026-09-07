@@ -2,6 +2,7 @@ package dev.schwalbe.autovalley.client;
 
 import dev.schwalbe.autovalley.core.HarvestFootprint;
 import dev.schwalbe.autovalley.core.HarvestArea;
+import dev.schwalbe.autovalley.core.HarvestCandidateRules;
 import dev.schwalbe.autovalley.core.Pos;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -12,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
@@ -79,10 +81,14 @@ public final class NativeHarvestFootprint {
                 if (!loaded(level,p)) return HarvestFootprint.UNKNOWN;
                 BlockState state = level.getBlockState(nativePos(p));
                 Block block = state.getBlock();
-                // Within this range, retain conservative plant/maturity checks.
+                // Quark configChanged skips the minecraft namespace in its
+                // automatic search. In particular, vanilla grass is not a crop
+                // merely because it is a bonemealable BushBlock. Explicit native
+                // crop/click mappings still include vanilla wheat, berries, etc.
                 boolean nativePlant = block instanceof CropBlock
                     || (block instanceof BushBlock || block instanceof GrowingPlantBlock) && block instanceof BonemealableBlock;
-                if (nativePlant || cropBlocks.contains(block) || clickable.contains(block))
+                if (HarvestCandidateRules.potentialTarget(BuiltInRegistries.BLOCK.getKey(block).getNamespace(),nativePlant,
+                    cropBlocks.contains(block),clickable.contains(block)))
                     candidates.add(p);
             }
             return new HarvestFootprint(true,radius,radius,List.copyOf(candidates));

@@ -311,3 +311,17 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
 - A continuous run also deposited 34 pine tar into the registered shipping bin;
   native inventory acknowledgements confirmed the transfer. Later monetary
   payout was not independently attributed.
+
+## Vanilla-grass harvest false positive — 2026-09-08
+
+- A live read-only footprint check found 15 rejected mature targets, all caused
+  by ordinary vanilla grass being inferred as an area-harvest crop. No offending
+  unregistered tomato or other crop was observed. Installed Quark bytecode skips
+  the `minecraft` namespace during automatic crop discovery; this adapter now
+  mirrors that exclusion. Explicit native crop/click mappings still take
+  precedence, including vanilla crops and any explicitly mapped custom grass.
+  Registered farm boundaries and other-crop protections were not relaxed.
+- Java 17 `test build`: **628 tests, zero failures or errors**. Snapshot SHA-256:
+  `3AAD931A2C272051C9DB8BE47E471A3577D357B40F64D7E84FA22C30ACF2840C`.
+  The same existing client was normally restarted to install this build together
+  with the common wine cycle. Live multi-hour acceptance is still in progress.

@@ -8,6 +8,8 @@ workflow before beginning these user-requested improvements:
   renewed request, together with grouped storage-wall visits. Keep one outstanding
   native action and server acknowledgement, without desktop input interception.
 - Tomato harvesting: continuous tractor-like passes along farm rows.
+- Fruit-tree harvesting and commodity storage, using the supplied demonstration
+  as evidence rather than replaying every main/off-hand event or incidental click.
 - General storage groups: a name, accepted commodity and container members;
   convenient bulk/range registration, and cross-container partial-stack packing.
   Tomato-specific commodity-only permissions and actual per-grade input counting
