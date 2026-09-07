@@ -65,10 +65,27 @@ public final class ProfileStore {
             || profile.sleepAtTick<12000 || profile.sleepAtTick>23000) throw new IllegalArgumentException("Profile settings outside supported range");
         for (var entry:profile.nextEligibleDay.entrySet()) if (entry.getKey()==null || entry.getValue()==null || entry.getValue()<0) throw new IllegalArgumentException("Invalid scheduled date");
         for (Look look:profile.disposalDirections.values()) if (look==null || !Float.isFinite(look.yaw()) || !Float.isFinite(look.pitch()) || Math.abs(look.pitch())>90) throw new IllegalArgumentException("Invalid disposal direction");
+        validateTomatoStorageTargets(profile);
+        MachineGroupRules.validate(profile);
         MachineOutputLedger.validate(profile);
         for (Feature feature:Feature.values()) profile.enabled.putIfAbsent(feature,true);
         // Old clients reject schema 2 instead of silently ignoring an unresolved output.
         // Legacy schema 1 is upgraded in memory only after all validation succeeds.
         profile.schemaVersion=2;
+    }
+    private static void validateTomatoStorageTargets(Profile profile) {
+        if (profile.tomatoStorageTargets==null || profile.tomatoStorageTargets.size()>4096)
+            throw new IllegalArgumentException("Invalid tomato storage target map");
+        for (var entry:profile.tomatoStorageTargets.entrySet()) {
+            String key=entry.getKey(); Integer grade=entry.getValue();
+            if (key==null || grade==null || grade<0 || grade>3)
+                throw new IllegalArgumentException("Tomato storage target grade must be 0..3");
+            String[] coordinates=key.split(":",-1);
+            if (coordinates.length!=3) throw new IllegalArgumentException("Invalid tomato storage target position");
+            try {
+                Pos pos=new Pos(Integer.parseInt(coordinates[0]),Integer.parseInt(coordinates[1]),Integer.parseInt(coordinates[2]));
+                if (!Profile.positionKey(pos).equals(key)) throw new IllegalArgumentException("Tomato storage target position must be canonical");
+            } catch (NumberFormatException invalid) { throw new IllegalArgumentException("Invalid tomato storage target position",invalid); }
+        }
     }
 }

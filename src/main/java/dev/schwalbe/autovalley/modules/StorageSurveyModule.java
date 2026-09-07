@@ -75,10 +75,17 @@ public final class StorageSurveyModule implements AutomationModule {
                 try { observation=StorageSurveyRules.inspect(target.pos(),c.world().tick(),menu.slots()); }
                 catch (RuntimeException malformed) { return fail(c,"Warehouse contents could not be safely interpreted"); }
                 c.session().storageSurveyObservations.put(target.pos(),observation);
-                if (target.kind()==PoiKind.STORAGE_CANDIDATE && observation.classifiedKind()!=null) {
+                PoiKind classifiedKind=observation.classifiedKind();
+                Integer classifier=observation.classifier();
+                Integer desired=c.profile().tomatoStorageTargets.get(Profile.positionKey(target.pos()));
+                if (target.kind()==PoiKind.STORAGE_CANDIDATE && observation.status()==StorageSurveyObservation.Status.EMPTY && desired!=null) {
+                    if (desired<0 || desired>3) return fail(c,"Invalid desired tomato grade; no warehouse classification changed");
+                    classifiedKind=PoiKind.TOMATO_CHEST; classifier=desired;
+                }
+                if (target.kind()==PoiKind.STORAGE_CANDIDATE && classifiedKind!=null) {
                     int position=c.profile().pois.indexOf(target);
                     if (position<0) return fail(c,"Warehouse registration disappeared before classification");
-                    Poi classified=new Poi(target.pos(),observation.classifiedKind(),target.label(),observation.classifier());
+                    Poi classified=new Poi(target.pos(),classifiedKind,target.label(),classifier);
                     c.profile().pois.set(position,classified);
                     try { c.checkpoint().run(); }
                     catch (RuntimeException failure) {

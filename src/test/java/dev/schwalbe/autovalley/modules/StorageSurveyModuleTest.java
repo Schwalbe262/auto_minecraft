@@ -34,6 +34,25 @@ class StorageSurveyModuleTest {
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(1,f.poi(pos).classifier());
         assertEquals(3,f.session.storageSurveyObservations.get(pos).classifier()); assertEquals(0,f.checkpoints);
     }
+    @Test void desiredLayoutClassifiesOnlyVerifiedEmptyCandidatesWhileNonemptyStockKeepsItsActualGrade() {
+        Fixture f=new Fixture(); Pos empty=f.add(),legacy=f.add(tomato(3)),mixed=f.add(tomato(0),tomato(1));
+        for (Pos pos:List.of(empty,legacy,mixed)) f.profile.tomatoStorageTargets.put(Profile.positionKey(pos),2);
+        assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertEquals(PoiKind.TOMATO_CHEST,f.poi(empty).kind()); assertEquals(2,f.poi(empty).classifier());
+        assertEquals(StorageSurveyObservation.Status.EMPTY,f.session.storageSurveyObservations.get(empty).status(),"evidence must remain empty, not invented tomatoes");
+        assertEquals(PoiKind.TOMATO_CHEST,f.poi(legacy).kind()); assertEquals(3,f.poi(legacy).classifier());
+        assertEquals(PoiKind.STORAGE_CANDIDATE,f.poi(mixed).kind()); assertNull(f.poi(mixed).classifier());
+        assertEquals(2,f.checkpoints); assertEquals(List.of(tomato(3)),f.stock.get(legacy));
+        assertEquals(6,f.actions.size()); assertTrue(f.session.storageSurveyComplete);
+    }
+    @Test void emptyCandidateLayoutSaveFailureRollsBackWithoutAnyInventoryAction() {
+        Fixture f=new Fixture(); Pos empty=f.add(); Poi original=f.poi(empty);
+        f.profile.tomatoStorageTargets.put(Profile.positionKey(empty),2); f.failSave=true;
+        assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertEquals(original,f.poi(empty));
+        assertEquals(2,f.profile.tomatoStorageTargets.get(Profile.positionKey(empty)));
+        assertEquals(1,f.actions.size()); assertTrue(f.stock.get(empty).isEmpty());
+        assertEquals(StorageSurveyObservation.Status.EMPTY,f.session.storageSurveyObservations.get(empty).status());
+    }
     @Test void unreachableTargetIsExplicitlyIncompleteAndKeepsEarlierEvidence() {
         Fixture f=new Fixture(); f.add(); Pos blocked=f.add(); f.blocked.add(blocked);
         assertEquals(WorkResult.State.BLOCKED,f.finish().state());

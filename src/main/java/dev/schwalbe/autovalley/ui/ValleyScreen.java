@@ -22,6 +22,7 @@ import java.util.*;
 public final class ValleyScreen extends Screen {
     private enum Tab { MODULES, REGISTER, FARMS, SAVED }
     private enum ToolPage { MENU, RECORD_NAME, RUN_ONCE, PENDING_LIST, PENDING_DETAIL, PENDING_CONFIRM }
+    private enum MachineGroupPage { DETAIL, MEMBERS, REMOVE_CONFIRM }
     private static Tab rememberedTab = Tab.MODULES;
     private static Profile draftOwner;
     private static Pos draftFirst;
@@ -41,10 +42,15 @@ public final class ValleyScreen extends Screen {
     private int lastScanRadius = 32;
     private boolean machineBatchEditor;
     private List<BlockData> machineBatch = List.of();
+    private List<BlockData> machineBatchMembers = List.of();
     private Farm machineBatchBounds;
     private int machineBatchGroupCount;
     private boolean machineBatchPartial;
     private String machineBatchLabel = "";
+    private MachineGroup selectedMachineGroup;
+    private String selectedMachineGroupId;
+    private String machineGroupNameDraft = "";
+    private MachineGroupPage machineGroupPage = MachineGroupPage.DETAIL;
     private RegistrationRules.Group filter = RegistrationRules.Group.ALL;
     private BlockData selected;
     private PoiKind selectedKind;
@@ -89,7 +95,7 @@ public final class ValleyScreen extends Screen {
             Tab target = tabs[i];
             Button button = button(left + i * (tabWidth + gap), 28, tabWidth, tr("tab." + target.name().toLowerCase(Locale.ROOT)), () -> {
                 rememberDraft(); tab = target; rememberedTab = target; page = 0;
-                selected = null; farmEditor = false; showSuggestions = false; scheduleEditor = false; toolsEditor = false; machineBatchEditor = false; rebuild();
+                selected = null; selectedMachineGroup = null; farmEditor = false; showSuggestions = false; scheduleEditor = false; toolsEditor = false; machineBatchEditor = false; rebuild();
             });
             button.active = target != tab;
         }
@@ -97,7 +103,7 @@ public final class ValleyScreen extends Screen {
             case MODULES -> { if (toolsEditor) toolsEditor(); else if (scheduleEditor) scheduleEditor(); else modules(); }
             case REGISTER -> { if (machineBatchEditor) machineBatchEditor(); else if (selected == null) registration(); else poiEditor(); }
             case FARMS -> { if (farmEditor) farmEditor(); else if (showSuggestions) suggestionList(); else farms(); }
-            case SAVED -> saved();
+            case SAVED -> { if (selectedMachineGroup != null) machineGroupEditor(); else saved(); }
         }
         button(left + panelWidth - 72, height - 25, 72, tr("close"), this::onClose);
     }
@@ -178,8 +184,13 @@ public final class ValleyScreen extends Screen {
         }).setTooltip(Tooltip.create(tr("pending.persistent_hint")));
         text(147, tr("record.local"));
         text(162, tr("record.contents"));
-        text(177, tr("record.no_replay"));
-        button(left, 190, panelWidth, tr("back"), () -> { toolsEditor = false; rebuild(); });
+        if (runtime.hasPendingMagnetHaul()) {
+            button(left, 173, panelWidth, tr("haul.manual_confirm"), () -> {
+                if (runtime.acknowledgeManualHaul()) { success("haul.manual_saved"); rebuild(); }
+                else error("haul.manual_failed");
+            }).setTooltip(Tooltip.create(tr("haul.manual_hint")));
+        } else text(177, tr("record.no_replay"));
+        button(left, runtime.hasPendingMagnetHaul() ? 194 : 190, panelWidth, tr("back"), () -> { toolsEditor = false; rebuild(); });
     }
 
     private void recordingName() {
@@ -464,9 +475,15 @@ public final class ValleyScreen extends Screen {
             }
             List<BlockData> group = RegistrationRules.connectedMachines(candidates, selected);
             if (group.isEmpty()) { error("error.changed"); return; }
+            // Existing named groups are not silently merged or reassigned by a nearby scan.
+            if (group.stream().anyMatch(b -> MachineGroupRules.owner(runtime.profile(), b.pos()) != null)) {
+                error("machines.group_already_named"); return;
+            }
+            if (group.stream().anyMatch(b -> runtime.profile().pois.stream()
+                    .anyMatch(p -> p.pos().equals(b.pos()) && p.kind() != selectedKind))) { error("error.changed"); return; }
             Set<Pos> registered = new HashSet<>(); runtime.profile().pois.forEach(p -> registered.add(p.pos()));
             machineBatch = group.stream().filter(b -> !registered.contains(b.pos())).toList();
-            if (machineBatch.isEmpty()) { error("machines.bulk_empty"); return; }
+            machineBatchMembers = group;
             if (runtime.profile().pois.size() + machineBatch.size() > 4096) { error("error.poi_limit"); return; }
             machineBatchGroupCount = group.size();
             machineBatchBounds = RegistrationRules.blockBounds(group);
@@ -483,25 +500,31 @@ public final class ValleyScreen extends Screen {
         text(130, tr("machines.bulk_name", machineBatchLabel));
         int half = (panelWidth - 6) / 2;
         button(left, 156, half, tr("back"), () -> { machineBatchEditor = false; rebuild(); nameInput.setValue(machineBatchLabel); });
-        button(left + half + 6, 156, half, tr("machines.bulk_confirm", machineBatch.size()), this::saveMachineBatch);
+        button(left + half + 6, 156, half, tr("machines.bulk_confirm", machineBatchGroupCount), this::saveMachineBatch);
         text(185, tr("machines.bulk_paused"));
     }
 
     private void saveMachineBatch() {
         if (selectedKind != PoiKind.WINE_KEG && selectedKind != PoiKind.PRESERVES_JAR) return;
         runtime.pause(tr("settings.paused").getString());
-        if (machineBatch.isEmpty()) { error("machines.bulk_empty"); return; }
+        if (machineBatchMembers.isEmpty() || !MachineGroupRules.validName(machineBatchLabel)) { error("machines.group_changed"); return; }
         if (runtime.profile().pois.size() + machineBatch.size() > 4096) { error("error.poi_limit"); return; }
         Set<Pos> registered = new HashSet<>(); runtime.profile().pois.forEach(p -> registered.add(p.pos()));
-        for (BlockData block : machineBatch) {
-            if (registered.contains(block.pos()) || !runtime.world().loaded(block.pos())
+        for (BlockData block : machineBatchMembers) {
+            Poi existing = runtime.profile().pois.stream().filter(p -> p.pos().equals(block.pos())).findFirst().orElse(null);
+            if (existing != null && existing.kind() != selectedKind || MachineGroupRules.owner(runtime.profile(), block.pos()) != null
+                    || !runtime.world().loaded(block.pos())
                     || !runtime.world().block(block.pos()).id().equals(selected.id())) { error("error.changed"); return; }
         }
+        if (machineBatch.stream().anyMatch(b -> registered.contains(b.pos()))) { error("error.changed"); return; }
         List<Poi> before = new ArrayList<>(runtime.profile().pois);
+        Map<String,MachineGroup> groupsBefore = new LinkedHashMap<>(runtime.profile().machineGroups);
         int nextName = runtime.profile().pois(selectedKind).size() + 1;
         for (BlockData block : machineBatch) runtime.profile().pois.add(new Poi(block.pos(), selectedKind, machineBatchLabel + " " + nextName++, null));
-        if (persist(() -> { runtime.profile().pois.clear(); runtime.profile().pois.addAll(before); })) {
-            feedback = tr("machines.bulk_saved", machineBatch.size()).getString();
+        runtime.profile().machineGroups.put(UUID.randomUUID().toString(), new MachineGroup(machineBatchLabel, selectedKind,
+                machineBatchMembers.stream().map(BlockData::pos).toList()));
+        if (persist(() -> { runtime.profile().pois.clear(); runtime.profile().pois.addAll(before); restoreMachineGroups(groupsBefore); })) {
+            feedback = tr("machines.bulk_saved", machineBatchMembers.size()).getString();
             machineBatchEditor = false; machineBatch = List.of(); selected = null; tab = Tab.SAVED; rememberedTab = tab; page = 0; rebuild();
         }
     }
@@ -642,12 +665,21 @@ public final class ValleyScreen extends Screen {
         button(left, 54, half, tr("waypoint.capture"), () -> captureFeet(PoiKind.WAYPOINT));
         button(left + half + 6, 54, half, tr("disposal.capture"), () -> captureFeet(PoiKind.DISPOSAL));
         text(79, tr("waypoint.hint"));
-        int rows = rowsFrom(94), start = pageStart(runtime.profile().pois.size(), rows);
+        List<SavedEntry> entries = savedEntries();
+        int rows = rowsFrom(94), start = pageStart(entries.size(), rows);
         if (runtime.profile().pois.isEmpty()) text(101, tr("saved.empty"));
-        List<Poi> pois = List.copyOf(runtime.profile().pois);
-        for (int i = start; i < Math.min(start + rows, pois.size()); i++) {
-            Poi poi = pois.get(i);
+        for (int i = start; i < Math.min(start + rows, entries.size()); i++) {
+            SavedEntry entry = entries.get(i);
             int y = 94 + (i - start) * 23;
+            if (entry.group() != null) {
+                MachineGroup group = entry.group();
+                Component caption = tr("machines.group_row", group.name(), group.members().size());
+                button(left, y, panelWidth, clipped(caption, panelWidth - 12), () -> openMachineGroup(entry))
+                        .setTooltip(Tooltip.create(caption.copy().append("\n").append(tr(entry.groupId() == null
+                                ? "machines.group_legacy_hint" : "machines.group_saved_hint"))));
+                continue;
+            }
+            Poi poi = entry.poi();
             Component caption = Component.literal(poi.label() + " · ").append(poiName(poi.kind()));
             if (poi.kind() == PoiKind.WINE_CHEST) {
                 WineCohortRules.Display display = WineCohortRules.describe(poi.classifier(), runtime.world().wineYear());
@@ -659,10 +691,7 @@ public final class ValleyScreen extends Screen {
             button(left, y, panelWidth - 58, clipped(caption, panelWidth - 70), () -> {
                 if (poi.kind() == PoiKind.DISPOSAL) { updateDisposalFacing(poi); return; }
                 if (poi.kind() == PoiKind.WAYPOINT) { success("saved.feet_hint"); return; }
-                if (!runtime.world().loaded(poi.pos())) { error("error.unloaded"); return; }
-                BlockData block = runtime.world().block(poi.pos());
-                if (RegistrationRules.kinds(block).isEmpty()) { error("error.changed"); return; }
-                tab = Tab.REGISTER; rememberedTab = tab; selectCandidate(block, true);
+                editSavedPoi(poi);
             }).setTooltip(Tooltip.create(poi.kind() == PoiKind.DISPOSAL ? caption.copy().append("\n").append(tr("disposal.edit_hint")) : caption));
             button(left + panelWidth - 54, y, 54, tr("remove"), () -> {
                 List<Poi> before = new ArrayList<>(runtime.profile().pois);
@@ -675,7 +704,130 @@ public final class ValleyScreen extends Screen {
                 }); rebuild();
             });
         }
-        pagination(pois.size(), rows);
+        pagination(entries.size(), rows);
+    }
+
+    private record SavedEntry(String groupId, MachineGroup group, Poi poi) { }
+
+    private List<SavedEntry> savedEntries() {
+        Map<Pos,SavedEntry> membership = new HashMap<>();
+        for (var saved : runtime.profile().machineGroups.entrySet()) {
+            SavedEntry entry = new SavedEntry(saved.getKey(), saved.getValue(), null);
+            saved.getValue().members().forEach(pos -> membership.put(pos, entry));
+        }
+        Map<PoiKind,Integer> ordinal = new EnumMap<>(PoiKind.class);
+        for (List<Poi> members : MachineGroupRules.legacyGroups(runtime.profile())) {
+            PoiKind kind = members.get(0).kind();
+            int number = ordinal.merge(kind, 1, Integer::sum);
+            String name = tr("machines.group_default", poiName(kind), number).getString();
+            MachineGroup group = new MachineGroup(name, kind, members.stream().map(Poi::pos).toList());
+            SavedEntry entry = new SavedEntry(null, group, null);
+            group.members().forEach(pos -> membership.put(pos, entry));
+        }
+        List<SavedEntry> entries = new ArrayList<>(); Set<SavedEntry> emitted = new HashSet<>();
+        for (Poi poi : runtime.profile().pois) {
+            SavedEntry entry = membership.get(poi.pos());
+            if (entry == null) entries.add(new SavedEntry(null, null, poi));
+            else if (emitted.add(entry)) entries.add(entry);
+        }
+        return List.copyOf(entries);
+    }
+
+    private void openMachineGroup(SavedEntry entry) {
+        selectedMachineGroup = entry.group(); selectedMachineGroupId = entry.groupId();
+        machineGroupNameDraft = selectedMachineGroup.name(); machineGroupPage = MachineGroupPage.DETAIL;
+        page = 0; rebuild();
+    }
+
+    private void machineGroupEditor() {
+        MachineGroup group = selectedMachineGroup;
+        if (machineGroupPage == MachineGroupPage.MEMBERS) {
+            button(left, 54, panelWidth, tr("back"), () -> { machineGroupPage = MachineGroupPage.DETAIL; page = 0; rebuild(); });
+            text(79, tr("machines.group_row", group.name(), group.members().size()));
+            int rows = rowsFrom(94), start = pageStart(group.members().size(), rows);
+            for (int i = start; i < Math.min(start + rows, group.members().size()); i++) {
+                Pos pos = group.members().get(i);
+                Poi poi = runtime.profile().pois.stream().filter(p -> p.pos().equals(pos) && p.kind() == group.kind()).findFirst().orElse(null);
+                Component caption = Component.literal((poi == null ? "?" : poi.label()) + " · " + coords(pos));
+                button(left, 94 + (i - start) * 23, panelWidth, clipped(caption, panelWidth - 12), () -> {
+                    if (poi == null) { error("machines.group_changed"); return; }
+                    editSavedPoi(poi);
+                }).setTooltip(Tooltip.create(caption));
+            }
+            pagination(group.members().size(), rows); return;
+        }
+        text(55, tr("machines.group_row", group.name(), group.members().size()));
+        List<BlockData> blocks = group.members().stream().map(pos -> new BlockData(pos, "", Map.of())).toList();
+        Farm bounds = RegistrationRules.blockBounds(blocks);
+        text(75, tr("machines.bulk_bounds", coords(bounds.first()), coords(bounds.second())));
+        int half = (panelWidth - 6) / 2;
+        if (machineGroupPage == MachineGroupPage.REMOVE_CONFIRM) {
+            text(98, tr("machines.group_remove_warning", group.members().size()));
+            text(116, tr("machines.group_remove_history"));
+            text(136, tr("machines.group_remove_exact"));
+            button(left, 157, half, tr("back"), () -> { machineGroupPage = MachineGroupPage.DETAIL; rebuild(); });
+            button(left + half + 6, 157, half, tr("machines.group_remove_confirm", group.members().size()), this::removeMachineGroup);
+            return;
+        }
+        text(94, tr("machines.group_name"));
+        nameInput = input(left, 105, panelWidth, tr("machines.group_name"), 64);
+        nameInput.setValue(machineGroupNameDraft);
+        nameInput.setResponder(value -> machineGroupNameDraft = value);
+        button(left, 132, half, tr(selectedMachineGroupId == null ? "machines.group_save" : "machines.group_rename"), this::saveMachineGroupName);
+        button(left + half + 6, 132, half, tr("machines.group_members"), () -> { machineGroupPage = MachineGroupPage.MEMBERS; page = 0; rebuild(); });
+        button(left, 158, half, tr("back"), () -> { selectedMachineGroup = null; page = 0; rebuild(); });
+        button(left + half + 6, 158, half, tr("machines.group_remove"), () -> { machineGroupPage = MachineGroupPage.REMOVE_CONFIRM; rebuild(); });
+        text(186, tr(selectedMachineGroupId == null ? "machines.group_legacy_hint" : "machines.group_saved_hint"));
+    }
+
+    private boolean machineGroupStillCurrent() {
+        if (selectedMachineGroup == null) return false;
+        if (selectedMachineGroupId != null && !selectedMachineGroup.equals(runtime.profile().machineGroups.get(selectedMachineGroupId))) return false;
+        for (Pos pos : selectedMachineGroup.members()) {
+            if (runtime.profile().pois.stream().noneMatch(p -> p.pos().equals(pos) && p.kind() == selectedMachineGroup.kind())) return false;
+            if (!Objects.equals(selectedMachineGroupId, MachineGroupRules.owner(runtime.profile(), pos))) return false;
+        }
+        return true;
+    }
+
+    private void saveMachineGroupName() {
+        if (!machineGroupStillCurrent()) { error("machines.group_changed"); return; }
+        String name = machineGroupNameDraft.trim();
+        if (!MachineGroupRules.validName(name)) { error("machines.group_name_invalid"); return; }
+        runtime.pause(tr("settings.paused").getString());
+        Map<String,MachineGroup> before = new LinkedHashMap<>(runtime.profile().machineGroups);
+        String id = selectedMachineGroupId == null ? UUID.randomUUID().toString() : selectedMachineGroupId;
+        MachineGroup renamed = new MachineGroup(name, selectedMachineGroup.kind(), selectedMachineGroup.members());
+        runtime.profile().machineGroups.put(id, renamed);
+        if (persist(() -> restoreMachineGroups(before))) {
+            selectedMachineGroup = renamed; selectedMachineGroupId = id; machineGroupNameDraft = name;
+            success("machines.group_saved"); rebuild();
+        }
+    }
+
+    private void removeMachineGroup() {
+        if (machineGroupPage != MachineGroupPage.REMOVE_CONFIRM || !machineGroupStillCurrent()) { error("machines.group_changed"); return; }
+        runtime.pause(tr("settings.paused").getString());
+        List<Poi> before = new ArrayList<>(runtime.profile().pois);
+        Map<String,MachineGroup> groupsBefore = new LinkedHashMap<>(runtime.profile().machineGroups);
+        Set<Pos> members = new HashSet<>(selectedMachineGroup.members());
+        runtime.profile().pois.removeIf(p -> p.kind() == selectedMachineGroup.kind() && members.contains(p.pos()));
+        if (selectedMachineGroupId != null) runtime.profile().machineGroups.remove(selectedMachineGroupId);
+        // Deadlines and durable output obligations are deliberately retained.
+        if (persist(() -> { runtime.profile().pois.clear(); runtime.profile().pois.addAll(before); restoreMachineGroups(groupsBefore); })) {
+            selectedMachineGroup = null; page = 0; success("machines.group_removed"); rebuild();
+        }
+    }
+
+    private void restoreMachineGroups(Map<String,MachineGroup> before) {
+        runtime.profile().machineGroups.clear(); runtime.profile().machineGroups.putAll(before);
+    }
+
+    private void editSavedPoi(Poi poi) {
+        if (!runtime.world().loaded(poi.pos())) { error("error.unloaded"); return; }
+        BlockData block = runtime.world().block(poi.pos());
+        if (RegistrationRules.kinds(block).isEmpty()) { error("error.changed"); return; }
+        selectedMachineGroup = null; tab = Tab.REGISTER; rememberedTab = tab; selectCandidate(block, true);
     }
 
     private void captureFeet(PoiKind kind) {

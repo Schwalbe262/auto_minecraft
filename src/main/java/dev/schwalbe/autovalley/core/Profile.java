@@ -5,6 +5,7 @@ import java.util.*;
 public final class Profile {
     public int schemaVersion = 2;
     public List<Poi> pois = new ArrayList<>();
+    public Map<String,MachineGroup> machineGroups = new LinkedHashMap<>();
     public List<Farm> farms = new ArrayList<>();
     public Map<Feature, Boolean> enabled = new EnumMap<>(Feature.class);
     public boolean allowBackground = true;
@@ -27,6 +28,8 @@ public final class Profile {
     public List<MachineOutputLedger.ResolutionEntry> machineOutputResolutions = new ArrayList<>();
     public long lastSeenDay = -1;
     public Map<String,Look> disposalDirections = new HashMap<>();
+    /** Desired future tomato grade; Poi.classifier remains the actual source grade until the chest is verified empty. */
+    public Map<String,Integer> tomatoStorageTargets = new HashMap<>();
     public static String positionKey(Pos pos) { return pos.x()+":"+pos.y()+":"+pos.z(); }
     public Profile() { for (Feature feature : Feature.values()) enabled.put(feature, true); }
     public boolean enabled(Feature f) { return Boolean.TRUE.equals(enabled.get(f)); }

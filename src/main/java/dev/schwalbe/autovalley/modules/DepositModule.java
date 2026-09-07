@@ -5,7 +5,7 @@ import java.util.*;
 
 /** Confirmed-container deposit with one acknowledged operation at a time. */
 abstract class DepositModule implements AutomationModule {
-    private enum Stage { FIND, APPROACH, OPEN, TRANSFER, CLOSE }
+    private enum Stage { FIND, APPROACH, OPEN, TRANSFER, CLOSE, SKIP_CLOSE }
     private Stage stage = Stage.FIND;
     private long ticket = -1, unknownSince = -1, groundWaitSince=-1;
     private ItemData selected;
@@ -15,6 +15,11 @@ abstract class DepositModule implements AutomationModule {
     protected boolean accepts(ItemData item) { return item.is(itemId()); }
     protected abstract PoiKind destinationKind();
     protected abstract Integer classifier(ItemData item);
+    protected List<Poi> destinations(Context c,ItemData item) {
+        return c.profile().pois(destinationKind()).stream().filter(p -> Objects.equals(p.classifier(),classifier(item))).toList();
+    }
+    /** False means close this occupied destination and try the next one, without moving any item. */
+    protected boolean prepareDestination(Context c,Poi destination,ItemData item) { return true; }
 
     @Override public WorkResult tick(Context c) {
         if (ticket >= 0) {
@@ -31,6 +36,10 @@ abstract class DepositModule implements AutomationModule {
                 c.session().recordFarmRemoval(selected.id(),moved);
             } else if (stage == Stage.CLOSE) {
                 stage = Stage.FIND; containerId = -1;
+            } else if (stage == Stage.SKIP_CLOSE) {
+                containerId=-1;
+                if (candidate>=candidates.size()) return fail("No compatible destination is empty or ready; legacy contents were left untouched");
+                stage=Stage.APPROACH;
             }
         }
         switch (stage) {
@@ -56,8 +65,7 @@ abstract class DepositModule implements AutomationModule {
                     return fail("Wine has no synchronized Year; inspect it before storing");
                 }
                 unknownSince = -1;
-                candidates = ModuleSupport.nearest(c,c.profile().pois(destinationKind()).stream()
-                    .filter(p -> Objects.equals(p.classifier(),group)).toList());
+                candidates = ModuleSupport.nearest(c,destinations(c,selected));
                 if (candidates.isEmpty()) return fail("Register a destination for " + selected.id() + " classification " + group);
                 candidate = 0; stage = Stage.APPROACH;
             }
@@ -71,6 +79,13 @@ abstract class DepositModule implements AutomationModule {
             case TRANSFER -> {
                 MenuData menu = c.world().menu();
                 if (!menu.container() || menu.id() != containerId || !menu.carried().empty()) return fail("Storage menu changed; transfer cancelled");
+                try {
+                    if (!prepareDestination(c,candidates.get(candidate),selected)) {
+                        candidate++; stage=Stage.SKIP_CLOSE;
+                        ticket=c.actions().submit(new Action.CloseContainer(containerId));
+                        return WorkResult.busy("Leaving incompatible legacy contents untouched; checking the next destination");
+                    }
+                } catch (RuntimeException failure) { return fail("Could not safely prepare storage: "+failure.getMessage()); }
                 if (destinationKind() != PoiKind.SHIPPING_BIN && menu.slots().stream().filter(s -> !s.player()).map(ItemSlot::item)
                     .anyMatch(i -> i.is(itemId()) && !Objects.equals(classifier(i),classifier(selected)))) return fail("Storage contains a conflicting grade or production Year");
                 ItemSlot source = ModuleSupport.menuPlayerItem(c,i -> ModuleSupport.same(i,selected) && !i.empty());
@@ -86,6 +101,7 @@ abstract class DepositModule implements AutomationModule {
                 }
             }
             case CLOSE -> { return fail("Storage close acknowledgement was lost"); }
+            case SKIP_CLOSE -> { return fail("Skipped storage close acknowledgement was lost"); }
         }
         return WorkResult.busy("Storing " + (selected==null ? itemId() : selected.id()));
     }

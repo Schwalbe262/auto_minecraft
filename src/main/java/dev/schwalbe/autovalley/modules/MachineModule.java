@@ -163,7 +163,7 @@ public final class MachineModule implements AutomationModule {
                     feeding = true;
                     if (heldCandidate(c) != null) stage = Stage.RETURN;
                     else {
-                        source = stock.entrySet().stream().filter(e -> e.getValue()[grade] > 0).map(Map.Entry::getKey).findFirst().orElse(null);
+                        source = sourceForGrade(c,null);
                         if (source == null) return fail("Combine fragmented tomatoes of the selected grade into one stack");
                         stage = Stage.FETCH_SOURCE;
                     }
@@ -205,8 +205,7 @@ public final class MachineModule implements AutomationModule {
                 ItemSlot slot=over!=null && underTotal<needed ? over : under;
                 if (slot==null) {
                     if (stock.get(source)[grade]>0) return fail("Tomato source contains an unsupported stack size");
-                    Poi next=stock.entrySet().stream().filter(e -> !e.getKey().equals(source) && e.getValue()[grade]>0)
-                        .map(Map.Entry::getKey).findFirst().orElse(null);
+                    Poi next=sourceForGrade(c,source);
                     if (next!=null) { source=next; close(c,Stage.FETCH_SOURCE); }
                     else close(c,funded ? Stage.RETURN : Stage.CHOOSE);
                     break;
@@ -365,6 +364,15 @@ public final class MachineModule implements AutomationModule {
     private void beginStockScan(Context c) {
         sources = ModuleSupport.nearest(c,c.profile().pois(PoiKind.TOMATO_CHEST));
         stock.clear(); stockReady = false; freshForHaul = false; sourceIndex = 0; stage = Stage.SOURCE;
+    }
+    private Poi sourceForGrade(Context c,Poi excluded) {
+        // Stock and grade choice stay based on actual synchronized contents. Within
+        // that chosen grade, consume a misplaced legacy barrel before replenishable ones.
+        return stock.entrySet().stream().filter(e -> !e.getKey().equals(excluded) && e.getValue()[grade]>0)
+            .map(Map.Entry::getKey).sorted(Comparator.comparingInt(p -> {
+                Integer desired=c.profile().tomatoStorageTargets.get(Profile.positionKey(p.pos()));
+                return desired!=null && !Objects.equals(desired,p.classifier()) ? 0 : 1;
+            })).findFirst().orElse(null);
     }
     private static long gameDay(Context c) { return Math.floorDiv(c.world().dayTime(),24000); }
     private boolean eligible(Context c,Poi poi) {
