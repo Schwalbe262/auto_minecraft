@@ -342,3 +342,24 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   `D71E625EB986F4789360B1705A76226292768C2DE9A3DCE5129066DFC3980826`.
   The interrupted attempt is not counted as stable runtime. Movement from the
   original stopped position and a new multi-hour run require live verification.
+
+### Live movement, sleep and early-wine-boundary evidence
+
+- After normal restart with the standing-feet fix, the tomato-storage one-shot
+  moved approximately 71 blocks from the original stopped position and deposited
+  all 148 carried tomatoes. Native confirmations were 46, 46 and 56 items, with
+  no failed receipts and no tomatoes left in inventory.
+- Continuous observation restarted at **2026-09-07 19:11:38 UTC**. The earlier
+  stalled attempt is excluded. The requested three-hour duration is **not yet
+  complete** in this checkpoint.
+- On game day 329, idle automation began its normal bedtime transition. The
+  server acknowledged `Entered bed`; five consecutive one-second samples showed
+  actual sleeping. The game then advanced to day 330 and automation resumed
+  harvesting. No sleep one-shot, clock change, or cooldown override was used.
+- On day 330, 247 kegs were mature while the common rack date remained 332.
+  Automation harvested, stored tomatoes, shipped pine tar and returned to idle;
+  it did not start an early partial wine batch. This verifies the waiting boundary,
+  not completion of the next full wine batch or a new preserves production cycle.
+- Private one-second state and native-receipt observers preserve ongoing evidence.
+  Receipt observation timestamps are not fabricated server-completion timestamps.
+  Final long-duration production and stability acceptance remains in progress.
