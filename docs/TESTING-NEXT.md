@@ -363,3 +363,24 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
 - Private one-second state and native-receipt observers preserve ongoing evidence.
   Receipt observation timestamps are not fabricated server-completion timestamps.
   Final long-duration production and stability acceptance remains in progress.
+
+### Live full preserves cycle: 144 jars, game day 331
+
+- The continuous run completed one 32-container source survey, withdrew 768
+  tomatoes of the largest observed grade, and used 720 to refill 144 jars.
+  It collected 144 preserves, returned the remaining 48 tomatoes, and shipped
+  all preserves with native-confirmed transfers of **64 + 64 + 16**.
+- The scoped native receipt interval contains **253 consecutive successful
+  tickets with none missing**: one survey, acquisition, 144 confirmed production
+  interactions, hand replacements, ingredient return, and shipping. The 144
+  generic interaction receipts are corroborated by machine progress, all jars
+  changing from mature to working, and matching ingredient/product counts;
+  the generic message alone is not an independent per-position machine census.
+- First sampled preserves activity through post-shipping idle took **167.10
+  seconds** in this run. There was no repeated inventory survey during production,
+  OFF/error sample, failed native acknowledgement, or unresolved final output.
+  The state samples' maximum adjacent gap was 1.0122 seconds. Timestamps are
+  observation times, not invented exact server action times.
+- The engine returned to normal waiting with no tomatoes or preserves remaining
+  in inventory. This confirms shipping-box deposit, not independent monetary
+  payout verification. The minimum-three-hour observation is still underway.
