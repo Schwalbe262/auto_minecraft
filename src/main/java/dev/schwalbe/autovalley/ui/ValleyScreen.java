@@ -21,7 +21,7 @@ import java.util.*;
 /** All registration is local and explicit. Opening settings never starts game actions. */
 public final class ValleyScreen extends Screen {
     private enum Tab { MODULES, REGISTER, FARMS, SAVED }
-    private enum ToolPage { MENU, RECORD_NAME, RUN_ONCE }
+    private enum ToolPage { MENU, RECORD_NAME, RUN_ONCE, PENDING_LIST, PENDING_DETAIL, PENDING_CONFIRM }
     private static Tab rememberedTab = Tab.MODULES;
     private static Profile draftOwner;
     private static Pos draftFirst;
@@ -57,6 +57,8 @@ public final class ValleyScreen extends Screen {
     private boolean toolsEditor;
     private ToolPage toolPage = ToolPage.MENU;
     private String recordingNameDraft = "";
+    private PendingMachineOutput selectedPendingOutput;
+    private MachineOutputLedger.Resolution pendingResolution;
     private EditBox nameInput, classifierInput;
     private String feedback = "";
     private boolean feedbackError;
@@ -149,6 +151,9 @@ public final class ValleyScreen extends Screen {
             case MENU -> recordingTools();
             case RECORD_NAME -> recordingName();
             case RUN_ONCE -> runOnceChooser();
+            case PENDING_LIST -> pendingOutputList();
+            case PENDING_DETAIL -> pendingOutputDetail();
+            case PENDING_CONFIRM -> pendingOutputConfirmation();
         }
     }
 
@@ -166,7 +171,11 @@ public final class ValleyScreen extends Screen {
                 recordingNameDraft = ""; onClose();
             } catch (RuntimeException e) { error("record.error_start"); }
         });
-        button(left, 118, panelWidth, tr("once.open"), () -> { toolPage = ToolPage.RUN_ONCE; rebuild(); });
+        int half = (panelWidth - 6) / 2;
+        button(left, 118, half, tr("once.open"), () -> { toolPage = ToolPage.RUN_ONCE; rebuild(); });
+        button(left + half + 6, 118, half, tr("pending.open", runtime.pendingMachineOutputs().size()), () -> {
+            selectedPendingOutput = null; pendingResolution = null; page = 0; toolPage = ToolPage.PENDING_LIST; rebuild();
+        }).setTooltip(Tooltip.create(tr("pending.persistent_hint")));
         text(147, tr("record.local"));
         text(162, tr("record.contents"));
         text(177, tr("record.no_replay"));
@@ -223,6 +232,97 @@ public final class ValleyScreen extends Screen {
         } catch (RuntimeException e) { error("once.error_start"); }
         // Return to this chooser when starting was refused; the recording, if any, remains in the runtime.
         if (Minecraft.getInstance().screen == null) Minecraft.getInstance().setScreen(this);
+    }
+
+    private void pendingOutputList() {
+        button(left, 54, panelWidth, tr("back"), () -> { toolPage = ToolPage.MENU; rebuild(); });
+        List<PendingMachineOutput> outputs = List.copyOf(runtime.pendingMachineOutputs());
+        text(79, tr("pending.list_title", outputs.size()));
+        text(95, tr("pending.persistent_hint"));
+        int top = 110, rows = rowsFrom(top), start = pageStart(outputs.size(), rows);
+        if (outputs.isEmpty()) text(top + 7, tr("pending.empty"));
+        for (int index = start; index < Math.min(start + rows, outputs.size()); index++) {
+            PendingMachineOutput output = outputs.get(index);
+            Component caption = tr("pending.entry", pendingProduct(output), pendingMachineLabel(output));
+            button(left, top + (index - start) * 23, panelWidth, caption, () -> {
+                selectedPendingOutput = output; pendingResolution = null; toolPage = ToolPage.PENDING_DETAIL; rebuild();
+            }).setTooltip(Tooltip.create(caption.copy().append("\n").append(pendingSource(output)).append("\n").append(tr("pending.not_auto_verified"))));
+        }
+        pagination(outputs.size(), rows);
+    }
+
+    private void pendingOutputDetail() {
+        if (selectedPendingOutput == null) { toolPage = ToolPage.PENDING_LIST; pendingOutputList(); return; }
+        text(55, tr("pending.detail_title"));
+        text(75, tr("pending.quantity", pendingProduct(selectedPendingOutput)));
+        text(91, pendingSource(selectedPendingOutput));
+        text(107, tr("pending.created", selectedPendingOutput.createdDay() + 1));
+        text(123, tr(selectedPendingOutput.phase() == PendingMachineOutput.Phase.AWAITING_MACHINE_CONFIRMATION
+                ? "pending.machine_unconfirmed" : "pending.not_auto_verified"));
+        button(left, 145, panelWidth, tr("pending.recovered"), () -> choosePendingResolution(MachineOutputLedger.Resolution.RECOVERED_AND_HANDLED));
+        button(left, 169, panelWidth, tr("pending.lost"), () -> choosePendingResolution(MachineOutputLedger.Resolution.CONFIRMED_LOST));
+        button(left, 193, panelWidth, tr("back"), () -> {
+            selectedPendingOutput = null; pendingResolution = null; toolPage = ToolPage.PENDING_LIST; rebuild();
+        });
+    }
+
+    private void choosePendingResolution(MachineOutputLedger.Resolution reason) {
+        if (!PendingOutputReview.manualResolution(reason)) { error("pending.error_changed"); return; }
+        pendingResolution = reason; toolPage = ToolPage.PENDING_CONFIRM; rebuild();
+    }
+
+    private void pendingOutputConfirmation() {
+        if (selectedPendingOutput == null || !PendingOutputReview.manualResolution(pendingResolution)) {
+            toolPage = ToolPage.PENDING_LIST; pendingOutputList(); return;
+        }
+        boolean lost = pendingResolution == MachineOutputLedger.Resolution.CONFIRMED_LOST;
+        text(55, tr(lost ? "pending.confirm_lost_title" : "pending.confirm_recovered_title"));
+        text(75, tr("pending.quantity", pendingProduct(selectedPendingOutput)));
+        text(91, pendingSource(selectedPendingOutput));
+        text(112, tr(lost ? "pending.lost_statement" : "pending.recovered_statement"));
+        text(132, tr("pending.confirm_effect"));
+        text(149, tr("pending.single_item"));
+        Button cancel = button(left, 169, panelWidth, tr("pending.cancel"), () -> {
+            pendingResolution = null; toolPage = ToolPage.PENDING_DETAIL; rebuild();
+        });
+        // A double-click on either first-stage action cannot hit this lower final confirmation button.
+        button(left, 193, panelWidth, tr(lost ? "pending.confirm_lost" : "pending.confirm_recovered"), this::acknowledgeSelectedOutput);
+        setInitialFocus(cancel);
+    }
+
+    private void acknowledgeSelectedOutput() {
+        if (selectedPendingOutput == null || !PendingOutputReview.manualResolution(pendingResolution)) { error("pending.error_changed"); return; }
+        PendingMachineOutput current = runtime.pendingMachineOutputs().stream()
+                .filter(output -> output.id().equals(selectedPendingOutput.id())).findFirst().orElse(null);
+        if (!PendingOutputReview.canConfirm(selectedPendingOutput, current, pendingResolution)) { error("pending.error_changed"); return; }
+        try {
+            if (!runtime.acknowledgePendingOutput(selectedPendingOutput.id(), pendingResolution)) { error("pending.error_save"); return; }
+            selectedPendingOutput = null; pendingResolution = null; toolPage = ToolPage.PENDING_LIST;
+            success("pending.saved"); rebuild();
+        } catch (RuntimeException e) { error("pending.error_save"); }
+    }
+
+    private Component pendingProduct(PendingMachineOutput output) {
+        Component product = switch (output.outputId()) {
+            case ItemData.WINE -> tr("pending.product_wine");
+            case ItemData.PRESERVES -> tr("pending.product_preserves");
+            default -> Component.literal(output.outputId());
+        };
+        if (output.feature() == Feature.WINE) {
+            WineCohortRules.Display display = WineCohortRules.describe(output.expectedWineYear(), runtime.world().wineYear());
+            product = product.copy().append(" · ").append(display == null ? tr("classifier.age_unknown")
+                    : tr(display.future() ? "classifier.future_value" : "classifier.age_value", display.years()));
+        }
+        return product;
+    }
+
+    private String pendingMachineLabel(PendingMachineOutput output) {
+        return runtime.profile().pois.stream().filter(poi -> poi.pos().equals(output.machine()))
+                .map(Poi::label).findFirst().orElse(Component.translatable(output.feature().translationKey()).getString());
+    }
+
+    private Component pendingSource(PendingMachineOutput output) {
+        return tr("pending.source", pendingMachineLabel(output), coords(output.machine()));
     }
 
     private void scheduleEditor() {
@@ -712,10 +812,12 @@ public final class ValleyScreen extends Screen {
         graphics.fill(left - 8, 7, left + panelWidth + 8, height - 4, 0xE0192522);
         graphics.fill(left - 8, 7, left + panelWidth + 8, 9, 0xFF83C89B);
         boolean recordingActive = runtime.recording();
-        Component recordingLabel = tr(runtime.recordingActive() ? "record.active" : "record.pending");
-        int indicatorWidth = recordingActive ? font.width(recordingLabel) + 12 : 0;
+        int pendingCount = runtime.pendingMachineOutputs().size();
+        Component indicator = recordingActive ? tr(runtime.recordingActive() ? "record.active" : "record.pending") : Component.empty();
+        if (pendingCount > 0) indicator = indicator.copy().append(recordingActive ? " · " : "").append(tr("pending.badge", pendingCount));
+        int indicatorWidth = recordingActive || pendingCount > 0 ? font.width(indicator) + 12 : 0;
         graphics.drawString(font, clipped(title, panelWidth - indicatorWidth), left, 15, 0xE6F5E9, false);
-        if (recordingActive) graphics.drawString(font, recordingLabel, left + panelWidth - font.width(recordingLabel), 15, 0xFFBE8A, false);
+        if (indicatorWidth > 0) graphics.drawString(font, indicator, left + panelWidth - font.width(indicator), 15, 0xFFBE8A, false);
         for (TextLine line : lines) graphics.drawString(font, clipped(line.message(), panelWidth), left, line.y(), 0xCBD9CC, false);
         String status = feedback.isEmpty() ? runtime.status() : feedback;
         graphics.drawString(font, font.plainSubstrByWidth(status, Math.max(10, panelWidth - 82)), left, height - 19,
@@ -730,6 +832,8 @@ public final class ValleyScreen extends Screen {
         }
         if (mouseX >= left && mouseX < left + panelWidth - 78 && mouseY >= height - 25 && mouseY <= height - 5)
             graphics.renderTooltip(font, font.split(Component.literal(status), Math.max(100, panelWidth - 20)), mouseX, mouseY);
+        if (pendingCount > 0 && mouseX >= left + panelWidth - indicatorWidth && mouseX < left + panelWidth && mouseY >= 13 && mouseY <= 25)
+            graphics.renderTooltip(font, font.split(tr("pending.badge_hint"), Math.max(100, panelWidth - 20)), mouseX, mouseY);
     }
 
     private int rowsFrom(int start) { return Math.max(1, (height - 57 - start) / 23); }
