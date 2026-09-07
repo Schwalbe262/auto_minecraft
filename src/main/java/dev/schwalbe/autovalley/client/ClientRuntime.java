@@ -38,6 +38,8 @@ public final class ClientRuntime {
     private boolean calibrationWasActive;
     private boolean previewShown;
     private boolean wasSleeping;
+    private boolean wasFocused;
+    private Boolean savedPauseOnLostFocus;
     private ClientRuntime() { actions.context(context); }
     public static ClientRuntime instance() { return INSTANCE; }
     public static void install() { MinecraftForge.EVENT_BUS.register(new ClientEvents()); }
@@ -52,11 +54,13 @@ public final class ClientRuntime {
         else if (persistenceError==null) {
             if (mc.screen!=null) { notifyUser("설정/인벤토리 화면을 닫은 뒤 F8을 누르세요."); return; }
             engine.start(context); actions.enabled(engine.running()); anglesValid=false; attackFence=engine.running();
+            updateBackgroundPause();
         }
     }
     public void pause(String reason) {
         engine.stop(context,AutomationEngine.State.PAUSED,reason);
         actions.enabled(false); anglesValid=false;
+        updateBackgroundPause();
         attackFence=world.tick()<attackFenceUntil;
         if (profileKey!=null && persistenceError==null && savedScheduleHash!=scheduleHash()) {
             try { saveProfile(); } catch (RuntimeException e) { persistenceError=e.getMessage(); }
@@ -94,6 +98,15 @@ public final class ClientRuntime {
         catch (RuntimeException e) { profile.pois.remove(profile.pois.size()-1); notifyUser(e.getMessage()); }
     }
     private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest); }
+    private void updateBackgroundPause() {
+        if (running() && profile.allowBackground) {
+            if (savedPauseOnLostFocus==null) savedPauseOnLostFocus=mc.options.pauseOnLostFocus;
+            mc.options.pauseOnLostFocus=false;
+        } else if (savedPauseOnLostFocus!=null) {
+            mc.options.pauseOnLostFocus=savedPauseOnLostFocus;
+            savedPauseOnLostFocus=null;
+        }
+    }
     public void tick() {
         world.advanceTick();
         if (!previewShown && Boolean.getBoolean("autovalley.preview") && mc.screen instanceof net.minecraft.client.gui.screens.TitleScreen) {
@@ -102,6 +115,8 @@ public final class ClientRuntime {
         }
         if (mc.player==null || mc.level==null || mc.getConnection()==null) {
             if (connectionKey!=null) disconnect();
+            ClientControl.tick(this);
+            ClientDiagnostics.tick(this);
             return;
         }
         String identity=(mc.getCurrentServer()!=null ? mc.getCurrentServer().ip : "singleplayer:"+(mc.getSingleplayerServer()==null ? "unknown" : mc.getSingleplayerServer().getWorldData().getLevelName()))
@@ -109,10 +124,11 @@ public final class ClientRuntime {
         String key=ProfileStore.key(identity);
         Connection current=mc.getConnection().getConnection();
         if (!key.equals(connectionKey) || current!=connection) connect(key,current);
-        if (running() && anglesValid && !mc.player.isSleeping() && !wasSleeping && !actions.expectingSleep()
+        ClientControl.tick(this);
+        if (running() && anglesValid && mc.isWindowActive() && wasFocused && !mc.player.isSleeping() && !wasSleeping && !actions.expectingSleep()
             && (Math.abs(net.minecraft.util.Mth.wrapDegrees(mc.player.getYRot()-expectedYaw))>0.05 || Math.abs(mc.player.getXRot()-expectedPitch)>0.05))
             manualInput(false);
-        if (running() && !mc.isWindowActive()) pause("다른 창으로 전환하여 일시정지했습니다.");
+        if (running() && !profile.allowBackground && !mc.isWindowActive()) pause("다른 창으로 전환하여 일시정지했습니다.");
         if (running() && mc.screen!=null && !mc.player.isSleeping()) {
             boolean managed=mc.screen instanceof AbstractContainerScreen<?> && (actions.ownsContainer() || actions.openingContainer());
             if (!managed) pause("게임 화면이 변경되어 일시정지했습니다.");
@@ -130,6 +146,7 @@ public final class ClientRuntime {
             if (engine.state()==AutomationEngine.State.WAITING && world.menu().container()) pause(engine.status()+" — 상자를 확인한 뒤 닫고 다시 시작하세요.");
         }
         actions.enabled(running()); attackFence=running() || world.tick()<attackFenceUntil;
+        updateBackgroundPause();
         if (profileKey!=null && persistenceError==null && (world.tick()%100==0 && savedScheduleHash!=scheduleHash() || calibrationWasActive && !harvest.calibrating())) {
             try { saveProfile(); } catch (RuntimeException e) { pause(e.getMessage()); persistenceError=e.getMessage(); }
         }
@@ -137,6 +154,8 @@ public final class ClientRuntime {
         calibrationWasActive=harvest.calibrating();
         expectedYaw=mc.player.getYRot(); expectedPitch=mc.player.getXRot(); anglesValid=running();
         wasSleeping=mc.player.isSleeping();
+        wasFocused=mc.isWindowActive();
+        ClientDiagnostics.tick(this);
     }
     private void connect(String key,Connection current) {
         if (connectionKey!=null) disconnect();
@@ -150,6 +169,7 @@ public final class ClientRuntime {
     }
     private void disconnect() {
         engine.stop(context,AutomationEngine.State.OFF,"접속 종료 — 자동화 OFF");
+        updateBackgroundPause();
         actions.enabled(false); attackFence=false; anglesValid=false;
         harvest.cancelCalibration(); calibrationWasActive=false;
         wasSleeping=false;

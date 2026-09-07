@@ -1,0 +1,174 @@
+package dev.schwalbe.autovalley.client;
+
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.mojang.logging.LogUtils;
+import dev.schwalbe.autovalley.core.*;
+import net.minecraft.client.Minecraft;
+import net.minecraftforge.fml.loading.FMLPaths;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.time.Instant;
+import java.util.*;
+
+/** Explicitly requested local observations; never issues gameplay or registration actions. */
+public final class ClientDiagnostics {
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().serializeNulls().create();
+    private static final long POLL_NANOS = 1_000_000_000L;
+    private static final int RADIUS = 32, VERTICAL = 16, MAX_CANDIDATES = 256, MAX_MENU_SLOTS = 256;
+    private static long nextPoll;
+    private static boolean errorReported;
+
+    private record Candidate(String kind, Pos pos, String id, Map<String,String> properties) { }
+    private record CropCluster(Pos first, Pos second, int blocks, int matureBlocks) { }
+
+    private ClientDiagnostics() { }
+
+    /** Invoke on the client thread, including title/menu screens when no world is joined. */
+    public static void tick(ClientRuntime runtime) {
+        long now = System.nanoTime();
+        if (now < nextPoll) return;
+        nextPoll = now + POLL_NANOS;
+        Path directory = FMLPaths.CONFIGDIR.get().toAbsolutePath().normalize().resolve("autovalley");
+        Path request = directory.resolve("inspect.request");
+        try {
+            if (!Files.isRegularFile(request,LinkOption.NOFOLLOW_LINKS)) return;
+            // Consume only this one explicit request; its contents are never evaluated.
+            if (!Files.deleteIfExists(request)) return;
+            Map<String,Object> snapshot = snapshot(runtime);
+            atomicWrite(directory,snapshot);
+        } catch (IOException | RuntimeException e) {
+            if (!errorReported) {
+                errorReported = true;
+                LogUtils.getLogger().warn("Auto Valley local inspection failed once: {}",e.getClass().getSimpleName());
+            }
+        }
+    }
+
+    private static Map<String,Object> snapshot(ClientRuntime runtime) {
+        Minecraft mc = Minecraft.getInstance();
+        WorldAccess world = runtime.world();
+        PlayerState player = world.player();
+        boolean connected = player != null && player.connected() && mc.player != null && mc.level != null;
+        Map<String,Object> report = new LinkedHashMap<>();
+        report.put("schemaVersion",1);
+        report.put("capturedAt",Instant.now().toString());
+        report.put("connected",connected);
+        report.put("running",runtime.running());
+        report.put("status",runtime.status());
+        report.put("screenClass",mc.screen == null ? null : mc.screen.getClass().getName());
+        report.put("screenTitle",mc.screen == null ? null : mc.screen.getTitle().getString());
+        if (connected) {
+            Map<String,Object> observed = new LinkedHashMap<>();
+            observed.put("x",player.x()); observed.put("y",player.y()); observed.put("z",player.z());
+            observed.put("yaw",player.yaw()); observed.put("pitch",player.pitch());
+            observed.put("health",player.health()); observed.put("food",player.food());
+            observed.put("focused",player.focused());
+            observed.put("dayTime",world.dayTime()); observed.put("selectedHotbar",player.selectedSlot());
+            report.put("player",observed);
+            report.put("inventory",world.inventory().stream().limit(36).toList());
+            MenuData menu = world.menu();
+            Map<String,Object> menuReport = new LinkedHashMap<>();
+            if (menu != null) {
+                menuReport.put("class",mc.player.containerMenu.getClass().getName());
+                menuReport.put("id",menu.id()); menuReport.put("revision",menu.revision());
+                menuReport.put("container",menu.container()); menuReport.put("carried",menu.carried());
+                menuReport.put("slotCount",menu.slots().size());
+                menuReport.put("slots",menu.slots().stream().limit(MAX_MENU_SLOTS).toList());
+                menuReport.put("truncated",menu.slots().size() > MAX_MENU_SLOTS);
+            }
+            report.put("menu",menu == null ? null : menuReport);
+            report.put("nearby",nearby(world,player.feet()));
+        } else {
+            report.put("player",null);
+            report.put("inventory",List.of());
+            report.put("menu",null);
+            report.put("nearby",null);
+        }
+        Profile profile = runtime.profile();
+        Map<String,Object> registration = new LinkedHashMap<>();
+        registration.put("farmCount",profile.farms.size());
+        registration.put("poiCount",profile.pois.size());
+        Map<String,Integer> byKind = new LinkedHashMap<>();
+        for (PoiKind kind : PoiKind.values()) byKind.put(kind.name(),profile.pois(kind).size());
+        registration.put("poisByKind",byKind);
+        report.put("registrations",registration);
+        return report;
+    }
+
+    private static Map<String,Object> nearby(WorldAccess world, Pos center) {
+        List<Candidate> recognized = new ArrayList<>();
+        Map<Pos,BlockData> crops = new HashMap<>();
+        Map<String,Integer> blockCounts = new TreeMap<>();
+        for (BlockData block : world.scan(center,RADIUS,VERTICAL)) {
+            String kind = kind(block);
+            if (kind == null) continue;
+            recognized.add(new Candidate(kind,block.pos(),block.id(),new TreeMap<>(block.properties())));
+            blockCounts.merge(block.id(),1,Integer::sum);
+            if (block.tomato()) crops.put(block.pos(),block);
+        }
+        // Preserve machine/container details first; crop cluster bounds summarize large fields.
+        recognized.sort(Comparator.comparingInt((Candidate c) -> c.kind().equals("tomato") ? 1 : 0)
+            .thenComparingDouble(c -> c.pos().distanceSquared(center))
+            .thenComparingInt(c -> c.pos().x()).thenComparingInt(c -> c.pos().y()).thenComparingInt(c -> c.pos().z()));
+        List<CropCluster> clusters = clusters(crops);
+        Map<String,Object> scan = new LinkedHashMap<>();
+        scan.put("center",center); scan.put("horizontalRadius",RADIUS); scan.put("verticalRadius",VERTICAL);
+        scan.put("recognizedCount",recognized.size()); scan.put("blockCounts",blockCounts);
+        scan.put("candidates",recognized.stream().limit(MAX_CANDIDATES).toList());
+        scan.put("candidatesTruncated",recognized.size() > MAX_CANDIDATES);
+        scan.put("tomatoClusterCount",clusters.size());
+        scan.put("tomatoClusters",clusters.stream().limit(32).toList());
+        scan.put("tomatoClustersTruncated",clusters.size() > 32);
+        return scan;
+    }
+
+    private static String kind(BlockData block) {
+        if (block.tomato()) return "tomato";
+        if (block.id().contains("wine_keg")) return "wine_keg";
+        if (block.id().contains("preserves_jar")) return "preserves_jar";
+        if (block.id().contains("shipping_bin")) return "shipping_bin";
+        if (block.id().endsWith("_bed")) return "bed";
+        if (block.flag("container")) return "container";
+        return null;
+    }
+
+    /** Connected crop blocks are candidates, not asserted user farm registrations. */
+    private static List<CropCluster> clusters(Map<Pos,BlockData> crops) {
+        Set<Pos> remaining = new HashSet<>(crops.keySet());
+        List<CropCluster> result = new ArrayList<>();
+        int[][] directions = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+        while (!remaining.isEmpty()) {
+            Pos first = remaining.iterator().next();
+            remaining.remove(first);
+            Deque<Pos> queue = new ArrayDeque<>(); queue.add(first);
+            int minX=first.x(),maxX=first.x(),minY=first.y(),maxY=first.y(),minZ=first.z(),maxZ=first.z(),count=0,mature=0;
+            while (!queue.isEmpty()) {
+                Pos p = queue.removeFirst(); count++;
+                if (crops.get(p).matureTomato()) mature++;
+                minX=Math.min(minX,p.x()); maxX=Math.max(maxX,p.x());
+                minY=Math.min(minY,p.y()); maxY=Math.max(maxY,p.y());
+                minZ=Math.min(minZ,p.z()); maxZ=Math.max(maxZ,p.z());
+                for (int[] d : directions) {
+                    Pos neighbor = p.offset(d[0],d[1],d[2]);
+                    if (remaining.remove(neighbor)) queue.addLast(neighbor);
+                }
+            }
+            result.add(new CropCluster(new Pos(minX,minY,minZ),new Pos(maxX,maxY,maxZ),count,mature));
+        }
+        result.sort(Comparator.comparingInt(CropCluster::blocks).reversed()
+            .thenComparingInt(c -> c.first().x()).thenComparingInt(c -> c.first().y()).thenComparingInt(c -> c.first().z()));
+        return result;
+    }
+
+    private static void atomicWrite(Path directory, Map<String,Object> snapshot) throws IOException {
+        Path temporary = Files.createTempFile(directory,"diagnostics-",".tmp");
+        try {
+            Files.writeString(temporary,GSON.toJson(snapshot),StandardCharsets.UTF_8);
+            Files.move(temporary,directory.resolve("diagnostics.json"),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+}

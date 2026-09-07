@@ -27,6 +27,7 @@ public final class ClientEvents {
             || ClientKeys.STOP.isActiveAndMatches(input) || ClientKeys.WAYPOINT.isActiveAndMatches(input)) return;
         if (event.getKey()==GLFW.GLFW_KEY_LEFT_CONTROL || event.getKey()==GLFW.GLFW_KEY_RIGHT_CONTROL) return;
         boolean attack=Minecraft.getInstance().options.keyAttack.isActiveAndMatches(input);
+        if (!attack && WindowSwitchKeys.allowed(runtime().profile().allowBackground,event.getKey(),Screen.hasAltDown())) return;
         runtime().manualInput(attack);
         if (attack) Minecraft.getInstance().options.keyAttack.setDown(false);
     }
@@ -55,7 +56,9 @@ public final class ClientEvents {
         String text="Auto Valley " + (runtime().running() ? "ON" : "OFF") + " | " + runtime().status();
         int max=Math.max(100,mc.getWindow().getGuiScaledWidth()-20);
         text=mc.font.plainSubstrByWidth(text,max);
-        event.getGuiGraphics().fill(6,6,mc.font.width(text)+14,22,0xB0182029);
-        event.getGuiGraphics().drawString(mc.font,text,10,10,runtime().running() ? 0xA7E6A0 : 0xD8DEE9,false);
+        // Society owns the upper-left calendar; keep automation status above the hotbar instead.
+        int y=Math.max(40,mc.getWindow().getGuiScaledHeight()-74);
+        event.getGuiGraphics().fill(6,y,mc.font.width(text)+14,y+16,0xB0182029);
+        event.getGuiGraphics().drawString(mc.font,text,10,y+4,runtime().running() ? 0xA7E6A0 : 0xD8DEE9,false);
     }
 }

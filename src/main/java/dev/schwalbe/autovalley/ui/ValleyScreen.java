@@ -34,6 +34,8 @@ public final class ValleyScreen extends Screen {
     private int left, panelWidth, page;
     private List<BlockData> candidates = List.of();
     private List<Farm> suggestions = List.of();
+    private Set<Farm> partialSuggestions = Set.of();
+    private int scannedTomatoBlocks;
     private RegistrationRules.Group filter = RegistrationRules.Group.ALL;
     private BlockData selected;
     private PoiKind selectedKind;
@@ -100,8 +102,15 @@ public final class ValleyScreen extends Screen {
         });
         text(174, tr("hoe.status", runtime.profile().hoeHotbarSlot + 1,
                 tr(runtime.profile().sprintCalibrated && runtime.profile().sprintHarvest ? "sprint" : "walk")));
-        button(left, 190, panelWidth, tr("schedule.open"), () -> { scheduleEditor = true; rebuild(); });
-        if (height >= 285) text(219, tr("modules.hint"));
+        button(left, 190, half, tr("schedule.open"), () -> { scheduleEditor = true; rebuild(); });
+        button(left + half + 6, 190, half, tr("background.toggle", tr(runtime.profile().allowBackground ? "on" : "off")), () -> {
+            runtime.pause(tr("settings.paused").getString());
+            boolean before = runtime.profile().allowBackground;
+            runtime.profile().allowBackground = !before;
+            persist(() -> runtime.profile().allowBackground = before); rebuild();
+        }).setTooltip(Tooltip.create(tr("background.hint")));
+        if (height >= 256) text(216, tr("background.hint"));
+        if (height >= 285) text(233, tr("modules.hint"));
     }
 
     private void scheduleEditor() {
@@ -306,15 +315,20 @@ public final class ValleyScreen extends Screen {
 
     private void suggestionList() {
         button(left, 54, panelWidth, tr("farms.suggestions_back"), () -> { showSuggestions = false; rebuild(); });
-        text(80, tr("farms.suggestions_hint"));
-        int rows = rowsFrom(96), start = pageStart(suggestions.size(), rows);
-        if (suggestions.isEmpty()) text(103, tr("farms.no_suggestions"));
+        text(80, tr("farms.scan_summary", suggestions.size(), scannedTomatoBlocks));
+        text(95, tr(partialSuggestions.isEmpty() ? "farms.suggestions_hint" : "farms.boundary_hint"));
+        int listTop = 110;
+        int rows = rowsFrom(listTop), start = pageStart(suggestions.size(), rows);
+        if (suggestions.isEmpty()) text(117, tr("farms.no_suggestions"));
         for (int i = start; i < Math.min(start + rows, suggestions.size()); i++) {
             Farm farm = suggestions.get(i);
-            button(left, 96 + (i - start) * 23, panelWidth,
-                    clipped(tr("farms.suggestion", i + 1, coords(farm.first()), coords(farm.second())), panelWidth - 12), () -> {
+            Component caption = tr("farms.suggestion", i + 1, coords(farm.first()), coords(farm.second()));
+            if (partialSuggestions.contains(farm)) caption = tr("farms.partial_prefix").copy().append(caption);
+            button(left, listTop + (i - start) * 23, panelWidth,
+                    clipped(caption, panelWidth - 12), () -> {
                         draftFirst = farm.first(); draftSecond = farm.second(); draftName = ""; draftOriginal = null; farmEditor = true; rebuild();
-                    });
+                    }).setTooltip(Tooltip.create(partialSuggestions.contains(farm)
+                            ? caption.copy().append("\n").append(tr("farms.boundary_hint")) : caption));
         }
         pagination(suggestions.size(), rows);
     }
@@ -393,13 +407,35 @@ public final class ValleyScreen extends Screen {
         success("scan.working");
         try {
             Pos feet = runtime.world().player().feet();
-            candidates = runtime.world().scan(feet, Math.max(1, Math.min(32, runtime.profile().scanRadius)), 16).stream()
+            int horizontalRadius = Math.max(1, Math.min(32, runtime.profile().scanRadius));
+            int verticalRadius = 16;
+            candidates = runtime.world().scan(feet, horizontalRadius, verticalRadius).stream()
                     .filter(b -> RegistrationRules.group(b) != null).map(this::canonicalBlock).distinct()
                     .sorted(Comparator.comparingDouble(b -> b.pos().distanceSquared(feet))).toList();
             page = 0;
-            if (farmsOnly) { suggestions = RegistrationRules.suggestFarms(candidates); showSuggestions = true; }
-            feedback = tr("scan.done", candidates.size()).getString(); feedbackError = false; rebuild();
+            if (farmsOnly) {
+                List<BlockData> tomatoes = candidates.stream().filter(BlockData::tomato).toList();
+                scannedTomatoBlocks = tomatoes.size();
+                suggestions = RegistrationRules.suggestFarms(tomatoes);
+                partialSuggestions = new HashSet<>();
+                for (Farm farm : suggestions) {
+                    if (touchesScanBoundary(farm, feet, horizontalRadius, verticalRadius)) partialSuggestions.add(farm);
+                }
+                showSuggestions = true;
+                feedback = tr("farms.scan_done", suggestions.size(), scannedTomatoBlocks).getString();
+                if (!partialSuggestions.isEmpty()) feedback += " " + tr("farms.boundary_hint").getString();
+            } else feedback = tr("scan.done", candidates.size()).getString();
+            feedbackError = false; rebuild();
         } catch (RuntimeException e) { error("error.scan"); }
+    }
+
+    private static boolean touchesScanBoundary(Farm farm, Pos center, int horizontal, int vertical) {
+        return Math.min(farm.first().x(), farm.second().x()) <= center.x() - horizontal
+                || Math.max(farm.first().x(), farm.second().x()) >= center.x() + horizontal
+                || Math.min(farm.first().z(), farm.second().z()) <= center.z() - horizontal
+                || Math.max(farm.first().z(), farm.second().z()) >= center.z() + horizontal
+                || Math.min(farm.first().y(), farm.second().y()) <= center.y() - vertical
+                || Math.max(farm.first().y(), farm.second().y()) >= center.y() + vertical;
     }
 
     private void captureHoe() {

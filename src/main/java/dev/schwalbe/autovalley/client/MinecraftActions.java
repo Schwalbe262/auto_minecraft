@@ -106,7 +106,7 @@ public final class MinecraftActions implements ActionPort {
     }
     public void tick() {
         if (pending==null) return;
-        if (!enabled || mc.player==null || !mc.isWindowActive()) { cancel(); return; }
+        if (!enabled || mc.player==null || (!context.profile().allowBackground && !mc.isWindowActive())) { cancel(); return; }
         if (world.tick()==started) return;
         MenuData menu=world.menu();
         if (pending instanceof Action.UseBlock use) {
@@ -155,7 +155,7 @@ public final class MinecraftActions implements ActionPort {
         mc.player.setXRot((float)-Math.toDegrees(Math.atan2(delta.y,Math.sqrt(delta.x*delta.x+delta.z*delta.z))));
     }
     public void move(Movement intent) {
-        if (!enabled || pending!=null || mc.player==null || world.menu().container() || !mc.isWindowActive()) { stopMovement(); return; }
+        if (!enabled || pending!=null || mc.player==null || world.menu().container() || (!context.profile().allowBackground && !mc.isWindowActive())) { stopMovement(); return; }
         // Navigation cannot gain permission to jump or leave the approved farm/corridor.
         Pos feet=world.player().feet();
         if (!ProfileBounds.contains(context.profile(),feet) || intent.jump()) { stopMovement(); return; }

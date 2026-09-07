@@ -10,6 +10,17 @@ import static org.junit.jupiter.api.Assertions.*;
 class ProfileStoreTest {
     @TempDir Path directory;
 
+    @Test void legacyProfileEnablesBackgroundAndExplicitOptOutPersists() throws Exception {
+        String key=ProfileStore.key("legacy-background");
+        Files.writeString(directory.resolve(key+".json"),"{\"schemaVersion\":1}");
+        ProfileStore store=new ProfileStore(directory);
+        Profile loaded=store.load(key);
+        assertTrue(loaded.allowBackground);
+        loaded.allowBackground=false;
+        store.save(key,loaded);
+        assertFalse(store.load(key).allowBackground);
+    }
+
     @Test void roundTripPreservesMachineDeadlinesWineYearsAndFeatureSettings() throws Exception {
         Profile profile = new Profile();
         profile.pois.add(new Poi(new Pos(1,64,2),PoiKind.WINE_CHEST,"year12",12));
