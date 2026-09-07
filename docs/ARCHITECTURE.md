@@ -20,6 +20,8 @@ Background operation defaults on. Alt/Tab/Windows task switching is exempt from 
 
 Explicit local diagnostic/control request files support inspection and start/pause without stealing window focus. They contain no arbitrary input or mutation API; start uses the same runtime checks as F8. Snapshots contain local positions/inventory and must not be published.
 
+Emergency stop also intercepts the configured key before an open GUI consumes it; mouse-bound stop is handled before ordinary mouse dispatch, including canceled events. A stop latch discards queued toggle/settings/waypoint clicks, and a short client-tick gate rejects new starts and consumes pending external start/once files rather than deferring them until after the stop. Unreadable/non-regular requests extend that fence until confirmed consumption or absence, so a temporarily locked file cannot become a delayed restart. Stop never sends inventory cleanup or closes an in-flight transaction; existing late-acknowledgement fences remain authoritative.
+
 - Date is `floor(dayTime / 24000)`; UI shows date + 1.
 - Successful harvest stores a per-farm next date. Successful refill stores a per-machine next date. Start/stop and reconnect retain these dates.
 - Harvest checks wait until day tick 20 for Dew Drop's dawn growth. Busy machines wait through day tick 219 before being declared unfinished for that day.
@@ -49,9 +51,19 @@ Up to eight immutable full-menu ACK snapshots per container preserve an earlier 
 
 Vinery's native `WineYears.getYear(Level)` is the aging clock. It is not the sleep-skipping day calendar. The UI accepts current wine age and stores the stable raw production cohort: existing wine stays in its container as its age increases. Selling held surplus requires a fresh full-capacity check of every registered reserve for that cohort; no reserve wine is withdrawn. Permissions expire at 1,200 ticks and on date/registration changes.
 
+One surplus run checks the bounded set of initially held cohorts. A verified not-full reserve retains that cohort without granting a sale permission, then the run checks the next one. Invalid contents, unknown ages and unloaded reserves still block. Per-cohort permissions are revoked before proceeding; sale counts require acknowledged destination increases. New unverified cohorts cannot silently join a finished run. The result reports sold and retained quantities rather than implying that all carried wine was sold.
+
 Machine runs reuse acknowledged source stock counts while consuming held ingredients and recount before new hauls, date changes, and stale batches. Farms are an arbitrary list, not two fixed slots. Per-field volume and profile-file size protections remain. Bulk machine registration previews connected same-ID blocks, warns before accepting a partial scan, rejects changed or unloaded selected blocks, and never infers storage contents.
 
 Production hauls estimate the remaining eligible-machine ingredient demand, including normal/upgraded jar costs, and withdraw cursor-free stacks while reserving two actual empty inventory slots. A haul is additionally bounded by the leading grade's stock advantage plus one recipe, leaving room when another grade becomes the priority. A funded machine can continue with one remaining free output slot. Apparent room in partial stacks is not counted as safe spare capacity because server metadata may prevent merging. Stock classification and largest-total-grade selection are rechecked after each source acknowledgement. An indivisible final source stack can overfetch by at most 63 tomatoes.
+
+### Area harvest and bounded movement
+
+The selected native hoe range supplies a route hint, not evidence that neighboring crops were harvested. Area-first ordering keeps every original crop queued as a fallback; observed maturity alone skips a covered target. Before each use, a separate conservative footprint validates potentially interactive plants against the union of registered tomato farms, including native upper-cell fallback. An unknown footprint blocks harvesting.
+
+For installed Quark 4.0-462, the safety half-span is four (maximum configured range five), even when the local golden-hoe hint is one. This supports Society 4.1.4 default crop rules. Local/server booleans do not establish numeric or custom crop-map equality; arbitrary server-only non-crop mappings and third-party handlers are outside this model. Such server customization requires review, not automatic registration expansion.
+
+Only magnet harvest can opt into bounded movement during one outstanding use. A movement-only navigator cannot open doors, and the native adapter allows at most ten ticks of grounded, short-distance harvest overlap. Camera-relative forward/strafe components preserve the route's world heading while the view stays on the clicked crop, without diagonal speed amplification. Inventory, machine, door and sleep actions still exclude movement. Calibration and non-capable adapters retain stopped harvesting. Production timing and pickup confirmation remain separate from movement, and no world attack or break action is introduced.
 
 ### Bounded native inventory consolidation
 
