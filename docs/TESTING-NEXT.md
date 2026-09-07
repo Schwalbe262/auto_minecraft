@@ -489,3 +489,29 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   `355C4AF78E1BBB93F5F60D87C8F8ABD5F5743F6DC5E9BEC92B10C0D1B448DFC1`.
   This checkpoint establishes build/test success, not yet post-installation
   stability. Original failed receipts and private native evidence are retained.
+
+### Post-installation recovery: first full wine batch and next-day disposal
+
+- After normal restart, the interrupted inventory was preserved: 556 normal
+  tomatoes and 20 pine tar, with no rotten tomatoes or carried cursor stack.
+  The new continuous run started at **2026-09-07 22:24:11 UTC**. It first stored
+  those 556 tomatoes and deposited the existing 20 pine tar into shipping.
+  A subsequent harvest/storage pass deposited another 148 tomatoes and 4 tar.
+- One 32-container source survey was followed by 1,182 grade-2 tomatoes acquired
+  in two source visits. All 384 mature kegs were serviced without another source
+  survey during production. The remaining 30 tomatoes were returned: consumption
+  was exactly **1,152 = 384 x 3**. All 384 collected bottles were then stored with
+  confirmed transfers of **1 + 63 + five times 64**.
+- The first 975 consecutive action IDs all reached success, with no missing ID
+  or observed failed/cancelled receipt. The first-to-last keg interaction receipt
+  span was 247.195 seconds; this excludes survey, travel and final storage. The
+  common next wine date became 351 after the last feed on day 345. No products
+  or ingredients remained in inventory when normal waiting resumed.
+- The engine subsequently entered bed normally, advanced to day 346, harvested,
+  and confirmed three rotten-tomato deletions totaling **16 + 10 + 6 = 32** before
+  continuing to storage. This proves the installed adapter's ordinary live path;
+  it does not assert that the exact rare concurrent-pickup race recurred live.
+- The observer now records both inventory and TrashSlot failure/late-reply
+  fields without calling reconciliation or control methods. All remain clear at
+  this checkpoint. The requested three-hour uninterrupted window is still open;
+  the earlier 1-hour-50-minute interruption is not counted toward it.
