@@ -54,7 +54,7 @@ class EngineSafetyTest {
     }
 
     @Test void focusCursorAndChangedContainerPreventInventoryActions() {
-        Fixture f = new Fixture();
+        Fixture f = new Fixture(); f.profile.allowBackground=false;
         f.focused = false; assertNotNull(SafetyPolicy.rejection(new Action.SelectHotbar(1),f.context()));
         f.focused = true; f.carried = TOMATO; assertNotNull(SafetyPolicy.rejection(new Action.SelectHotbar(1),f.context()));
         f.carried = ItemData.EMPTY; f.container = true; f.menuId = 7; f.held = TOMATO;
@@ -71,6 +71,37 @@ class EngineSafetyTest {
         engine.stop(f.context(),AutomationEngine.State.PAUSED,"manual takeover");
         assertEquals(cancellations+1,f.cancelCalls); assertFalse(engine.running());
         engine.tick(f.context()); assertEquals(1,module.calls);
+    }
+
+    @Test void backgroundEnabledByDefaultAllowsUnfocusedStartAndContinuedWork() {
+        Fixture f=new Fixture(); assertTrue(f.profile.allowBackground); f.focused=false;
+        Module module=new Module(Feature.WINE,60,WorkResult.busy("production"));
+        AutomationEngine engine=new AutomationEngine(List.of(module));
+        engine.start(f.context()); assertTrue(engine.running());
+        engine.tick(f.context()); engine.tick(f.context());
+        assertEquals(2,module.calls); assertTrue(engine.running());
+    }
+
+    @Test void foregroundRequiredModeRejectsUnfocusedStartAndPausesOnFocusLoss() {
+        Fixture f=new Fixture(); f.profile.allowBackground=false; f.focused=false;
+        Module module=new Module(Feature.WINE,60,WorkResult.busy("production"));
+        AutomationEngine engine=new AutomationEngine(List.of(module));
+        engine.start(f.context()); assertFalse(engine.running()); engine.tick(f.context()); assertEquals(0,module.calls);
+        f.focused=true; engine.start(f.context()); engine.tick(f.context()); assertEquals(1,module.calls);
+        f.focused=false; int cancellations=f.cancelCalls; engine.tick(f.context());
+        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(cancellations+1,f.cancelCalls); assertEquals(1,module.calls);
+    }
+
+    @Test void disconnectAlwaysPreventsStartAndStopsWorkRegardlessOfBackgroundSetting() {
+        for (boolean allowBackground:new boolean[]{false,true}) {
+            Fixture f=new Fixture(); f.profile.allowBackground=allowBackground; f.connected=false;
+            Module module=new Module(Feature.WINE,60,WorkResult.busy("production"));
+            AutomationEngine engine=new AutomationEngine(List.of(module));
+            engine.start(f.context()); assertFalse(engine.running()); engine.tick(f.context()); assertEquals(0,module.calls);
+            f.connected=true; engine.start(f.context()); engine.tick(f.context()); assertEquals(1,module.calls);
+            f.connected=false; int cancellations=f.cancelCalls; engine.tick(f.context());
+            assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(cancellations+1,f.cancelCalls); assertEquals(1,module.calls);
+        }
     }
 
     @Test void disabledFeaturesAreNeverTickedAndDisablingActiveFeatureCancels() {
@@ -101,8 +132,9 @@ class EngineSafetyTest {
         engine.start(f.context()); engine.tick(f.context());
         assertEquals(1,wine.calls);
         wine.result = WorkResult.blocked("inventory full"); engine.tick(f.context());
+        int priorStorageChecks=storage.calls;
         storage.result = WorkResult.busy("deposit tomatoes"); f.ticks += 21; engine.tick(f.context());
-        assertEquals(2,storage.calls); assertEquals("deposit tomatoes",engine.status());
+        assertEquals(priorStorageChecks+1,storage.calls); assertEquals("deposit tomatoes",engine.status());
     }
 
     private static final class Module implements AutomationModule {
@@ -114,13 +146,13 @@ class EngineSafetyTest {
         @Override public void reset() { }
     }
     private static final class Fixture implements WorldAccess,ActionPort,Navigation {
-        final Profile profile = new Profile(); boolean focused=true, container; int menuId, cancelCalls; long ticks;
+        final Profile profile = new Profile(); boolean focused=true, connected=true, container; int menuId, cancelCalls; long ticks;
         ItemData held=ItemData.EMPTY, carried=ItemData.EMPTY;
         BlockData block=new BlockData(TARGET,"minecraft:air",Map.of());
         Context context() { return new Context(this,this,this,profile); }
         @Override public long tick() { return ticks; }
         @Override public long dayTime() { return 13000; }
-        @Override public PlayerState player() { return new PlayerState(.5,64,.5,0,0,true,false,20,20,0,true,focused); }
+        @Override public PlayerState player() { return new PlayerState(.5,64,.5,0,0,true,false,20,20,0,connected,focused); }
         @Override public BlockData block(Pos p) { return block; }
         @Override public boolean loaded(Pos p) { return true; }
         @Override public boolean canStand(Pos p) { return true; }

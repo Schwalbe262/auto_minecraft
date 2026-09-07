@@ -8,7 +8,7 @@ public final class SafetyPolicy {
         WorldAccess world = context.world();
         Profile profile = context.profile();
         PlayerState player = world.player();
-        if (!player.connected() || !player.focused()) return "Game is not connected and focused";
+        if (!player.connected() || (!profile.allowBackground && !player.focused())) return "Game is not connected or requires focus";
         MenuData menu = world.menu();
         if (menu == null || !menu.carried().empty()) return "Resolve the item on the cursor before resuming";
         if (action instanceof Action.UseBlock use) {

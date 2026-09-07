@@ -9,6 +9,43 @@ class LogisticsTest {
     private static ItemData tomato(int grade, int count) { return new ItemData(ItemData.TOMATO,count,grade,null,false,999); }
     private static ItemData wine(Integer year) { return new ItemData(ItemData.WINE,1,0,year,false,999); }
 
+    @Test void fullTomatoStorageYieldsToProductionAndSleepsOnlyAfterTomatoesAreUsed() {
+        Fixture f=new Fixture(); f.inventory[0]=tomato(0,3); f.dayTime=13000;
+        Pos chest=f.chest(PoiKind.TOMATO_CHEST,0,0,tomato(0,64)); f.chests.get(chest)[1]=tomato(0,64);
+        f.machine(PoiKind.WINE_KEG,1,false,false,false); f.poi(PoiKind.BED,2,null);
+        AutomationEngine engine=new AutomationEngine(List.of(new TomatoStorageModule(),new MachineModule(Feature.WINE),new SleepModule()));
+        engine.start(f.context());
+        for (int i=0;i<300 && !f.sleeping;i++) { engine.tick(f.context()); f.advance(); }
+        assertEquals(1,f.machineClicks(),"a full destination must not starve production that consumes carried tomatoes");
+        assertEquals(3,f.consumed); assertTrue(f.sleeping,"sleep becomes valid once the storage blocker is resolved");
+        assertEquals(128,Arrays.stream(f.chests.get(chest)).mapToInt(ItemData::count).sum());
+    }
+
+    @Test void unknownWineYearDoesNotStarveShippingButStillPreventsSleep() {
+        Fixture f=new Fixture(); f.inventory[0]=wine(null); f.dayTime=13000;
+        f.inventory[1]=new ItemData(ItemData.PRESERVES,2,0,null,false,999);
+        Pos bin=f.chest(PoiKind.SHIPPING_BIN,0,null,ItemData.EMPTY); f.poi(PoiKind.BED,1,null);
+        AutomationEngine engine=new AutomationEngine(List.of(new WineStorageModule(),new ShippingModule(),new SleepModule()));
+        engine.start(f.context());
+        for (int i=0;i<350;i++) { engine.tick(f.context()); f.advance(); }
+        assertEquals(2,f.chests.get(bin)[0].count(),"a metadata wait that times out must yield to unrelated shipping");
+        assertEquals(ItemData.PRESERVES,f.chests.get(bin)[0].id()); assertFalse(f.sleeping);
+        assertTrue(f.inventory[0].is(ItemData.WINE));
+    }
+
+    @Test void wineStorageRelievesInventoryBetweenMachineBatchesBeforeSleep() {
+        Fixture f=new Fixture(); f.dayTime=13000; f.inventory[0]=tomato(0,9);
+        for (int i=1;i<35;i++) f.inventory[i]=new ItemData("minecraft:dirt",64,0,null,false,999);
+        Pos storage=f.chest(PoiKind.WINE_CHEST,0,2,ItemData.EMPTY);
+        f.machine(PoiKind.WINE_KEG,1,true,true,false); f.machine(PoiKind.WINE_KEG,2,true,true,false); f.poi(PoiKind.BED,3,null);
+        AutomationEngine engine=new AutomationEngine(List.of(new WineStorageModule(),new MachineModule(Feature.WINE),new SleepModule()));
+        engine.start(f.context());
+        for (int i=0;i<400 && !f.sleeping;i++) { engine.tick(f.context()); f.advance(); }
+        assertEquals(2,f.machineClicks()); assertEquals(6,f.consumed); assertTrue(f.sleeping);
+        assertEquals(2,Arrays.stream(f.chests.get(storage)).mapToInt(ItemData::count).sum());
+        assertEquals(6L,f.profile.nextEligibleDay.get("wine:1:64:0")); assertEquals(6L,f.profile.nextEligibleDay.get("wine:2:64:0"));
+    }
+
     @Test void largestGradeWinsAndTiesPreferLowerGrade() {
         assertEquals(2,MachineModule.chooseGrade(new int[]{20,3,21,0},3));
         assertEquals(0,MachineModule.chooseGrade(new int[]{20,20,20,0},3));

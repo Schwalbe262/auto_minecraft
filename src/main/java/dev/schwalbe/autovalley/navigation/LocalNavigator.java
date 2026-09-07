@@ -34,7 +34,8 @@ public final class LocalNavigator implements Navigation {
         ActionPort actions = context.actions();
         PlayerState player = world.player();
         observeMotion(player);
-        if (player == null || !player.connected() || !player.focused()) return blocked(actions, "플레이어가 게임을 조작할 수 없습니다.");
+        if (player == null || !player.connected() || !player.focused() && !context.profile().allowBackground)
+            return blocked(actions, "플레이어가 게임을 조작할 수 없습니다.");
         Pos walkingFeet = walkingFeet(world,player);
         if (!target.equals(destination) || Double.compare(reach, destinationReach) != 0) {
             reset();

@@ -65,6 +65,46 @@ class NavigationHarvestTest {
         assertTrue(navigation.failureReason().contains("3초"));
     }
 
+    @Test void unfocusedNavigationContinuesWhenBackgroundOperationIsAllowed() {
+        FakeWorld world = new FakeWorld();
+        world.focused = false;
+        FakeActions actions = new FakeActions();
+        Profile profile = farmProfile(new Pos(6,0,0));
+        profile.allowBackground = true;
+        LocalNavigator navigation = new LocalNavigator();
+        Context context = new Context(world,actions,navigation,profile);
+        assertEquals(Navigation.Result.MOVING,navigation.moveTo(new Pos(6,0,0),.4,context));
+        assertNotNull(actions.movement);
+        assertTrue(actions.movement.forward());
+    }
+
+    @Test void unfocusedNavigationStopsWhenBackgroundOperationIsDisabled() {
+        FakeWorld world = new FakeWorld();
+        FakeActions actions = new FakeActions();
+        Profile profile = farmProfile(new Pos(6,0,0));
+        profile.allowBackground = false;
+        LocalNavigator navigation = new LocalNavigator();
+        Context context = new Context(world,actions,navigation,profile);
+        assertEquals(Navigation.Result.MOVING,navigation.moveTo(new Pos(6,0,0),.4,context));
+        world.focused = false;
+        assertEquals(Navigation.Result.BLOCKED,navigation.moveTo(new Pos(6,0,0),.4,context));
+        assertNull(actions.movement);
+    }
+
+    @Test void disconnectedNavigationStillStopsWithBackgroundOperationAllowed() {
+        FakeWorld world = new FakeWorld();
+        FakeActions actions = new FakeActions();
+        Profile profile = farmProfile(new Pos(6,0,0));
+        profile.allowBackground = true;
+        LocalNavigator navigation = new LocalNavigator();
+        Context context = new Context(world,actions,navigation,profile);
+        assertEquals(Navigation.Result.MOVING,navigation.moveTo(new Pos(6,0,0),.4,context));
+        world.connected = false;
+        world.focused = false;
+        assertEquals(Navigation.Result.BLOCKED,navigation.moveTo(new Pos(6,0,0),.4,context));
+        assertNull(actions.movement);
+    }
+
     @Test void partialHeightFarmlandUsesAirCellAbovePhysicalFeetForPathfinding() {
         FakeWorld world = new FakeWorld();
         world.y = -.0625;
@@ -385,6 +425,7 @@ class NavigationHarvestTest {
         double x = .5, y, z = .5;
         int selected;
         int goalChecks;
+        boolean focused = true, connected = true;
         final Map<Pos,BlockData> blocks = new HashMap<>();
         final Set<Pos> obstacles = new HashSet<>(), unloaded = new HashSet<>();
         final List<ItemSlot> slots = new ArrayList<>();
@@ -396,7 +437,7 @@ class NavigationHarvestTest {
         void tomato(Pos p,int age) { blocks.put(p,new BlockData(p,"farmersdelight:tomatoes",Map.of("age",String.valueOf(age)))); }
         public long tick() { return now; }
         public long dayTime() { return day; }
-        public PlayerState player() { return new PlayerState(x,y,z,0,0,true,false,20,20,selected,true,true); }
+        public PlayerState player() { return new PlayerState(x,y,z,0,0,true,false,20,20,selected,connected,focused); }
         public BlockData block(Pos p) { return blocks.getOrDefault(p,new BlockData(p,p.y()<0 ? "minecraft:stone" : "minecraft:air",Map.of())); }
         public boolean loaded(Pos p) { return !unloaded.contains(p); }
         public boolean canStand(Pos p) { return p.y()==0 && !obstacles.contains(p); }
