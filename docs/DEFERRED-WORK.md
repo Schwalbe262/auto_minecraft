@@ -3,15 +3,15 @@
 Complete and verify the existing wine/preserves production, storage, sale and sleep
 workflow before beginning these user-requested improvements:
 
-- Wine-rack routing: service reachable machines along the actual walking aisle,
-  avoiding row-by-row ordering that repeatedly crosses or retraces the aisle.
-  Then measure interaction latency; retain one outstanding native action and
-  server acknowledgement, without desktop input interception.
+- Further wine-rack optimization and interaction-latency measurement. Basic
+  current-position/aisle-aware visit selection is now being handled at the user's
+  renewed request, together with grouped storage-wall visits. Keep one outstanding
+  native action and server acknowledgement, without desktop input interception.
 - Tomato harvesting: continuous tractor-like passes along farm rows.
 - General storage groups: a name, accepted commodity and container members;
-  convenient bulk/range registration, with native-compatible partial stacks
-  filled before new stacks. Tomato quality still determines input-stock priority,
-  but should not require separate quality-restricted storage registrations.
+  convenient bulk/range registration, and cross-container partial-stack packing.
+  Tomato-specific commodity-only permissions and actual per-grade input counting
+  are being handled now because the old grade restrictions blocked production.
 - Waypoint visibility on or integration with the map opened by J. Coordinate
   lists alone are hard to identify in the world.
 

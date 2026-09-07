@@ -11,6 +11,51 @@ class LogisticsTest {
     private static ItemData preserves(int count) { return new ItemData(ItemData.PRESERVES,count,0,null,false,99); }
     private static ItemData wine(int year,int count,int grade) { return new ItemData(ItemData.WINE,count,grade,year,false,999); }
 
+    @Test void obsoleteOrMissingSourceClassifierNeverBlocksActualTomatoes() {
+        for (Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) for (Integer oldClassifier:Arrays.asList(3,null)) {
+            Fixture f=new Fixture(); f.equipHoe(); int cost=feature==Feature.WINE ? 3 : 5;
+            Pos source=f.chest(PoiKind.TOMATO_CHEST,0,oldClassifier,tomato(0,cost));
+            f.profile.tomatoStorageTargets.put(Profile.positionKey(source),2);
+            f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,10,false,false,false);
+            assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(feature),100).state());
+            assertEquals(List.of(0),f.usedGrades); assertEquals(cost,f.consumed); assertEquals(1,f.tomatoWithdrawals);
+            assertTrue(f.chests.get(source)[0].empty()); assertTrue(f.inventory[0].hoe());
+            assertEquals(oldClassifier,f.profile.pois.stream().filter(poi -> poi.pos().equals(source)).findFirst().orElseThrow().classifier());
+        }
+    }
+
+    @Test void mixedTomatoWarehousesAndHeldInventoryAllContributeToLargestActualGrade() {
+        for (Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) {
+            Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(1,2);
+            Pos first=f.chest(PoiKind.TOMATO_CHEST,0,3,tomato(0,20)); f.chests.get(first)[1]=tomato(1,32);
+            Pos second=f.chest(PoiKind.TOMATO_CHEST,1,null,tomato(0,48)); f.chests.get(second)[1]=tomato(1,35);
+            f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,10,false,false,false);
+            assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(feature),100).state());
+            assertEquals(List.of(1),f.usedGrades,"at supply time actual q1 warehouse67 + held2 beats actual q0 warehouse68");
+            assertEquals(2,f.opens.get(first)); assertEquals(1,f.opens.get(second)); assertEquals(1,f.tomatoWithdrawals);
+            assertEquals(20,f.chests.get(first)[0].count()); assertEquals(35,f.chests.get(second)[1].count());
+        }
+    }
+
+    @Test void mixedSourceWithdrawsOnlyTheAllocatedActualGradeDespiteItsHistoricalClassifier() {
+        Fixture f=new Fixture(); f.equipHoe();
+        Pos source=f.chest(PoiKind.TOMATO_CHEST,0,3,tomato(0,64)); f.chests.get(source)[1]=tomato(1,60);
+        f.chest(PoiKind.TOMATO_CHEST,1,0,tomato(3,63)); f.machine(PoiKind.WINE_KEG,10,false,false,false);
+        assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),100).state());
+        assertEquals(List.of(0),f.usedGrades); assertEquals(List.of(source),f.tomatoWithdrawalSources);
+        assertEquals(60,f.chests.get(source)[1].count()); assertEquals(1,f.tomatoWithdrawals);
+    }
+
+    @Test void gradeChangedBeforeSourceReopenIsRecountedWithoutClassifierRepairOrWrongWithdrawal() {
+        Fixture f=new Fixture(); Pos source=f.chest(PoiKind.TOMATO_CHEST,0,3,tomato(0,64));
+        f.machine(PoiKind.WINE_KEG,10,false,false,false); MachineModule module=new MachineModule(Feature.WINE);
+        for (int n=0;n<100 && f.opens.getOrDefault(source,0)<2;n++) { module.tick(f.context()); f.advance(); }
+        assertEquals(2,f.opens.get(source)); assertEquals(0,f.tomatoWithdrawals);
+        f.chests.get(source)[0]=tomato(1,64);
+        assertEquals(WorkResult.State.IDLE,f.run(module,100).state());
+        assertEquals(List.of(1),f.usedGrades); assertEquals(1,f.tomatoWithdrawals); assertEquals(3,f.profile.pois.get(0).classifier());
+    }
+
     @Test void outputWithoutAnySafeAlternateHotbarScratchSkipsMergingAndStillCompletesProduction() {
         for (Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) {
             Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,12);
@@ -41,14 +86,14 @@ class LogisticsTest {
         }
     }
 
-    @Test void knownSourceIsFetchedBeforeUsingTheLastHandRecipeWhenMoreMachinesRemain() {
+    @Test void storedIngredientsAreFetchedOnlyAfterTheLastCarriedRecipeIsUsed() {
         Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,3);
         f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,64));
         f.machine(PoiKind.WINE_KEG,10,false,false,false); f.machine(PoiKind.WINE_KEG,11,false,false,false);
         AutomationEngine engine=isolatedMachineEngine(Feature.WINE); engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,200);
         assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
         assertEquals(1,f.tomatoWithdrawals); assertEquals(2,f.machineClicks()); assertEquals(6,f.consumed);
-        assertTrue(f.handCountsAtMachineUse.stream().allMatch(count -> count>3));
+        assertEquals(List.of(3,64),f.handCountsAtMachineUse);
         assertTrue(f.inventory[1].is(ItemData.TOMATO)); assertTrue(f.inventory[0].hoe());
         assertTrue(f.history.stream().noneMatch(a -> a instanceof Action.SwapHotbar swap && swap.inventoryIndex()==swap.hotbarSlot()));
     }
@@ -76,7 +121,7 @@ class LogisticsTest {
         }
     }
 
-    @Test void layoutChoosesLargestActualGradeThenWithdrawsMisplacedLegacyStockBeforeNearerCorrectStock() {
+    @Test void historicalLayoutDoesNotOverrideLargestActualGradeOrNearestActualSource() {
         for (Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) {
             Fixture f=new Fixture();
             Pos correct=f.chest(PoiKind.TOMATO_CHEST,0,0,tomato(0,20));
@@ -88,14 +133,14 @@ class LogisticsTest {
             f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,8,false,false,false);
             assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(feature),250).state());
             assertEquals(List.of(0),f.usedGrades,"actual q0 total80 beats actual q3 total70 regardless of desired layout");
-            assertEquals(List.of(legacy),f.tomatoWithdrawalSources,"misplaced stock of the selected actual grade is consumed first");
-            assertTrue(f.chests.get(legacy)[0].empty()); assertEquals(20,f.chests.get(correct)[0].count());
+            assertEquals(List.of(correct),f.tomatoWithdrawalSources,"historical layout never overrides the nearest actual source");
+            assertEquals(60,f.chests.get(legacy)[0].count()); assertTrue(f.chests.get(correct)[0].empty());
             assertEquals(70,Arrays.stream(f.chests.get(otherGrade)).mapToInt(ItemData::count).sum());
             assertEquals(0,f.profile.pois.stream().filter(p -> p.pos().equals(legacy)).findFirst().orElseThrow().classifier());
         }
     }
 
-    @Test void continuedBulkHaulAlsoExhaustsLegacySourcesBeforeCorrectLayoutSources() {
+    @Test void bulkHaulUsesNearestActualStockWithoutLegacyLayoutPriority() {
         Fixture f=new Fixture();
         Pos correct=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,30));
         Pos legacyOne=f.chest(PoiKind.TOMATO_CHEST,4,2,tomato(2,3));
@@ -105,55 +150,51 @@ class LogisticsTest {
         f.profile.tomatoStorageTargets.put(Profile.positionKey(legacyTwo),1);
         for (int n=0;n<4;n++) f.machine(PoiKind.WINE_KEG,10+n,false,false,false);
         assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),300).state());
-        assertEquals(List.of(legacyOne,legacyTwo,correct),f.tomatoWithdrawalSources);
-        assertEquals(12,f.consumed); assertTrue(f.chests.get(legacyOne)[0].empty()); assertTrue(f.chests.get(legacyTwo)[0].empty());
+        assertEquals(List.of(correct),f.tomatoWithdrawalSources);
+        assertEquals(12,f.consumed); assertEquals(3,f.chests.get(legacyOne)[0].count()); assertEquals(3,f.chests.get(legacyTwo)[0].count());
     }
 
-    @Test void newDepositsNeverReplenishAStillMisplacedLegacyBarrelEvenWhenItsActualGradeMatches() {
+    @Test void tomatoDepositsUseNearestCommodityStorageRegardlessOfTheHistoricalLayout() {
         Fixture f=new Fixture(); f.inventory[0]=tomato(0,7);
         Pos legacy=f.chest(PoiKind.TOMATO_CHEST,0,0,tomato(0,9));
         Pos intended=f.chest(PoiKind.TOMATO_CHEST,3,0,tomato(0,10));
         f.profile.tomatoStorageTargets.put(Profile.positionKey(legacy),1);
         f.profile.tomatoStorageTargets.put(Profile.positionKey(intended),0);
         assertEquals(WorkResult.State.IDLE,f.run(new TomatoStorageModule(),100).state());
-        assertEquals(9,f.chests.get(legacy)[0].count()); assertFalse(f.opens.containsKey(legacy));
-        assertEquals(17,f.chests.get(intended)[0].count()); assertTrue(f.inventory[0].empty());
+        assertEquals(16,f.chests.get(legacy)[0].count()); assertTrue(f.opens.containsKey(legacy));
+        assertEquals(10,f.chests.get(intended)[0].count()); assertTrue(f.inventory[0].empty());
     }
 
-    @Test void occupiedWrongGradeDestinationClosesUntouchedThenAnEmptyLegacyDestinationConvertsBeforeDeposit() {
+    @Test void mixedTomatoDepositUsesEmptySpaceWithoutReclassifyingOrSavingMetadata() {
         Fixture f=new Fixture(); f.inventory[0]=tomato(0,7);
         Pos occupied=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,9));
         Pos empty=f.chest(PoiKind.TOMATO_CHEST,3,3,ItemData.EMPTY);
         f.profile.tomatoStorageTargets.put(Profile.positionKey(occupied),0);
         f.profile.tomatoStorageTargets.put(Profile.positionKey(empty),0);
-        int[] saves={0};
-        f.checkpointHook=() -> {
-            saves[0]++;
-            assertTrue(Arrays.stream(f.chests.get(empty)).allMatch(ItemData::empty));
-            assertEquals(0,f.profile.pois.stream().filter(p -> p.pos().equals(empty)).findFirst().orElseThrow().classifier());
-            assertTrue(f.history.stream().noneMatch(Action.QuickMove.class::isInstance),"new classification must persist before any deposit is dispatched");
-        };
+        List<Poi> registrations=List.copyOf(f.profile.pois);
+        f.checkpointHook=() -> fail("commodity storage has no grade metadata to rewrite");
         assertEquals(WorkResult.State.IDLE,f.run(new TomatoStorageModule(),150).state());
         assertEquals(9,f.chests.get(occupied)[0].count()); assertEquals(2,f.chests.get(occupied)[0].quality());
-        assertEquals(1,saves[0]); assertEquals(7,f.chests.get(empty)[0].count()); assertEquals(0,f.chests.get(empty)[0].quality());
+        assertEquals(7,f.chests.get(occupied)[1].count()); assertEquals(0,f.chests.get(occupied)[1].quality());
+        assertTrue(Arrays.stream(f.chests.get(empty)).allMatch(ItemData::empty)); assertEquals(registrations,f.profile.pois);
         assertEquals(1,f.history.stream().filter(Action.QuickMove.class::isInstance).count()); assertNull(f.open);
     }
 
-    @Test void layoutInspectsEveryOccupiedSlotAndClosesMixedOrForeignStorageWithoutAnyTransfer() {
-        for (ItemData contaminant:List.of(tomato(1,1),new ItemData("minecraft:stone",1,0,null,false,999))) {
+    @Test void tomatoCommodityStorageInspectsEverySlotAndClosesForeignContentsWithoutTransfer() {
+        for (ItemData contaminant:List.of(wine(8),new ItemData("minecraft:stone",1,0,null,false,999))) {
             Fixture f=new Fixture(); f.inventory[0]=tomato(0,7);
             Pos destination=f.chest(PoiKind.TOMATO_CHEST,0,0,tomato(0,4));
             f.chests.get(destination)[1]=contaminant;
             f.profile.tomatoStorageTargets.put(Profile.positionKey(destination),0);
             WorkResult result=f.run(new TomatoStorageModule(),100);
-            assertEquals(WorkResult.State.BLOCKED,result.state()); assertTrue(result.message().contains("left untouched"));
+            assertEquals(WorkResult.State.BLOCKED,result.state());
             assertEquals(4,f.chests.get(destination)[0].count()); assertEquals(contaminant,f.chests.get(destination)[1]);
             assertEquals(7,f.inventory[0].count()); assertNull(f.open);
             assertTrue(f.history.stream().noneMatch(Action.QuickMove.class::isInstance));
         }
     }
 
-    @Test void consumedLegacyBarrelOnlyAdoptsTheDesiredGradeOnTheLaterVerifiedEmptyDeposit() {
+    @Test void consumedTomatoStorageAcceptsAnotherActualGradeWithoutChangingItsHistoricalMetadata() {
         Fixture f=new Fixture(); Pos legacy=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,3));
         f.profile.tomatoStorageTargets.put(Profile.positionKey(legacy),0);
         f.machine(PoiKind.WINE_KEG,2,false,false,false);
@@ -162,20 +203,19 @@ class LogisticsTest {
         assertEquals(2,f.profile.pois.stream().filter(p -> p.pos().equals(legacy)).findFirst().orElseThrow().classifier());
         f.inventory[0]=tomato(0,6);
         assertEquals(WorkResult.State.IDLE,f.run(new TomatoStorageModule(),100).state());
-        assertEquals(0,f.profile.pois.stream().filter(p -> p.pos().equals(legacy)).findFirst().orElseThrow().classifier());
+        assertEquals(2,f.profile.pois.stream().filter(p -> p.pos().equals(legacy)).findFirst().orElseThrow().classifier());
         assertEquals(6,f.chests.get(legacy)[0].count()); assertEquals(0,f.chests.get(legacy)[0].quality());
     }
 
-    @Test void failedEmptyBarrelClassificationCheckpointRollsBackAndNeverDeposits() {
+    @Test void emptyCommodityStorageNeedsNoMetadataCheckpointOrClassifierConversion() {
         Fixture f=new Fixture(); f.inventory[0]=tomato(0,6);
         Pos destination=f.chest(PoiKind.TOMATO_CHEST,0,2,ItemData.EMPTY);
-        Poi original=f.profile.pois.get(0); f.profile.tomatoStorageTargets.put(Profile.positionKey(destination),0);
+        Poi original=f.profile.pois.get(0); f.profile.tomatoStorageTargets.put(Profile.positionKey(destination),3);
         f.checkpointHook=() -> { throw new IllegalStateException("disk unavailable"); };
-        WorkResult result=f.run(new TomatoStorageModule(),100);
-        assertEquals(WorkResult.State.BLOCKED,result.state()); assertTrue(result.message().contains("original classification restored"));
-        assertEquals(original,f.profile.pois.get(0)); assertEquals(0,f.profile.tomatoStorageTargets.get(Profile.positionKey(destination)));
-        assertEquals(6,f.inventory[0].count()); assertTrue(Arrays.stream(f.chests.get(destination)).allMatch(ItemData::empty));
-        assertTrue(f.history.stream().noneMatch(Action.QuickMove.class::isInstance));
+        assertEquals(WorkResult.State.IDLE,f.run(new TomatoStorageModule(),100).state());
+        assertEquals(original,f.profile.pois.get(0)); assertEquals(3,f.profile.tomatoStorageTargets.get(Profile.positionKey(destination)));
+        assertTrue(f.inventory[0].empty()); assertEquals(6,f.chests.get(destination)[0].count());
+        assertTrue(f.savedOutputs.isEmpty()); assertEquals(1,f.history.stream().filter(Action.QuickMove.class::isInstance).count());
     }
 
     @Test void profilesWithoutALayoutKeepNearestActualGradeStorageAndWithdrawalRules() {
@@ -489,13 +529,130 @@ class LogisticsTest {
         assertEquals(541,f.profile.nextEligibleDay.size());
     }
 
-    @Test void cachedChestCountsStillSwitchGradeWhenLiveInventoryTotalsCrossOver() {
+    @Test void carriedBatchStaysOnItsAllocatedGradeUntilNearlyGoneThenUsesOtherHeldGrade() {
         Fixture f=new Fixture(); f.inventory[0]=tomato(0,6); f.inventory[1]=tomato(2,7);
-        f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY); f.chest(PoiKind.TOMATO_CHEST,1,2,ItemData.EMPTY);
+        f.chest(PoiKind.TOMATO_CHEST,0,0,tomato(0,64)); f.chest(PoiKind.TOMATO_CHEST,1,3,tomato(3,64));
         for (int i=0;i<3;i++) f.machine(PoiKind.WINE_KEG,10+i,false,false,false);
         assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),150).state());
-        assertEquals(List.of(2,0,2),f.usedGrades);
-        assertEquals(2,f.opens.values().stream().mapToInt(Integer::intValue).sum(),"held ingredients need no repeat chest count");
+        assertEquals(List.of(2,2,0),f.usedGrades);
+        assertTrue(f.opens.isEmpty(),"usable carried ingredients do not require any warehouse count");
+    }
+
+    @Test void allFourExactRecipeRemnantsFinishWithoutAlternatingOrOpeningStorage() {
+        for (Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) {
+            Fixture f=new Fixture(); f.equipHoe(); int cost=feature==Feature.WINE ? 3 : 5;
+            for (int grade=0;grade<4;grade++) {
+                f.inventory[grade+9]=tomato(grade,cost);
+                f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,10+grade,false,false,false);
+            }
+            f.chest(PoiKind.TOMATO_CHEST,0,3,tomato(3,64));
+            AutomationEngine engine=isolatedMachineEngine(feature); engine.startOnce(f.context(),feature); f.runUntilStopped(engine,150);
+            assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+            assertEquals(List.of(0,1,2,3),f.usedGrades); assertEquals(4*cost,f.consumed); assertTrue(f.opens.isEmpty());
+            assertTrue(f.inventory[0].hoe()); assertEquals(0,f.tomatoWithdrawals);
+            assertTrue(f.history.stream().noneMatch(a -> a instanceof Action.ConsolidateInventory
+                || a instanceof Action.SwapHotbar swap && swap.inventoryIndex()==swap.hotbarSlot()));
+        }
+    }
+
+    @Test void firstSupplyUsesTheLargestActualGradeOnceInsteadOfBalancingEveryRecipe() {
+        Fixture f=new Fixture(); f.equipHoe();
+        int[] amounts={1000,1200,1400,800}; List<Pos> sources=new ArrayList<>();
+        for (int grade=0;grade<4;grade++) {
+            Pos source=f.chest(PoiKind.TOMATO_CHEST,grade,3-grade,ItemData.EMPTY); sources.add(source);
+            ItemData[] stacks=new ItemData[(amounts[grade]+63)/64];
+            for (int index=0;index<stacks.length;index++) stacks[index]=tomato(grade,Math.min(64,amounts[grade]-index*64));
+            f.chests.put(source,stacks);
+        }
+        for (int index=0;index<80;index++) f.machine(PoiKind.WINE_KEG,10+index,false,false,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE); engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,1500);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status()); assertEquals(240,f.consumed);
+        assertTrue(f.usedGrades.stream().allMatch(grade -> grade==2),"q2 remains the allocated batch even after its total drops below q1");
+        assertEquals(5,f.opens.values().stream().mapToInt(Integer::intValue).sum());
+        assertTrue(f.tomatoWithdrawalSources.stream().allMatch(source -> source.equals(sources.get(2))));
+        assertEquals(1200,Arrays.stream(f.chests.get(sources.get(1))).mapToInt(ItemData::count).sum());
+    }
+
+    @Test void allocatedBatchPast1200TicksDoesNotRescanAnyOf32Warehouses() {
+        Fixture f=new Fixture(); f.equipHoe(); List<Pos> sources=new ArrayList<>();
+        for (int index=0;index<32;index++) sources.add(f.chest(PoiKind.TOMATO_CHEST,index,null,index==0 ? tomato(2,64) : ItemData.EMPTY));
+        for (int index=0;index<20;index++) f.machine(PoiKind.WINE_KEG,50+index,false,false,false);
+        MachineModule module=new MachineModule(Feature.WINE);
+        for (int tick=0;tick<300 && f.machineClicks()==0;tick++) { assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state()); f.advance(); }
+        assertEquals(1,f.machineClicks()); assertEquals(33,f.opens.values().stream().mapToInt(Integer::intValue).sum());
+        f.ticks+=1300; f.chests.get(sources.get(31))[0]=tomato(3,64);
+        assertEquals(WorkResult.State.IDLE,f.run(module,400).state());
+        assertEquals(20,f.machineClicks()); assertEquals(60,f.consumed); assertEquals(1,f.tomatoWithdrawals);
+        assertEquals(33,f.opens.values().stream().mapToInt(Integer::intValue).sum());
+        assertTrue(f.usedGrades.stream().allMatch(grade -> grade==2));
+        assertEquals(64,f.chests.get(sources.get(31))[0].count());
+    }
+
+    @Test void dayChangesDuringPartialHaulCloseTheMenuAndUseAlreadyWithdrawnMaterial() {
+        Fixture f=new Fixture(); f.equipHoe();
+        Pos source=f.chest(PoiKind.TOMATO_CHEST,0,null,tomato(2,64)); f.chests.get(source)[1]=tomato(2,64);
+        for (int index=0;index<10;index++) f.machine(PoiKind.WINE_KEG,10+index,false,false,false);
+        MachineModule module=new MachineModule(Feature.WINE);
+        for (int tick=0;tick<100 && f.tomatoWithdrawals==0;tick++) { assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state()); f.advance(); }
+        assertEquals(1,f.tomatoWithdrawals); assertNotNull(f.open); assertEquals(0,f.machineClicks());
+        f.dayTime+=24000;
+        assertEquals(WorkResult.State.IDLE,f.run(module,200).state());
+        assertEquals(10,f.machineClicks()); assertEquals(30,f.consumed); assertEquals(2,f.opens.get(source));
+        assertEquals(1,f.tomatoWithdrawals); assertNull(f.open);
+        assertEquals(64,Arrays.stream(f.chests.get(source)).mapToInt(ItemData::count).sum());
+    }
+
+    @Test void depletedCarriedBatchTriggersOneNewCountAndAllocatesTheThenLargestGrade() {
+        Fixture f=new Fixture(); f.equipHoe();
+        Pos previous=f.chest(PoiKind.TOMATO_CHEST,0,null,tomato(2,9));
+        Pos next=f.chest(PoiKind.TOMATO_CHEST,1,null,tomato(1,6));
+        for (int index=0;index<5;index++) f.machine(PoiKind.WINE_KEG,10+index,false,false,false);
+        MachineModule module=new MachineModule(Feature.WINE);
+        for (int tick=0;tick<100 && f.machineClicks()<3;tick++) { assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state()); f.advance(); }
+        assertEquals(List.of(2,2,2),f.usedGrades); assertEquals(3,f.opens.values().stream().mapToInt(Integer::intValue).sum());
+        f.chests.get(previous)[0]=tomato(0,8); f.chests.get(next)[0]=tomato(1,12);
+        assertEquals(WorkResult.State.IDLE,f.run(module,150).state());
+        assertEquals(List.of(2,2,2,1,1),f.usedGrades); assertEquals(List.of(previous,next),f.tomatoWithdrawalSources);
+        assertEquals(6,f.opens.values().stream().mapToInt(Integer::intValue).sum()); assertEquals(15,f.consumed);
+    }
+
+    @Test void sourceCountingFinishesTheFirstWallBeforeCrossingToTheSecondWall() {
+        Fixture f=new Fixture(); f.equipHoe(); Set<Pos> firstWall=new HashSet<>(), secondWall=new HashSet<>();
+        for (int wall=0;wall<2;wall++) for (int x=0;x<4;x++) for (int y=0;y<4;y++) {
+            Pos source=new Pos(wall*6+x,64+y,0); (wall==0 ? firstWall : secondWall).add(source);
+            f.profile.pois.add(new Poi(source,PoiKind.TOMATO_CHEST,"source",null));
+            f.chests.put(source,new ItemData[]{tomato(2,3),ItemData.EMPTY});
+        }
+        f.machine(PoiKind.WINE_KEG,20,false,false,false);
+        assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),250).state());
+        List<Pos> visits=f.history.stream().filter(a -> a instanceof Action.UseBlock use && use.purpose()==Action.Use.OPEN_CONTAINER)
+            .map(a -> ((Action.UseBlock)a).pos()).toList();
+        assertEquals(33,visits.size()); assertEquals(firstWall,new HashSet<>(visits.subList(0,16)));
+        assertEquals(secondWall,new HashSet<>(visits.subList(16,32))); assertEquals(1,f.tomatoWithdrawals);
+    }
+
+    @Test void nextMachineUsesCurrentPositionOnlyAfterLockedHaulAndNativeAcknowledgement() {
+        Fixture f=new Fixture(); f.equipHoe(); f.chest(PoiKind.TOMATO_CHEST,0,null,tomato(2,64));
+        Pos first=f.machine(PoiKind.WINE_KEG,10,false,false,false);
+        Pos oldNearest=f.machine(PoiKind.WINE_KEG,11,false,false,false);
+        Pos nowNearest=f.machine(PoiKind.WINE_KEG,100,false,false,false);
+        MachineModule module=new MachineModule(Feature.WINE);
+        for (int tick=0;tick<100 && f.open==null;tick++) { assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state()); f.advance(); }
+        assertNotNull(f.open); f.playerX=100.5;
+        for (int tick=0;tick<100;tick++) {
+            assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+            if (f.action instanceof Action.UseBlock use && use.purpose()==Action.Use.MACHINE) break;
+            f.advance();
+        }
+        assertEquals(new Action.UseBlock(first,Action.Use.MACHINE),f.action,"a new current position cannot replace the target already supplied by this haul");
+        int visits=f.navigationCalls;
+        for (int tick=0;tick<3;tick++) assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+        assertEquals(visits,f.navigationCalls); assertEquals(1,f.machineClicks(),"pending native Use is not reordered or replayed");
+        f.advance(); assertEquals(WorkResult.State.IDLE,f.run(module,150).state());
+        assertEquals(List.of(first,nowNearest,oldNearest),f.history.stream()
+            .filter(a -> a instanceof Action.UseBlock use && use.purpose()==Action.Use.MACHINE)
+            .map(a -> ((Action.UseBlock)a).pos()).toList());
+        assertEquals(9,f.consumed); assertEquals(1,f.tomatoWithdrawals);
     }
 
     @Test void bulkHaulReservesTwoRealOutputSlotsAndReturnsWhenAlreadyFunded() {
@@ -578,7 +735,7 @@ class LogisticsTest {
         assertEquals(2,f.tomatoWithdrawals); assertEquals(0,f.soldWine);
     }
 
-    @Test void bulkHaulDoesNotBlindlyKeepUsingTheInitiallyLargestGrade() {
+    @Test void initialSupplyLocksTheLargestGradeForTheWholeCarriedBatchWithoutBalancingTotals() {
         Fixture f=new Fixture(); f.dayTime=1000;
         Pos high=f.chest(PoiKind.TOMATO_CHEST,0,2,ItemData.EMPTY);
         f.chests.put(high,new ItemData[]{tomato(2,30),tomato(2,30)});
@@ -587,8 +744,9 @@ class LogisticsTest {
         AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
         engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,800);
         assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
-        assertEquals(30,f.tomatoesAtMachineUse.get(0),"near-tied grades need a bounded first haul, not the whole selected reserve");
-        assertEquals(List.of(2,0,2,0,2,0),f.usedGrades.subList(0,6),"ties still prefer the lower grade despite the earlier large haul");
+        assertEquals(60,f.tomatoesAtMachineUse.get(0),"the supply visit loads the allocated batch rather than a grade-crossover slice");
+        assertTrue(f.usedGrades.stream().allMatch(grade -> grade==2),"stored totals crossing over cannot interrupt the carried batch");
+        assertEquals(3,f.opens.values().stream().mapToInt(Integer::intValue).sum());
         assertEquals(60,f.consumed);
     }
 
@@ -609,22 +767,23 @@ class LogisticsTest {
         engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,10000);
         assertEquals(AutomationEngine.State.COMPLETE,engine.state(),() -> engine.status()+"; "+f.tomatoFragments());
         assertEquals(384,f.machineClicks()); assertEquals(1152,f.consumed);
-        assertEquals(128,f.tomatoesAtMachineUse.get(0),"the100-tomato lead must not cause a1152-tomato single-grade haul");
-        assertTrue(f.usedGrades.subList(0,34).stream().allMatch(g -> g==2)); assertEquals(1,f.usedGrades.get(34));
+        assertEquals(384,f.tomatoesAtMachineUse.get(0),"capacity determines this haul, not the100-tomato grade lead");
+        assertTrue(f.usedGrades.subList(0,128).stream().allMatch(g -> g==2)); assertEquals(1,f.usedGrades.get(128));
+        assertTrue(f.opens.values().stream().mapToInt(Integer::intValue).sum()<=9,"only three supply visits are needed");
         assertTrue(f.emptySlotsAfterWithdraw.stream().allMatch(n -> n>=2));
         assertEquals(0,f.soldWine); assertFalse(f.sleeping);
     }
 
-    @Test void fiveFreeSlotsStillAllowTheFirstGradeCrossoverDuringALargeRun() {
+    @Test void fiveFreeSlotsKeepTheAllocatedGradeThroughoutTheFirstCarriedBatch() {
         Fixture f=nearTiedGradeFixture(5);
         AutomationEngine engine=isolatedMachineEngine(Feature.WINE); engine.startOnce(f.context(),Feature.WINE);
         for (int n=0;n<1000 && f.machineClicks()<35 && engine.running();n++) { engine.tick(f.context()); f.advance(); }
         assertTrue(engine.running(),engine.status()); assertEquals(35,f.machineClicks());
-        assertEquals(128,f.tomatoesAtMachineUse.get(0)); assertEquals(1,f.usedGrades.get(34));
+        assertEquals(192,f.tomatoesAtMachineUse.get(0)); assertTrue(f.usedGrades.stream().allMatch(grade -> grade==2));
         assertTrue(f.emptySlotsAfterWithdraw.stream().allMatch(n -> n>=2));
-        // This deliberately checks the first switch, not the eventual capacity of
+        // This deliberately checks the first carried batch, not the eventual capacity of
         // an exceptionally packed inventory over all384 operations.
-        engine.stop(f.context(),AutomationEngine.State.OFF,"end of crossover-prefix test");
+        engine.stop(f.context(),AutomationEngine.State.OFF,"end of carried-batch prefix test");
     }
 
     @Test void wineRefillsAllMachinesEvenWhenUnmergeablePickupHasFilledTheInventory() {
@@ -741,16 +900,16 @@ class LogisticsTest {
         assertEquals(0,f.machineClicks()); assertEquals(0,f.tomatoWithdrawals);
     }
 
-    @Test void mixedTomatoSourceBlocksBeforeWithdrawingOrUsingHeldIngredients() {
+    @Test void contaminatedSourceBlocksARequiredSupplyVisitBeforeAnyWithdrawal() {
         for (Feature feature:new Feature[]{Feature.WINE,Feature.PRESERVES}) {
-            Fixture f=new Fixture(); f.inventory[0]=tomato(2,9);
+            Fixture f=new Fixture(); f.inventory[0]=tomato(2,2);
             Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,64));
             f.chests.get(source)[1]=wine(8,5,0);
             ItemData[] before=f.chests.get(source).clone();
             f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,10,false,false,false);
             WorkResult result=f.run(new MachineModule(feature),100);
             assertEquals(WorkResult.State.BLOCKED,result.state()); assertTrue(result.message().contains("non-tomato"));
-            assertArrayEquals(before,f.chests.get(source)); assertEquals(9,f.inventory[0].count());
+            assertArrayEquals(before,f.chests.get(source)); assertEquals(2,f.inventory[0].count());
             assertEquals(0,f.tomatoWithdrawals); assertEquals(0,f.withdrawnWine); assertEquals(0,f.machineClicks());
             assertTrue(f.history.stream().noneMatch(Action.QuickMove.class::isInstance)); assertTrue(f.profile.nextEligibleDay.isEmpty());
         }
@@ -767,8 +926,8 @@ class LogisticsTest {
         assertTrue(f.history.stream().noneMatch(Action.QuickMove.class::isInstance)); assertTrue(f.profile.nextEligibleDay.isEmpty());
     }
 
-    @Test void invalidOrMismatchedTomatoSourceGradeBlocksTheEntireSnapshot() {
-        for (int wrongGrade:new int[]{-1,1,4}) {
+    @Test void unknownTomatoSourceGradeStillBlocksTheEntireSnapshot() {
+        for (int wrongGrade:new int[]{-1,4}) {
             Fixture f=new Fixture(); Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,64));
             f.chests.get(source)[1]=tomato(wrongGrade,4); ItemData[] before=f.chests.get(source).clone();
             f.machine(PoiKind.WINE_KEG,10,false,false,false);
@@ -815,13 +974,17 @@ class LogisticsTest {
         assertTrue(f.action instanceof Action.QuickMove); int actions=f.history.size();
         assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state()); assertEquals(actions,f.history.size());
         f.advance(); f.chests.get(source)[1]=tomato(3,64);
-        assertEquals(WorkResult.State.BLOCKED,module.tick(f.context()).state());
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
         assertEquals(1,f.tomatoWithdrawals); assertEquals(64,ModuleSupport.count(f.context(),i -> ModuleSupport.tomatoGrade(i,2)));
         assertEquals(0,f.machineClicks());
+        for (int n=0;n<100 && f.machineClicks()==0;n++) { module.tick(f.context()); f.advance(); }
+        assertEquals(1,f.machineClicks()); assertEquals(List.of(2),f.usedGrades);
+        assertEquals(1,f.tomatoWithdrawals,"recount the now-different grade; do not withdraw it as the old selected grade");
+        assertEquals(tomato(3,64),f.chests.get(source)[1]);
     }
 
     @Test void cancellationDiscardsChestCacheBeforeTheNextMachine() {
-        Fixture f=new Fixture(); f.inventory[0]=tomato(0,9);
+        Fixture f=new Fixture(); f.inventory[0]=tomato(0,3);
         f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY); Pos richer=f.chest(PoiKind.TOMATO_CHEST,1,2,ItemData.EMPTY);
         f.machine(PoiKind.WINE_KEG,10,false,false,false); f.machine(PoiKind.WINE_KEG,11,false,false,false);
         MachineModule module=new MachineModule(Feature.WINE);
@@ -829,10 +992,10 @@ class LogisticsTest {
         module.reset(); f.cancel(); f.chests.get(richer)[0]=tomato(2,30);
         assertEquals(WorkResult.State.IDLE,f.run(module,100).state());
         assertEquals(List.of(0,2),f.usedGrades);
-        assertTrue(f.opens.get(richer)>=3,"resume recounts all sources and reopens the selected source before withdrawal");
+        assertEquals(2,f.opens.get(richer),"after carried material is gone, resume counts sources and reopens the selected source");
     }
 
-    @Test void dayChangeOrBoundedRefreshRecountsExternalChestChangesDespiteHeldIngredients() {
+    @Test void elapsedTimeOrDayChangeDoesNotInterruptUsableCarriedIngredients() {
         for (boolean nextDay:new boolean[]{false,true}) {
             Fixture f=new Fixture(); f.dayTime=1000; f.inventory[0]=tomato(0,9);
             f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY); Pos richer=f.chest(PoiKind.TOMATO_CHEST,1,2,ItemData.EMPTY);
@@ -842,8 +1005,8 @@ class LogisticsTest {
             f.chests.get(richer)[0]=tomato(2,30);
             if (nextDay) f.dayTime+=24000; else f.ticks+=1201;
             assertEquals(WorkResult.State.IDLE,f.run(module,100).state());
-            assertEquals(List.of(0,2),f.usedGrades,"newly larger stock must win after day/refresh boundary");
-            assertTrue(f.opens.get(richer)>=3);
+            assertEquals(List.of(0,0),f.usedGrades,"stored changes and elapsed time cannot interrupt a carried batch");
+            assertTrue(f.opens.isEmpty());
         }
     }
 
@@ -911,7 +1074,7 @@ class LogisticsTest {
         assertEquals(3,ModuleSupport.menuPlayerItem(f.context(),i -> i.is(ItemData.TOMATO)).inventoryIndex());
     }
 
-    @Test void tomatoStorageDepositsOnlyItsRegisteredGrade() {
+    @Test void tomatoStorageMayDepositDifferentActualGradesInTheSameRegisteredContainer() {
         Fixture f = new Fixture();
         f.inventory[0] = tomato(2,15); f.inventory[1] = tomato(1,9);
         Pos first = f.chest(PoiKind.TOMATO_CHEST,0,2,ItemData.EMPTY);
@@ -919,13 +1082,14 @@ class LogisticsTest {
         WorkResult result = f.run(new TomatoStorageModule(),80);
         assertEquals(WorkResult.State.IDLE,result.state(),result.message());
         assertEquals(15,f.chests.get(first)[0].count()); assertEquals(2,f.chests.get(first)[0].quality());
-        assertEquals(9,f.chests.get(second)[0].count()); assertEquals(1,f.chests.get(second)[0].quality());
+        assertEquals(9,f.chests.get(first)[1].count()); assertEquals(1,f.chests.get(first)[1].quality());
+        assertTrue(Arrays.stream(f.chests.get(second)).allMatch(ItemData::empty));
     }
 
-    @Test void storageBlocksConflictingChestAndNeverMovesItem() {
+    @Test void tomatoStorageRefusesForeignProductsButDoesNotJudgeTomatoGrades() {
         Fixture f = new Fixture();
         f.inventory[0] = tomato(2,15);
-        f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(1,3));
+        f.chest(PoiKind.TOMATO_CHEST,0,2,wine(8));
         WorkResult result = f.run(new TomatoStorageModule(),20);
         assertEquals(WorkResult.State.BLOCKED,result.state());
         assertFalse(f.history.stream().anyMatch(Action.QuickMove.class::isInstance));
@@ -1056,9 +1220,9 @@ class LogisticsTest {
         assertEquals(1,f.history.stream().filter(Action.QuickMove.class::isInstance).count());
     }
 
-    @Test void productionCountsChestAndInventoryThenReopensBeforeWithdrawal() {
+    @Test void requiredSupplyCountsChestAndInsufficientCarriedStockThenReopensBeforeWithdrawal() {
         Fixture f = new Fixture();
-        f.inventory[0] = tomato(0,10); f.inventory[8] = new ItemData("minecraft:diamond_hoe",1,0,null,true,100);
+        f.inventory[0] = tomato(0,1); f.inventory[8] = new ItemData("minecraft:diamond_hoe",1,0,null,true,100);
         f.profile.hoeHotbarSlot = 8;
         Pos grade0 = f.chest(PoiKind.TOMATO_CHEST,1,0,tomato(0,10));
         Pos grade2 = f.chest(PoiKind.TOMATO_CHEST,2,2,tomato(2,30));
@@ -1075,14 +1239,15 @@ class LogisticsTest {
 
     @Test void stockChangedOnReopenIsRecountedBeforeWithdrawal() {
         Fixture f = new Fixture();
-        f.inventory[0] = tomato(0,6);
+        f.inventory[0] = tomato(0,2);
         Pos selected = f.chest(PoiKind.TOMATO_CHEST,1,2,tomato(2,30));
+        f.chest(PoiKind.TOMATO_CHEST,3,0,tomato(0,1));
         f.machine(PoiKind.WINE_KEG,2,false,false,false);
         f.emptyOnSecondOpen = selected;
         WorkResult result = f.run(new MachineModule(Feature.WINE),120);
         assertEquals(WorkResult.State.IDLE,result.state(),result.message());
         assertEquals(List.of(0),f.usedGrades);
-        assertFalse(f.history.stream().anyMatch(Action.QuickMove.class::isInstance));
+        assertEquals(1,f.tomatoWithdrawals); assertTrue(f.chests.get(selected)[0].empty());
     }
 
     @Test void readyMachineCollectsAndRefillsOnceThenWaitsForPickup() {
@@ -1599,6 +1764,7 @@ class LogisticsTest {
         final Set<Pos> unloaded=new HashSet<>(), blockedPaths=new HashSet<>(), unstandable=new HashSet<>();
         Integer wineClockYear=20;
         long ticks, dayTime, sequence;
+        double playerX=.5;
         int selected, consumed, navigationCalls, soldWine, withdrawnWine, tomatoWithdrawals;
         Pos open, emptyOnSecondOpen;
         boolean sleeping, rejectSleep, pickup = true;
@@ -1768,7 +1934,7 @@ class LogisticsTest {
         @Override public long dayTime() { return dayTime; }
         @Override public Integer wineYear() { return wineClockYear; }
         @Override public List<GroundItem> groundItems() { return List.copyOf(ground); }
-        @Override public PlayerState player() { return new PlayerState(.5,64,.5,0,0,true,sleeping,20,20,selected,true,true); }
+        @Override public PlayerState player() { return new PlayerState(playerX,64,.5,0,0,true,sleeping,20,20,selected,true,true); }
         @Override public BlockData block(Pos pos) { return blocks.getOrDefault(pos,new BlockData(pos,"minecraft:air",Map.of())); }
         @Override public boolean loaded(Pos pos) { return !unloaded.contains(pos); }
         @Override public boolean canStand(Pos feet) { return !unstandable.contains(feet); }

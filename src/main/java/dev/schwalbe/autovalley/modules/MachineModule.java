@@ -1,6 +1,7 @@
 package dev.schwalbe.autovalley.modules;
 
 import dev.schwalbe.autovalley.core.*;
+import dev.schwalbe.autovalley.navigation.ProductionVisitOrder;
 import java.util.*;
 
 /** Wine runs before preserves; each run services machines due on the current game day. */
@@ -14,12 +15,11 @@ public final class MachineModule implements AutomationModule {
     private long useSettleAt = -1;
     private List<Poi> machines = List.of(), sources = List.of();
     private final Map<Poi,int[]> stock = new LinkedHashMap<>();
-    private static final int STOCK_REFRESH_TICKS = 1200;
     private static final int OUTPUT_SETTLE_TICKS = 5;
     private static final int RESERVED_OUTPUT_SLOTS = 2;
     private boolean stockReady, freshForHaul;
-    private long stockDay, stockTick;
-    private int machineIndex, sourceIndex, containerId = -1, grade = -1, cost, hotbar, inputBefore, withdrawalBefore;
+    private long stockDay;
+    private int machineIndex, selectedMachineIndex = -1, sourceIndex, containerId = -1, grade = -1, cost, hotbar, inputBefore, withdrawalBefore;
     private Poi source;
     private boolean collected, feeding;
     private String unresolvedInteraction;
@@ -78,24 +78,35 @@ public final class MachineModule implements AutomationModule {
             }
             pending = null;
         }
-        if (stockReady && stockDay != gameDay(c) && switch (stage) {
-            case CHOOSE, FETCH_SOURCE, FETCH, RETURN, EQUIP -> true;
-            default -> false;
-        }) {
+        if (stockReady && stockDay != gameDay(c) && (stage==Stage.FETCH_SOURCE || stage==Stage.FETCH)) {
+            if (carriedBatchGrade(c)>=0) {
+                // A partial haul already supplied usable material. Stop withdrawing,
+                // close its menu, and use that inventory before another day's count.
+                stockReady=false; freshForHaul=false;
+                if (c.world().menu().container()) close(c,Stage.CHOOSE); else stage=Stage.CHOOSE;
+                return WorkResult.busy(progressStatus() + " · 보유 재료부터 사용");
+            }
             beginStockScan(c);
             if (c.world().menu().container()) close(c,Stage.SOURCE);
-            return WorkResult.busy(progressStatus() + " · 날짜가 바뀌어 재확인");
+            return WorkResult.busy(progressStatus() + " · 재료 보충 전 날짜 변경 확인");
         }
         switch (stage) {
             case START -> {
-                machines = ModuleSupport.nearest(c,c.profile().pois(feature == Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR)
-                    .stream().filter(p -> eligible(c,p)).toList());
+                machines = new ArrayList<>(ModuleSupport.nearest(c,c.profile().pois(feature == Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR)
+                    .stream().filter(p -> eligible(c,p)).toList()));
                 if (machines.isEmpty()) return WorkResult.idle();
                 machineIndex = 0; stage = Stage.MACHINE;
             }
             case MACHINE -> {
                 if (machineIndex >= machines.size()) { clearRun(); return WorkResult.idle(); }
                 if (closeIfNeeded(c,Stage.MACHINE)) return WorkResult.busy(machineStatus("상자 닫는 중"));
+                if (selectedMachineIndex!=machineIndex) {
+                    // Select only at a new-machine boundary. A source haul, hotbar
+                    // change, native ACK or output cleanup keeps this target locked.
+                    int next=ProductionVisitOrder.nextIndex(c.world(),c.profile(),machines,machineIndex,4.0);
+                    if (next>=0 && next!=machineIndex) Collections.swap(machines,machineIndex,next);
+                    selectedMachineIndex=machineIndex;
+                }
                 Navigation.Result nav = c.navigation().moveTo(target().pos(),4.0,c);
                 if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Registered production machine cannot be reached"));
                 if (nav != Navigation.Result.ARRIVED) return WorkResult.busy(machineStatus("설비로 이동 중"));
@@ -107,17 +118,15 @@ public final class MachineModule implements AutomationModule {
                     machineIndex++; return WorkResult.busy(machineStatus("생산 중인 설비를 건너뛰고 다음 확인"));
                 }
                 cost = feature == Feature.WINE || block.flag("upgraded") ? 3 : 5;
-                grade = -1; inputMergeAttempts=0;
-                if (stockReady && stockDay == gameDay(c) && c.world().tick()-stockTick < STOCK_REFRESH_TICKS) stage = Stage.CHOOSE;
-                else beginStockScan(c);
+                inputMergeAttempts=0;
+                stage = Stage.CHOOSE;
             }
             case SOURCE -> {
                 if (sourceIndex >= sources.size()) {
-                    stockReady = true; freshForHaul = true; stockDay = gameDay(c); stockTick = c.world().tick();
+                    stockReady = true; freshForHaul = true; stockDay = gameDay(c);
                     stage = Stage.CHOOSE; break;
                 }
                 source = sources.get(sourceIndex);
-                if (source.classifier() == null || source.classifier() < 0 || source.classifier() > 3) return fail("Register a valid grade for each tomato source");
                 Navigation.Result nav = c.navigation().moveTo(source.pos(),2.5,c);
                 if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Registered tomato source cannot be reached"));
                 if (nav == Navigation.Result.ARRIVED) submit(c,new Action.UseBlock(source.pos(),Action.Use.OPEN_CONTAINER),Pending.OPEN_SCAN);
@@ -129,7 +138,15 @@ public final class MachineModule implements AutomationModule {
                 sourceIndex++; close(c,Stage.SOURCE);
             }
             case CHOOSE -> {
-                grade = chooseGrade(totals(c),cost);
+                int carriedGrade=carriedBatchGrade(c);
+                if (carriedGrade>=0) grade=carriedGrade;
+                else {
+                    // A supply trip allocates one grade from a fresh whole-stock count.
+                    // Carried batches are used first; time or stock balancing cannot
+                    // trigger an underground recount while usable ingredients remain.
+                    if (!stockReady || !freshForHaul || stockDay!=gameDay(c)) { beginStockScan(c); break; }
+                    grade=chooseGrade(totals(c),cost);
+                }
                 // Bulk-hauling 64-stacks leaves 1/4-tomato fragments for 3/5-input
                 // recipes. Merge held fragments before recounting or buying another haul.
                 if (grade>=0 && heldCandidate(c)==null && c.world().inventory().stream().filter(s -> ModuleSupport.tomatoGrade(s.item(),grade)).count()>1) {
@@ -147,9 +164,6 @@ public final class MachineModule implements AutomationModule {
                     // Even1+1 fragments may need merging to make room for another haul.
                     // If fewer than one recipe remain, a normal refill is still necessary.
                 }
-                // Reuse known chest counts while consuming held stock. Before another
-                // underground haul (or concluding supplies ran out), recount all sources.
-                if (!freshForHaul && !sources.isEmpty() && (grade < 0 || heldCandidate(c) == null)) { beginStockScan(c); break; }
                 if (grade < 0) {
                     // A one-shot must not report an unfunded refill as completed or hide
                     // it behind tomorrow's polling deadline. Leave mature output in place
@@ -180,11 +194,9 @@ public final class MachineModule implements AutomationModule {
                 String invalid = snapshot(c,source);
                 if (invalid != null) return fail(invalid);
                 // Count this source again after opening it; never withdraw from an old chest snapshot.
-                int currentBest = chooseGrade(totals(c),cost);
-                if (currentBest != grade) { close(c,Stage.CHOOSE); break; }
                 boolean funded=heldCandidate(c)!=null;
                 int held=ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
-                int needed=Math.min(remainingIngredientDemand(c),gradeCrossoverDemand(c))-held;
+                int needed=remainingIngredientDemand(c)-held;
                 if (funded && needed<=0) { close(c,Stage.RETURN); break; }
                 // A source stack can have tags absent from our ItemData projection. Never
                 // count apparent partial-stack room as one of the two real output slots.
@@ -368,10 +380,29 @@ public final class MachineModule implements AutomationModule {
         return best;
     }
     private int[] totals(Context c) {
-        int[] counts = new int[4];
+        int[] counts = heldCounts(c);
         for (int[] chest : stock.values()) for (int i = 0; i < 4; i++) counts[i] += chest[i];
-        for (ItemSlot s : c.world().inventory()) if (s.item().is(ItemData.TOMATO) && s.item().quality() >= 0 && s.item().quality() < 4) counts[s.item().quality()] += s.item().count();
         return counts;
+    }
+    private int[] heldCounts(Context c) {
+        int[] counts=new int[4];
+        for (ItemSlot slot:c.world().inventory()) if (slot.inventoryIndex()>=0 && slot.inventoryIndex()<36
+                && slot.item().is(ItemData.TOMATO) && slot.item().quality()>=0 && slot.item().quality()<4)
+            counts[slot.item().quality()]+=slot.item().count();
+        return counts;
+    }
+    private int carriedBatchGrade(Context c) {
+        int[] held=heldCounts(c);
+        if (grade>=0 && held[grade]>=cost) {
+            // Prefer another substantial carried batch before emptying the last hand
+            // recipe, but exact-cost remnants must still be usable without a scan loop.
+            if (held[grade]==cost && remainingIngredientDemand(c)>cost) {
+                int replacement=chooseGrade(held,cost+1);
+                if (replacement>=0) return replacement;
+            }
+            return grade;
+        }
+        return chooseGrade(held,cost);
     }
     private int remainingIngredientDemand(Context c) {
         long demand=0, day=gameDay(c);
@@ -384,14 +415,6 @@ public final class MachineModule implements AutomationModule {
             demand+=feature==Feature.WINE || block.flag("upgraded") ? 3 : 5;
         }
         return (int)Math.min(Integer.MAX_VALUE,Math.max(cost,demand));
-    }
-    private int gradeCrossoverDemand(Context c) {
-        int[] counts=totals(c); int runnerUp=0;
-        for (int n=0;n<counts.length;n++) if (n!=grade && counts[n]>=cost) runnerUp=Math.max(runnerUp,counts[n]);
-        if (runnerUp==0) return Integer.MAX_VALUE;
-        // Withdrawal moves stock without changing these totals. Keep enough for the
-        // present lead plus one recipe, then leave room for the next largest grade.
-        return (int)Math.min(Integer.MAX_VALUE,Math.max(cost,(long)counts[grade]-runnerUp+cost));
     }
     private static int emptyInventorySlots(Context c) {
         return (int)c.world().inventory().stream().filter(s -> s.inventoryIndex()>=0 && s.inventoryIndex()<36 && s.item().empty()).count();
@@ -413,17 +436,14 @@ public final class MachineModule implements AutomationModule {
             .map(ItemSlot::inventoryIndex).orElse(null);
     }
     private void beginStockScan(Context c) {
-        sources = ModuleSupport.nearest(c,c.profile().pois(PoiKind.TOMATO_CHEST));
-        stock.clear(); stockReady = false; freshForHaul = false; sourceIndex = 0; stage = Stage.SOURCE;
+        sources = StorageVisitOrder.order(c.profile().pois(PoiKind.TOMATO_CHEST),c.world().player());
+        stock.clear(); stockReady = false; freshForHaul = false; sourceIndex = 0; grade=-1; stage = Stage.SOURCE;
     }
     private Poi sourceForGrade(Context c,Poi excluded) {
-        // Stock and grade choice stay based on actual synchronized contents. Within
-        // that chosen grade, consume a misplaced legacy barrel before replenishable ones.
+        // Storage is tomato-only, not grade-assigned. Source order comes from the
+        // grouped synchronized containers; historical classifiers/layouts are irrelevant.
         return stock.entrySet().stream().filter(e -> !e.getKey().equals(excluded) && e.getValue()[grade]>0)
-            .map(Map.Entry::getKey).sorted(Comparator.comparingInt(p -> {
-                Integer desired=c.profile().tomatoStorageTargets.get(Profile.positionKey(p.pos()));
-                return desired!=null && !Objects.equals(desired,p.classifier()) ? 0 : 1;
-            })).findFirst().orElse(null);
+            .map(Map.Entry::getKey).findFirst().orElse(null);
     }
     private static long gameDay(Context c) { return Math.floorDiv(c.world().dayTime(),24000); }
     private boolean eligible(Context c,Poi poi) {
@@ -453,9 +473,9 @@ public final class MachineModule implements AutomationModule {
     private String snapshot(Context c, Poi poi) {
         int[] counts = new int[4];
         for (ItemSlot s : c.world().menu().slots()) if (!s.player() && !s.item().empty()) {
-            if (!s.item().is(ItemData.TOMATO)) return "Tomato source contains a non-tomato item; inspect its registered classification";
+            if (!s.item().is(ItemData.TOMATO)) return "Tomato source contains a non-tomato item; inspect the registered tomato-only storage";
             int q = s.item().quality();
-            if (q < 0 || q > 3 || !Objects.equals(poi.classifier(),q)) return "Tomato source contains a grade different from its registered classification";
+            if (q < 0 || q > 3) return "Tomato source contains an unknown tomato grade";
             counts[q] += s.item().count();
         }
         stock.put(poi,counts); return null;
@@ -465,10 +485,10 @@ public final class MachineModule implements AutomationModule {
             .filter(s -> s.inventoryIndex()>=0 && s.inventoryIndex()<36 && ModuleSupport.tomatoGrade(s.item(),grade)).toList();
         ItemSlot refill=held.stream().filter(s -> s.item().count()>cost).findFirst().orElse(null);
         if (refill!=null) return refill;
-        // More work and known same-grade supplies warrant the existing bounded merge
-        // or fresh-source fetch before emptying the hand. A genuinely final recipe
+        // More work and carried same-grade fragments warrant a bounded merge
+        // before emptying the hand. A genuinely final recipe
         // keeps the old exact-cost completion semantics; it needs no later refill.
-        if (grade>=0 && remainingIngredientDemand(c)>cost && totals(c)[grade]>cost) return null;
+        if (grade>=0 && remainingIngredientDemand(c)>cost && heldCounts(c)[grade]>cost) return null;
         return held.stream().filter(s -> s.item().count()>=cost).findFirst().orElse(null);
     }
     private ItemSlot emptySlot(Context c) {
@@ -528,8 +548,8 @@ public final class MachineModule implements AutomationModule {
     @Override public void reset() { clearRun(); unresolvedInteraction = null; rejectedInputMerge=null; rejectedOutputMerge=null; repositionedInputState=null; }
     private void clearRun() {
         stage = Stage.START; afterClose = null; pending = null; ticket = -1; verifySince = 0; useSettleAt = -1;
-        machines = List.of(); sources = List.of(); stock.clear(); machineIndex = 0; sourceIndex = 0;
-        stockReady = false; freshForHaul = false; stockDay = 0; stockTick = 0;
+        machines = List.of(); sources = List.of(); stock.clear(); machineIndex = 0; selectedMachineIndex = -1; sourceIndex = 0;
+        stockReady = false; freshForHaul = false; stockDay = 0;
         source = null; containerId = -1; grade = -1; collected = false; feeding = false;
         outputOperationId=null;
         inventoryBeforeOutput=Map.of(); outputWineYear=null; preferredOutputSource=null;

@@ -190,3 +190,59 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   skips**. Snapshot SHA-256:
   `158E705D74DF5BC75ABBAEEC7576DF0DDDA4CE7D8DEED7BD8BDB1747A8993971`.
   These are build/fixture results; real-client acceptance follows separately.
+
+## Tomato commodity-only storage correction — 2026-09-08
+
+- The hotbar/metadata build reconnected successfully in the same Society instance.
+  Wine production then stopped during source inspection, before ingredient
+  withdrawal: an ordinary barrel's actual normal-grade tomatoes differed from its
+  obsolete highest-grade registration. This run did not validate the repaired
+  output-consolidation path because it never reached production.
+- At the user's renewed explicit request, tomato storage now uses commodity
+  identity only. Legacy grade labels and desired-layout maps do not select or
+  reject tomato sources/destinations. Mixed tomato grades may share one storage
+  container; non-tomato contents are not admitted for automatic deposit/withdrawal.
+- Production still counts the actual grades separately across synchronized
+  storage contents and held inventory, chooses the largest total, and withdraws
+  only that selected grade. Reopening a source refreshes its actual contents.
+  This does not rewrite item qualities or combine incompatible native stacks.
+- Ordinary native container transfer fills compatible partial stacks in the
+  opened container before empty slots. Cross-container compaction and generic
+  named commodity groups remain deferred; no global packing claim is made.
+- Wine production-cohort registration, reserve capacity and surplus-sale rules
+  are unchanged. Tomato registration no longer asks for a grade, and surveys
+  retain per-grade observations without using them as warehouse restrictions.
+- Integrated Java 17 `test build` passed **569 tests, zero failures, errors or
+  skips** for the commodity-only correction. Snapshot SHA-256:
+  `67C75F3E1B74E5CFE5F973074E5D1B4102832A78498D7ADF01AFB97929FBFB41`.
+  This build was not installed; the operator requested batch-level stock
+  selection before the next restart.
+- Meanwhile, the still-installed hotbar/metadata build resumed in the real game.
+  A fresh observation showed 102 carried wines; retained receipts included 87
+  successful native inventory consolidations and continued machine interactions,
+  with no consolidation failure fence. This confirms progress beyond the earlier
+  four-bottle failure, not completion of the whole rack or sales.
+
+## Production batch and visit-order correction — 2026-09-08
+
+- A carried tomato batch is consumed before another warehouse count. Elapsed
+  ticks, a calendar change while carrying usable ingredients, and another grade
+  overtaking the selected total do not trigger a stock-balancing trip. Only a
+  needed refill counts all registered sources and allocates the largest grade.
+  Sources are still freshly synchronized before each native withdrawal.
+- Touching same-kind storage containers form visit components: finish one wall
+  before choosing the next wall from the last visited position. No inventory
+  contents, access permissions or registered members are inferred from adjacency.
+- At each completed machine boundary, prefer currently reachable machines, then
+  a bounded shared walking-cost search over nearby candidates. Active targets
+  remain fixed during navigation, supply trips and native acknowledgements. A
+  search limit never silently removes a pending machine or claims completion.
+- Integrated Java 17 `test build` passed **593 tests, zero failures, errors or
+  skips**. Snapshot SHA-256:
+  `2C85AACA86197FB8814090096FE061478A9430E46A5AB3950FF9AE0FF0F4C052`.
+  This is build evidence; installation and real-client acceptance follow below.
+- The previous live build was paused after a reported repeated-work stall. Its
+  last sample was source count 22/32, with successful container acknowledgements
+  and no native failure fence. The final cancelled request was caused by the
+  explicit pause. There was no complete trace of the preceding repetition, so
+  that snapshot does not establish the exact cause of the reported stall.

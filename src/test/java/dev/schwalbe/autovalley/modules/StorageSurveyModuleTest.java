@@ -19,10 +19,11 @@ class StorageSurveyModuleTest {
         Pos tomato=f.add(tomato(2)),wine=f.add(wine(8)),empty=f.add(),mixed=f.add(tomato(0),tomato(1));
         List<ItemSlot> before=f.inventory();
         assertEquals(WorkResult.State.IDLE,f.finish().state());
-        assertEquals(PoiKind.TOMATO_CHEST,f.poi(tomato).kind()); assertEquals(2,f.poi(tomato).classifier());
+        assertEquals(PoiKind.TOMATO_CHEST,f.poi(tomato).kind()); assertNull(f.poi(tomato).classifier());
         assertEquals(PoiKind.WINE_CHEST,f.poi(wine).kind()); assertEquals(8,f.poi(wine).classifier());
-        assertEquals(PoiKind.STORAGE_CANDIDATE,f.poi(empty).kind()); assertEquals(PoiKind.STORAGE_CANDIDATE,f.poi(mixed).kind());
-        assertEquals(2,f.checkpoints); assertEquals(4,f.session.storageSurveyObservations.size());
+        assertEquals(PoiKind.STORAGE_CANDIDATE,f.poi(empty).kind()); assertEquals(PoiKind.TOMATO_CHEST,f.poi(mixed).kind());
+        assertNull(f.poi(mixed).classifier());
+        assertEquals(3,f.checkpoints); assertEquals(4,f.session.storageSurveyObservations.size());
         assertTrue(f.session.storageSurveyComplete); assertFalse(f.menu.container()); assertEquals(before,f.inventory());
         assertEquals(8,f.actions.size());
         for (Action action:f.actions) assertTrue(action instanceof Action.CloseContainer
@@ -32,26 +33,26 @@ class StorageSurveyModuleTest {
         Fixture f=new Fixture(); Pos pos=f.add(tomato(3));
         f.profile.pois.set(0,new Poi(pos,PoiKind.TOMATO_CHEST,"Existing",1));
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(1,f.poi(pos).classifier());
-        assertEquals(3,f.session.storageSurveyObservations.get(pos).classifier()); assertEquals(0,f.checkpoints);
+        assertNull(f.session.storageSurveyObservations.get(pos).classifier()); assertEquals(0,f.checkpoints);
     }
-    @Test void desiredLayoutClassifiesOnlyVerifiedEmptyCandidatesWhileNonemptyStockKeepsItsActualGrade() {
+    @Test void legacyDesiredLayoutCannotClassifyAnEmptyCandidateOrConstrainTomatoGrades() {
         Fixture f=new Fixture(); Pos empty=f.add(),legacy=f.add(tomato(3)),mixed=f.add(tomato(0),tomato(1));
         for (Pos pos:List.of(empty,legacy,mixed)) f.profile.tomatoStorageTargets.put(Profile.positionKey(pos),2);
         assertEquals(WorkResult.State.IDLE,f.finish().state());
-        assertEquals(PoiKind.TOMATO_CHEST,f.poi(empty).kind()); assertEquals(2,f.poi(empty).classifier());
+        assertEquals(PoiKind.STORAGE_CANDIDATE,f.poi(empty).kind()); assertNull(f.poi(empty).classifier());
         assertEquals(StorageSurveyObservation.Status.EMPTY,f.session.storageSurveyObservations.get(empty).status(),"evidence must remain empty, not invented tomatoes");
-        assertEquals(PoiKind.TOMATO_CHEST,f.poi(legacy).kind()); assertEquals(3,f.poi(legacy).classifier());
-        assertEquals(PoiKind.STORAGE_CANDIDATE,f.poi(mixed).kind()); assertNull(f.poi(mixed).classifier());
+        assertEquals(PoiKind.TOMATO_CHEST,f.poi(legacy).kind()); assertNull(f.poi(legacy).classifier());
+        assertEquals(PoiKind.TOMATO_CHEST,f.poi(mixed).kind()); assertNull(f.poi(mixed).classifier());
         assertEquals(2,f.checkpoints); assertEquals(List.of(tomato(3)),f.stock.get(legacy));
         assertEquals(6,f.actions.size()); assertTrue(f.session.storageSurveyComplete);
     }
-    @Test void emptyCandidateLayoutSaveFailureRollsBackWithoutAnyInventoryAction() {
-        Fixture f=new Fixture(); Pos empty=f.add(); Poi original=f.poi(empty);
-        f.profile.tomatoStorageTargets.put(Profile.positionKey(empty),2); f.failSave=true;
-        assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertEquals(original,f.poi(empty));
-        assertEquals(2,f.profile.tomatoStorageTargets.get(Profile.positionKey(empty)));
-        assertEquals(1,f.actions.size()); assertTrue(f.stock.get(empty).isEmpty());
-        assertEquals(StorageSurveyObservation.Status.EMPTY,f.session.storageSurveyObservations.get(empty).status());
+    @Test void commodityClassificationSaveFailureRollsBackWithoutAnyInventoryAction() {
+        Fixture f=new Fixture(); Pos pos=f.add(tomato(0),tomato(3)); Poi original=f.poi(pos);
+        f.profile.tomatoStorageTargets.put(Profile.positionKey(pos),2); f.failSave=true;
+        assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertEquals(original,f.poi(pos));
+        assertEquals(2,f.profile.tomatoStorageTargets.get(Profile.positionKey(pos)));
+        assertEquals(1,f.actions.size()); assertEquals(List.of(tomato(0),tomato(3)),f.stock.get(pos));
+        assertEquals(StorageSurveyObservation.Status.TOMATO,f.session.storageSurveyObservations.get(pos).status());
     }
     @Test void unreachableTargetIsExplicitlyIncompleteAndKeepsEarlierEvidence() {
         Fixture f=new Fixture(); f.add(); Pos blocked=f.add(); f.blocked.add(blocked);

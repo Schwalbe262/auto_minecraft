@@ -22,7 +22,7 @@ public final class StorageSurveyModule implements AutomationModule {
     @Override public WorkResult tick(Context c) {
         if (c.session().oneShotFeature!=Feature.STORAGE_SURVEY) return WorkResult.idle();
         if (stage==Stage.START) {
-            targets=ModuleSupport.nearest(c,c.profile().pois.stream().filter(p -> targetKind(p.kind())).toList());
+            targets=StorageVisitOrder.order(c.profile().pois.stream().filter(p -> targetKind(p.kind())).toList(),c.world().player());
             c.session().storageSurveyObservations.clear(); c.session().storageSurveyTotal=targets.size();
             c.session().storageSurveyComplete=false; c.session().storageSurveyBlockedAt=null;
             c.session().storageSurveyStatus="Inspecting registered warehouses without moving items";
@@ -77,11 +77,8 @@ public final class StorageSurveyModule implements AutomationModule {
                 c.session().storageSurveyObservations.put(target.pos(),observation);
                 PoiKind classifiedKind=observation.classifiedKind();
                 Integer classifier=observation.classifier();
-                Integer desired=c.profile().tomatoStorageTargets.get(Profile.positionKey(target.pos()));
-                if (target.kind()==PoiKind.STORAGE_CANDIDATE && observation.status()==StorageSurveyObservation.Status.EMPTY && desired!=null) {
-                    if (desired<0 || desired>3) return fail(c,"Invalid desired tomato grade; no warehouse classification changed");
-                    classifiedKind=PoiKind.TOMATO_CHEST; classifier=desired;
-                }
+                // Old desired-grade layouts are ignored. Empty storage has no
+                // item evidence; only explicit user registration can designate it.
                 if (target.kind()==PoiKind.STORAGE_CANDIDATE && classifiedKind!=null) {
                     int position=c.profile().pois.indexOf(target);
                     if (position<0) return fail(c,"Warehouse registration disappeared before classification");
