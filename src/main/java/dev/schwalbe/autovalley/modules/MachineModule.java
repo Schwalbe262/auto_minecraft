@@ -5,8 +5,8 @@ import java.util.*;
 
 /** Wine runs before preserves; each run services machines due on the current game day. */
 public final class MachineModule implements AutomationModule {
-    private enum Stage { START, MACHINE, SOURCE, SNAPSHOT, CHOOSE, FETCH_SOURCE, FETCH, RETURN, EQUIP, VERIFY, PICKUP }
-    private enum Pending { CLOSE, OPEN_SCAN, OPEN_FETCH, WITHDRAW, SWAP, SELECT, USE }
+    private enum Stage { START, MACHINE, SOURCE, SNAPSHOT, CHOOSE, FETCH_SOURCE, FETCH, RETURN, EQUIP, VERIFY, PICKUP, OUTPUT }
+    private enum Pending { CLOSE, OPEN_SCAN, OPEN_FETCH, WITHDRAW, SWAP, SELECT, USE, INPUT_MERGE, OUTPUT_MERGE }
     private final Feature feature;
     private Stage stage = Stage.START, afterClose;
     private Pending pending;
@@ -15,6 +15,7 @@ public final class MachineModule implements AutomationModule {
     private final Map<Poi,int[]> stock = new LinkedHashMap<>();
     private static final int STOCK_REFRESH_TICKS = 1200;
     private static final int OUTPUT_SETTLE_TICKS = 5;
+    private static final int RESERVED_OUTPUT_SLOTS = 2;
     private boolean stockReady, freshForHaul;
     private long stockDay, stockTick;
     private int machineIndex, sourceIndex, containerId = -1, grade = -1, cost, hotbar, inputBefore, withdrawalBefore;
@@ -22,6 +23,12 @@ public final class MachineModule implements AutomationModule {
     private boolean collected, feeding;
     private String unresolvedInteraction;
     private String outputOperationId;
+    private Map<Integer,ItemData> inventoryBeforeOutput=Map.of();
+    private Integer outputWineYear, preferredOutputSource;
+    private String rejectedInputMerge, rejectedOutputMerge, pendingMergeState;
+    private String repositionedInputState;
+    private boolean pendingReposition;
+    private int inputMergeAttempts, outputMergeAttempts;
 
     public MachineModule(Feature feature) {
         if (feature != Feature.WINE && feature != Feature.PRESERVES) throw new IllegalArgumentException("Machine feature must be WINE or PRESERVES");
@@ -58,6 +65,15 @@ public final class MachineModule implements AutomationModule {
                 }
                 case SWAP, SELECT -> stage = Stage.EQUIP;
                 case USE -> { stage = Stage.VERIFY; verifySince = c.world().tick(); }
+                case INPUT_MERGE -> {
+                    if (result.confirmedCount()==0 && !pendingReposition) rejectedInputMerge=pendingMergeState;
+                    stage=Stage.CHOOSE;
+                }
+                case OUTPUT_MERGE -> {
+                    if (result.confirmedCount()==0) rejectedOutputMerge=pendingMergeState;
+                    preferredOutputSource=null; inventoryBeforeOutput=Map.of();
+                    stage=Stage.OUTPUT;
+                }
             }
             pending = null;
         }
@@ -90,7 +106,7 @@ public final class MachineModule implements AutomationModule {
                     machineIndex++; return WorkResult.busy("Production in progress; checking next machine");
                 }
                 cost = feature == Feature.WINE || block.flag("upgraded") ? 3 : 5;
-                grade = -1;
+                grade = -1; inputMergeAttempts=0;
                 if (stockReady && stockDay == gameDay(c) && c.world().tick()-stockTick < STOCK_REFRESH_TICKS) stage = Stage.CHOOSE;
                 else beginStockScan(c);
             }
@@ -113,6 +129,23 @@ public final class MachineModule implements AutomationModule {
             }
             case CHOOSE -> {
                 grade = chooseGrade(totals(c),cost);
+                // Bulk-hauling 64-stacks leaves 1/4-tomato fragments for 3/5-input
+                // recipes. Merge held fragments before recounting or buying another haul.
+                if (grade>=0 && heldCandidate(c)==null && c.world().inventory().stream().filter(s -> ModuleSupport.tomatoGrade(s.item(),grade)).count()>1) {
+                    String fingerprint=mergeState(c,ItemData.TOMATO,grade);
+                    if (inputMergeAttempts<36 && !fingerprint.equals(rejectedInputMerge)) {
+                        var merge=ProductionMergePlanner.planTomatoes(c.world().inventory(),feature,c.profile().hoeHotbarSlot,grade,null);
+                        if (merge.isPresent() && (!merge.get().reposition() || !fingerprint.equals(repositionedInputState))) {
+                            pendingMergeState=fingerprint; pendingReposition=merge.get().reposition(); inputMergeAttempts++;
+                            if (pendingReposition) repositionedInputState=fingerprint;
+                            submit(c,new Action.ConsolidateInventory(merge.get()),Pending.INPUT_MERGE); break;
+                        }
+                    }
+                    if (ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade))>=cost)
+                        return fail("Combine fragmented tomatoes of the selected grade into a compatible stack before retrying");
+                    // Even1+1 fragments may need merging to make room for another haul.
+                    // If fewer than one recipe remain, a normal refill is still necessary.
+                }
                 // Reuse known chest counts while consuming held stock. Before another
                 // underground haul (or concluding supplies ran out), recount all sources.
                 if (!freshForHaul && !sources.isEmpty() && (grade < 0 || heldCandidate(c) == null)) { beginStockScan(c); break; }
@@ -148,13 +181,37 @@ public final class MachineModule implements AutomationModule {
                 // Count this source again after opening it; never withdraw from an old chest snapshot.
                 int currentBest = chooseGrade(totals(c),cost);
                 if (currentBest != grade) { close(c,Stage.CHOOSE); break; }
-                if (heldCandidate(c) != null) { close(c,Stage.RETURN); break; }
-                ItemSlot slot = c.world().menu().slots().stream().filter(s -> !s.player())
-                    .filter(s -> ModuleSupport.tomatoGrade(s.item(),grade)).max(Comparator.comparingInt(s -> s.item().count())).orElse(null);
-                if (slot == null) { close(c,Stage.CHOOSE); break; }
-                if (!ModuleSupport.hasEmptyInventorySlot(c) && ModuleSupport.inventoryItem(c,i -> ModuleSupport.tomatoGrade(i,grade) && i.count() < 64) == null)
-                    return fail("Inventory is full; cannot withdraw production tomatoes");
-                withdrawalBefore = ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
+                boolean funded=heldCandidate(c)!=null;
+                int held=ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
+                int needed=Math.min(remainingIngredientDemand(c),gradeCrossoverDemand(c))-held;
+                if (funded && needed<=0) { close(c,Stage.RETURN); break; }
+                // A source stack can have tags absent from our ItemData projection. Never
+                // count apparent partial-stack room as one of the two real output slots.
+                if (emptyInventorySlots(c)<=RESERVED_OUTPUT_SLOTS) {
+                    if (funded) { close(c,Stage.RETURN); break; }
+                    return fail("Keep two empty output slots before withdrawing production tomatoes");
+                }
+                List<ItemSlot> available=c.world().menu().slots().stream().filter(s -> !s.player())
+                    .filter(s -> ModuleSupport.tomatoGrade(s.item(),grade) && s.item().count()<=64).toList();
+                // Full-stack QuickMove is cursor-free. Prefer a stack within the demand;
+                // the final indivisible stack may exceed it by at most 63 tomatoes.
+                ItemSlot under=available.stream().filter(s -> s.item().count()<=needed)
+                    .max(Comparator.comparingInt(s -> s.item().count())).orElse(null);
+                ItemSlot over=available.stream().filter(s -> s.item().count()>needed)
+                    .min(Comparator.comparingInt(s -> s.item().count())).orElse(null);
+                int underTotal=available.stream().filter(s -> s.item().count()<=needed).mapToInt(s -> s.item().count()).sum();
+                // Do not add a small remainder and then still need a full stack: e.g.
+                // needing39 with16+64 available needs only64, not16 followed by64.
+                ItemSlot slot=over!=null && underTotal<needed ? over : under;
+                if (slot==null) {
+                    if (stock.get(source)[grade]>0) return fail("Tomato source contains an unsupported stack size");
+                    Poi next=stock.entrySet().stream().filter(e -> !e.getKey().equals(source) && e.getValue()[grade]>0)
+                        .map(Map.Entry::getKey).findFirst().orElse(null);
+                    if (next!=null) { source=next; close(c,Stage.FETCH_SOURCE); }
+                    else close(c,funded ? Stage.RETURN : Stage.CHOOSE);
+                    break;
+                }
+                withdrawalBefore=held;
                 submit(c,new Action.QuickMove(containerId,slot.index()),Pending.WITHDRAW);
             }
             case RETURN -> {
@@ -192,7 +249,13 @@ public final class MachineModule implements AutomationModule {
                     return fail("Pick up previously dropped "+outputId()+" before collecting another completed machine");
                 inputBefore = ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
                 // submit() can dispatch immediately: the durable obligation must reach disk first.
-                if (collected) outputOperationId=MachineOutputLedger.prepare(c,feature,target().pos()).id();
+                if (collected) {
+                    Map<Integer,ItemData> before=new HashMap<>();
+                    for (ItemSlot slot:c.world().inventory()) before.put(slot.inventoryIndex(),slot.item());
+                    inventoryBeforeOutput=Map.copyOf(before);
+                    PendingMachineOutput output=MachineOutputLedger.prepare(c,feature,target().pos());
+                    outputOperationId=output.id(); outputWineYear=output.expectedWineYear();
+                }
                 submit(c,new Action.UseBlock(target().pos(),Action.Use.MACHINE),Pending.USE);
             }
             case VERIFY -> {
@@ -201,7 +264,7 @@ public final class MachineModule implements AutomationModule {
                 boolean inputConfirmed = !feeding || consumed == cost;
                 boolean stateConfirmed = !block.flag("mature") && (!feeding || block.flag("working"));
                 if (inputConfirmed && stateConfirmed) {
-                    if (feeding) freshForHaul = false;
+                    if (feeding) { freshForHaul = false; inputMergeAttempts=0; }
                     schedule(c,target(),feeding ? (feature == Feature.WINE ? c.profile().wineCycleDays : c.profile().preservesCycleDays) : 1);
                     if (collected) {
                         MachineOutputLedger.confirmMachine(c,outputOperationId);
@@ -213,7 +276,8 @@ public final class MachineModule implements AutomationModule {
             case PICKUP -> {
                 MachineOutputLedger.reconcile(c);
                 if (!MachineOutputLedger.isPending(c,outputOperationId)) {
-                    outputOperationId=null; machineIndex++; stage = Stage.MACHINE; break;
+                    preferredOutputSource=newlyReceivedOutput(c);
+                    outputOperationId=null; outputMergeAttempts=0; stage=Stage.OUTPUT; break;
                 }
                 if (c.world().tick() - verifySince > c.profile().interactionTimeoutTicks) return fail("Completed product was not picked up; inspect the machine output side");
                 Pos observed = c.world().tick()-verifySince < OUTPUT_SETTLE_TICKS ? null : observedPickup(c);
@@ -228,6 +292,20 @@ public final class MachineModule implements AutomationModule {
                     c.actions().stopMovement();
                     return WorkResult.busy("Waiting for a reachable completed product");
                 }
+            }
+            case OUTPUT -> {
+                // The durable output obligation is already resolved and checkpointed.
+                // Inventory-only merging is not a warehouse deposit or a sale.
+                String fingerprint=mergeState(c,outputId(),null);
+                if (outputMergeAttempts<36 && !fingerprint.equals(rejectedOutputMerge)) {
+                    var merge=ProductionMergePlanner.plan(c.world().inventory(),feature,c.profile().hoeHotbarSlot,preferredOutputSource);
+                    if (merge.isPresent()) {
+                        pendingMergeState=fingerprint; outputMergeAttempts++;
+                        submit(c,new Action.ConsolidateInventory(merge.get()),Pending.OUTPUT_MERGE); break;
+                    }
+                }
+                preferredOutputSource=null; inventoryBeforeOutput=Map.of();
+                machineIndex++; stage=Stage.MACHINE;
             }
         }
         return WorkResult.busy("Servicing " + (feature == Feature.WINE ? "wine kegs" : "preserves jars"));
@@ -244,6 +322,45 @@ public final class MachineModule implements AutomationModule {
         for (int[] chest : stock.values()) for (int i = 0; i < 4; i++) counts[i] += chest[i];
         for (ItemSlot s : c.world().inventory()) if (s.item().is(ItemData.TOMATO) && s.item().quality() >= 0 && s.item().quality() < 4) counts[s.item().quality()] += s.item().count();
         return counts;
+    }
+    private int remainingIngredientDemand(Context c) {
+        long demand=0, day=gameDay(c);
+        for (int n=machineIndex;n<machines.size();n++) {
+            Poi poi=machines.get(n);
+            if (day<c.profile().nextEligibleDay.getOrDefault(scheduleKey(poi),Long.MIN_VALUE)) continue;
+            if (!c.world().loaded(poi.pos())) { demand+=feature==Feature.WINE ? 3 : 5; continue; }
+            BlockData block=c.world().block(poi.pos());
+            if (!block.id().equals(blockId()) || block.flag("working") && !block.flag("mature")) continue;
+            demand+=feature==Feature.WINE || block.flag("upgraded") ? 3 : 5;
+        }
+        return (int)Math.min(Integer.MAX_VALUE,Math.max(cost,demand));
+    }
+    private int gradeCrossoverDemand(Context c) {
+        int[] counts=totals(c); int runnerUp=0;
+        for (int n=0;n<counts.length;n++) if (n!=grade && counts[n]>=cost) runnerUp=Math.max(runnerUp,counts[n]);
+        if (runnerUp==0) return Integer.MAX_VALUE;
+        // Withdrawal moves stock without changing these totals. Keep enough for the
+        // present lead plus one recipe, then leave room for the next largest grade.
+        return (int)Math.min(Integer.MAX_VALUE,Math.max(cost,(long)counts[grade]-runnerUp+cost));
+    }
+    private static int emptyInventorySlots(Context c) {
+        return (int)c.world().inventory().stream().filter(s -> s.inventoryIndex()>=0 && s.inventoryIndex()<36 && s.item().empty()).count();
+    }
+    private static String mergeState(Context c,String id,Integer grade) {
+        // Ignore slot positions: the adapter's temporary SWAPs cannot manufacture a new
+        // retry candidate when native tags prevent the same visible stacks from merging.
+        return c.world().inventory().stream().map(ItemSlot::item).filter(i -> i.is(id) && (grade==null || i.quality()==grade))
+            .map(i -> i.id()+":"+i.quality()+":"+i.year()+":"+i.count()).sorted().reduce("",(a,b) -> a+"|"+b);
+    }
+    private Integer newlyReceivedOutput(Context c) {
+        return c.world().inventory().stream().filter(s -> s.inventoryIndex()>=0 && s.inventoryIndex()<36)
+            .filter(s -> s.item().is(outputId()) && (feature!=Feature.WINE || Objects.equals(s.item().year(),outputWineYear)))
+            .filter(s -> {
+                ItemData before=inventoryBeforeOutput.getOrDefault(s.inventoryIndex(),ItemData.EMPTY);
+                return !ModuleSupport.same(before,s.item()) || s.item().count()>before.count();
+            })
+            .min(Comparator.comparingInt((ItemSlot s) -> s.item().count()).thenComparingInt(ItemSlot::inventoryIndex))
+            .map(ItemSlot::inventoryIndex).orElse(null);
     }
     private void beginStockScan(Context c) {
         sources = ModuleSupport.nearest(c,c.profile().pois(PoiKind.TOMATO_CHEST));
@@ -340,12 +457,15 @@ public final class MachineModule implements AutomationModule {
         if (uncertainInteraction && !durableOutput) unresolvedInteraction = message;
         return WorkResult.blocked(message);
     }
-    @Override public void reset() { clearRun(); unresolvedInteraction = null; }
+    @Override public void reset() { clearRun(); unresolvedInteraction = null; rejectedInputMerge=null; rejectedOutputMerge=null; repositionedInputState=null; }
     private void clearRun() {
         stage = Stage.START; afterClose = null; pending = null; ticket = -1; verifySince = 0;
         machines = List.of(); sources = List.of(); stock.clear(); machineIndex = 0; sourceIndex = 0;
         stockReady = false; freshForHaul = false; stockDay = 0; stockTick = 0;
         source = null; containerId = -1; grade = -1; collected = false; feeding = false;
         outputOperationId=null;
+        inventoryBeforeOutput=Map.of(); outputWineYear=null; preferredOutputSource=null;
+        pendingMergeState=null; inputMergeAttempts=0; outputMergeAttempts=0;
+        pendingReposition=false;
     }
 }

@@ -159,7 +159,7 @@ class LogisticsTest {
     }
 
     @Test void largeFarmServices397KegsBefore144JarsWithoutCountingEveryChestForEveryMachine() {
-        Fixture f=new Fixture(); f.dayTime=1000;
+        Fixture f=new Fixture(); f.dayTime=1000; f.equipHoe();
         for (int grade=0;grade<4;grade++) {
             Pos chest=f.chest(PoiKind.TOMATO_CHEST,grade,grade,ItemData.EMPTY);
             ItemData[] stacks=new ItemData[grade==2 ? 54 : 2]; Arrays.fill(stacks,tomato(grade,64)); f.chests.put(chest,stacks);
@@ -171,11 +171,11 @@ class LogisticsTest {
         engine.start(f.context());
         for (int i=0;i<30000 && f.profile.nextEligibleDay.size()<541;i++) { engine.tick(f.context()); f.advance(); }
         List<Action.UseBlock> uses=f.history.stream().filter(a -> a instanceof Action.UseBlock u && u.purpose()==Action.Use.MACHINE).map(a -> (Action.UseBlock)a).toList();
-        assertEquals(541,uses.size()); assertEquals(397*3+144*5,f.consumed);
+        assertEquals(541,uses.size(),() -> engine.status()+"; "+f.tomatoFragments()); assertEquals(397*3+144*5,f.consumed);
         assertTrue(uses.subList(0,397).stream().allMatch(u -> kegs.contains(u.pos())),"all due wine batches have priority over jars");
         assertTrue(f.usedGrades.stream().allMatch(g -> g==2),"the largest total stock is selected throughout this workload");
         int sourceOpens=f.opens.values().stream().mapToInt(Integer::intValue).sum();
-        assertTrue(sourceOpens<=200,"source visits must scale with ingredient hauls, not541machines; actual="+sourceOpens);
+        assertTrue(sourceOpens<=30,"bulk hauls and bounded refreshes must replace per-stack underground trips; actual="+sourceOpens);
         assertEquals(541,f.profile.nextEligibleDay.size());
     }
 
@@ -186,6 +186,256 @@ class LogisticsTest {
         assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),150).state());
         assertEquals(List.of(2,0,2),f.usedGrades);
         assertEquals(2,f.opens.values().stream().mapToInt(Integer::intValue).sum(),"held ingredients need no repeat chest count");
+    }
+
+    @Test void bulkHaulReservesTwoRealOutputSlotsAndReturnsWhenAlreadyFunded() {
+        Fixture f=new Fixture(); f.dayTime=1000;
+        Arrays.fill(f.inventory,new ItemData("minecraft:dirt",64,0,null,false,999));
+        for (int i=31;i<36;i++) f.inventory[i]=ItemData.EMPTY;
+        Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,ItemData.EMPTY);
+        ItemData[] stock=new ItemData[20]; Arrays.fill(stock,tomato(2,64)); f.chests.put(source,stock);
+        for (int n=0;n<144;n++) f.machine(PoiKind.PRESERVES_JAR,10+n,false,false,false);
+        MachineModule module=new MachineModule(Feature.PRESERVES);
+        for (int n=0;n<150 && f.machineClicks()==0;n++) { assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state()); f.advance(); }
+        assertEquals(1,f.machineClicks()); assertEquals(192,f.tomatoesAtMachineUse.get(0));
+        assertEquals(List.of(4,3,2),f.emptySlotsAfterWithdraw);
+        assertEquals(2,f.opens.get(source)); assertEquals(3,f.tomatoWithdrawals);
+        assertEquals(20*64-192,Arrays.stream(f.chests.get(source)).mapToInt(ItemData::count).sum());
+    }
+
+    @Test void oneExistingFreeSlotAndFundedMachineDoesNotStartAnExtraHaul() {
+        Fixture f=new Fixture(); f.dayTime=1000;
+        Arrays.fill(f.inventory,new ItemData("minecraft:dirt",64,0,null,false,999));
+        f.inventory[0]=tomato(0,3); f.inventory[35]=ItemData.EMPTY;
+        Pos source=f.chest(PoiKind.TOMATO_CHEST,0,0,tomato(0,64));
+        f.machine(PoiKind.WINE_KEG,10,true,true,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state()); assertEquals(1,f.machineClicks());
+        assertEquals(0,f.tomatoWithdrawals); assertEquals(64,f.chests.get(source)[0].count());
+    }
+
+    @Test void bulkHaulRefusesToSpendItsLastTwoOutputSlotsOnIngredients() {
+        Fixture f=new Fixture(); f.dayTime=1000;
+        Arrays.fill(f.inventory,new ItemData("minecraft:dirt",64,0,null,false,999));
+        f.inventory[34]=ItemData.EMPTY; f.inventory[35]=ItemData.EMPTY;
+        Pos source=f.chest(PoiKind.TOMATO_CHEST,0,0,tomato(0,64));
+        f.machine(PoiKind.WINE_KEG,10,true,true,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertTrue(engine.status().contains("two empty"));
+        assertEquals(0,f.tomatoWithdrawals); assertEquals(0,f.machineClicks()); assertEquals(64,f.chests.get(source)[0].count());
+    }
+
+    @Test void indivisibleFinalStackUsesTheSmallestExcessAndNeverWithdrawsAnotherStack() {
+        Fixture f=new Fixture(); f.equipHoe();
+        Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,64)); f.chests.get(source)[1]=tomato(2,4);
+        f.machine(PoiKind.WINE_KEG,10,false,false,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state()); assertEquals(3,f.consumed);
+        assertEquals(4,f.tomatoesAtMachineUse.get(0)); assertEquals(1,f.tomatoWithdrawals);
+        assertEquals(64,f.chests.get(source)[0].count()); assertTrue(f.chests.get(source)[1].empty());
+        assertEquals(1,ModuleSupport.count(f.context(),i -> i.is(ItemData.TOMATO)));
+    }
+
+    @Test void bulkHaulUsesActualMixedJarCostsAndSkipsFutureOrWorkingTargets() {
+        Fixture f=new Fixture(); f.dayTime=1000; f.equipHoe();
+        Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,ItemData.EMPTY);
+        f.chests.put(source,new ItemData[]{tomato(2,60),tomato(2,60),tomato(2,60),tomato(2,60)});
+        for (int n=0;n<12;n++) f.machine(PoiKind.PRESERVES_JAR,10+n,false,false,false);
+        for (int n=0;n<20;n++) f.machine(PoiKind.PRESERVES_JAR,30+n,false,false,true);
+        f.machine(PoiKind.PRESERVES_JAR,60,true,false,false);
+        f.machine(PoiKind.PRESERVES_JAR,61,false,false,false); f.profile.nextEligibleDay.put("preserves:61:64:0",3L);
+        AutomationEngine engine=isolatedMachineEngine(Feature.PRESERVES);
+        engine.startOnce(f.context(),Feature.PRESERVES); f.runUntilStopped(engine,800);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),() -> engine.status()+"; "+f.tomatoFragments());
+        assertEquals(32,f.machineClicks()); assertEquals(120,f.consumed);
+        assertEquals(120,f.tomatoesAtMachineUse.get(0)); assertEquals(2,f.opens.get(source));
+        assertEquals(120,Arrays.stream(f.chests.get(source)).mapToInt(ItemData::count).sum());
+    }
+
+    @Test void bulkHaulVisitsEachSameGradeSourceBeforeReturningToTheMachines() {
+        Fixture f=new Fixture(); f.dayTime=1000; f.equipHoe();
+        Pos first=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,60));
+        Pos second=f.chest(PoiKind.TOMATO_CHEST,1,2,tomato(2,60));
+        for (int n=0;n<24;n++) f.machine(PoiKind.PRESERVES_JAR,10+n,false,false,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.PRESERVES);
+        engine.startOnce(f.context(),Feature.PRESERVES); f.runUntilStopped(engine,600);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),() -> engine.status()+"; "+f.tomatoFragments());
+        assertEquals(120,f.tomatoesAtMachineUse.get(0)); assertEquals(120,f.consumed);
+        assertEquals(2,f.opens.get(first)); assertEquals(2,f.opens.get(second));
+        assertEquals(2,f.tomatoWithdrawals); assertEquals(0,f.soldWine);
+    }
+
+    @Test void bulkHaulDoesNotBlindlyKeepUsingTheInitiallyLargestGrade() {
+        Fixture f=new Fixture(); f.dayTime=1000;
+        Pos high=f.chest(PoiKind.TOMATO_CHEST,0,2,ItemData.EMPTY);
+        f.chests.put(high,new ItemData[]{tomato(2,30),tomato(2,30)});
+        f.chest(PoiKind.TOMATO_CHEST,1,0,tomato(0,57));
+        for (int n=0;n<20;n++) f.machine(PoiKind.WINE_KEG,10+n,false,false,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,800);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(30,f.tomatoesAtMachineUse.get(0),"near-tied grades need a bounded first haul, not the whole selected reserve");
+        assertEquals(List.of(2,0,2,0,2,0),f.usedGrades.subList(0,6),"ties still prefer the lower grade despite the earlier large haul");
+        assertEquals(60,f.consumed);
+    }
+
+    private static Fixture nearTiedGradeFixture(int initiallyFreeSlots) {
+        Fixture f=new Fixture(); f.dayTime=1000; f.equipHoe();
+        for (int n=2;n<37-initiallyFreeSlots;n++) f.inventory[n]=new ItemData("minecraft:tool_"+n,1,0,null,false,999);
+        Pos lead=f.chest(PoiKind.TOMATO_CHEST,0,2,ItemData.EMPTY);
+        ItemData[] leading=new ItemData[32]; Arrays.fill(leading,tomato(2,64)); leading[31]=tomato(2,16); f.chests.put(lead,leading);
+        Pos runner=f.chest(PoiKind.TOMATO_CHEST,1,1,ItemData.EMPTY);
+        ItemData[] following=new ItemData[30]; Arrays.fill(following,tomato(1,64)); following[29]=tomato(1,44); f.chests.put(runner,following);
+        for (int n=0;n<384;n++) f.machine(PoiKind.WINE_KEG,10+n,false,false,false);
+        return f;
+    }
+
+    @Test void nearTiedLargeGradesComplete384EmptyKegsWithEightInitiallyFreeSlots() {
+        Fixture f=nearTiedGradeFixture(8);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,10000);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),() -> engine.status()+"; "+f.tomatoFragments());
+        assertEquals(384,f.machineClicks()); assertEquals(1152,f.consumed);
+        assertEquals(128,f.tomatoesAtMachineUse.get(0),"the100-tomato lead must not cause a1152-tomato single-grade haul");
+        assertTrue(f.usedGrades.subList(0,34).stream().allMatch(g -> g==2)); assertEquals(1,f.usedGrades.get(34));
+        assertTrue(f.emptySlotsAfterWithdraw.stream().allMatch(n -> n>=2));
+        assertEquals(0,f.soldWine); assertFalse(f.sleeping);
+    }
+
+    @Test void fiveFreeSlotsStillAllowTheFirstGradeCrossoverDuringALargeRun() {
+        Fixture f=nearTiedGradeFixture(5);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE); engine.startOnce(f.context(),Feature.WINE);
+        for (int n=0;n<1000 && f.machineClicks()<35 && engine.running();n++) { engine.tick(f.context()); f.advance(); }
+        assertTrue(engine.running(),engine.status()); assertEquals(35,f.machineClicks());
+        assertEquals(128,f.tomatoesAtMachineUse.get(0)); assertEquals(1,f.usedGrades.get(34));
+        assertTrue(f.emptySlotsAfterWithdraw.stream().allMatch(n -> n>=2));
+        // This deliberately checks the first switch, not the eventual capacity of
+        // an exceptionally packed inventory over all384 operations.
+        engine.stop(f.context(),AutomationEngine.State.OFF,"end of crossover-prefix test");
+    }
+
+    @Test void freshWinePickupCanConsumeSeparateSlotsDespiteMatchingVisibleYear() {
+        // Native Vinery tags new ground wine only after pickup. This fixture mode
+        // deliberately does not credit the ordinary fake add() auto-merge behavior.
+        Fixture f=new Fixture(); f.separateFreshWineSlots=true; f.consolidationNoProgress=true;
+        Arrays.fill(f.inventory,new ItemData("minecraft:dirt",64,0,null,false,999));
+        f.inventory[0]=tomato(0,9); f.inventory[34]=ItemData.EMPTY; f.inventory[35]=ItemData.EMPTY;
+        for (int n=0;n<3;n++) f.machine(PoiKind.WINE_KEG,10+n,true,true,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.PAUSED,engine.state());
+        assertEquals(2,f.machineClicks()); assertEquals(6,f.consumed);
+        assertEquals(2,Arrays.stream(f.inventory).filter(i -> i.is(ItemData.WINE)).count());
+        assertTrue(Arrays.stream(f.inventory).filter(i -> i.is(ItemData.WINE)).allMatch(i -> i.count()==1 && i.year().equals(f.wineClockYear)));
+        assertTrue(f.profile.pendingMachineOutputs.isEmpty(),"pause occurs before clicking the next full-inventory machine");
+    }
+
+    @Test void firstOutputConsolidationPrefersTheNewOrIncreasedProductSlotOverAnOlderPartial() {
+        for (Feature feature:new Feature[]{Feature.WINE,Feature.PRESERVES}) for (boolean newSlot:new boolean[]{false,true}) {
+            Fixture f=new Fixture(); f.equipHoe(); f.pickup=false;
+            for (int n=2;n<9;n++) f.inventory[n]=new ItemData("minecraft:tool_"+n,1,0,null,false,999);
+            f.inventory[1]=tomato(2,feature==Feature.WINE ? 6 : 10);
+            ItemData old=feature==Feature.WINE ? wine(f.wineClockYear,20,0) : new ItemData(ItemData.PRESERVES,20,0,null,false,99);
+            f.inventory[9]=old; f.inventory[10]=old;
+            f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,10,true,true,false);
+            MachineModule module=new MachineModule(feature); f.awaitPickup(module);
+            int receivedSlot=newSlot ? 11 : 10;
+            f.inventory[receivedSlot]=newSlot ? f.dropped : new ItemData(old.id(),21,old.quality(),old.year(),old.hoe(),old.durability());
+            f.dropped=null;
+            assertEquals(WorkResult.State.IDLE,f.run(module,40).state());
+            Action.ConsolidateInventory first=f.history.stream().filter(Action.ConsolidateInventory.class::isInstance)
+                .map(a -> (Action.ConsolidateInventory)a).findFirst().orElseThrow();
+            assertEquals(receivedSlot,first.plan().sourceIndex(),"the first equally bounded plan must use the actual pickup delta, not the older partial at slot9");
+            assertEquals(newSlot ? 1 : 21,first.plan().expectedItems().get(receivedSlot).count());
+            assertTrue(f.profile.pendingMachineOutputs.isEmpty()); assertEquals(1,f.machineClicks());
+        }
+    }
+
+    @Test void bulkWine384UsesOneIngredientHaulAndConsolidatesSeparatelyPickedUpBottles() {
+        Fixture f=new Fixture(); f.dayTime=1000; f.separateFreshWineSlots=true;
+        // This is a composition simulation of late wine tagging plus acknowledged
+        // consolidation, not a claim that the ordinary fake auto-merge matches Vinery.
+        for (int n=1;n<9;n++) f.inventory[n]=new ItemData("minecraft:tool_"+n,1,0,null,n==4,999);
+        f.profile.hoeHotbarSlot=4; f.inventory[5]=ItemData.EMPTY;
+        Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,ItemData.EMPTY);
+        ItemData[] supplies=new ItemData[18]; Arrays.fill(supplies,tomato(2,64)); f.chests.put(source,supplies);
+        for (int n=0;n<384;n++) f.machine(PoiKind.WINE_KEG,10+n,true,true,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,10000);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(384,f.machineClicks()); assertEquals(1152,f.consumed); assertEquals(1152,f.tomatoesAtMachineUse.get(0));
+        assertEquals(18,f.tomatoWithdrawals); assertTrue(f.opens.get(source)<=6,"periodic stock refreshes are allowed, per-stack underground hauls are not");
+        assertEquals(384,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE)));
+        assertEquals(6,Arrays.stream(f.inventory).filter(i -> i.is(ItemData.WINE)).count());
+        assertTrue(f.emptySlotsAfterWithdraw.stream().allMatch(n -> n>=2));
+        assertTrue(Arrays.stream(f.chests.get(source)).allMatch(ItemData::empty));
+        assertTrue(f.history.stream().anyMatch(Action.ConsolidateInventory.class::isInstance));
+        assertEquals("minecraft:tool_4",f.inventory[4].id()); assertEquals(0,f.soldWine); assertFalse(f.sleeping);
+    }
+
+    @Test void incompatibleTomatoFragmentsDoNotTriggerMoreHaulsOrShuffleBasedMergeRetries() {
+        Fixture f=new Fixture(); f.inventory[0]=tomato(2,1); f.inventory[9]=tomato(2,2);
+        f.profile.hoeHotbarSlot=4; f.consolidationNoProgress=true;
+        Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,64)); f.machine(PoiKind.WINE_KEG,10,false,false,false);
+        MachineModule module=new MachineModule(Feature.WINE);
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state());
+        long attempts=f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count();
+        assertEquals(1,attempts); assertEquals(0,f.tomatoWithdrawals); assertEquals(64,f.chests.get(source)[0].count());
+        ItemData first=f.inventory[0]; f.inventory[0]=f.inventory[9]; f.inventory[9]=first;
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state());
+        assertEquals(attempts,f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count(),"moving identical fragments between slots cannot bypass the no-progress bound");
+        assertEquals(0,f.machineClicks());
+    }
+
+    @Test void failedInventoryConsolidationPausesTheProductionOnlyRunWithoutFallbackActions() {
+        Fixture f=new Fixture(); f.inventory[0]=tomato(2,1); f.inventory[9]=tomato(2,2);
+        f.profile.hoeHotbarSlot=4; f.consolidationFails=true; f.machine(PoiKind.WINE_KEG,10,false,false,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertTrue(engine.status().contains("consolidation interrupted"));
+        assertEquals(0,f.machineClicks()); assertEquals(0,f.consumed); assertEquals(0,f.tomatoWithdrawals);
+        assertEquals(1,f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count());
+    }
+
+    @Test void hotbarOnlyTomatoFragmentsCanBridgeOnceThenReallyMergeWithoutAnotherHaul() {
+        Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,2); f.inventory[2]=tomato(2,1);
+        f.machine(PoiKind.WINE_KEG,10,false,false,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        List<Action.ConsolidateInventory> merges=f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).map(a -> (Action.ConsolidateInventory)a).toList();
+        assertEquals(2,merges.size()); assertTrue(merges.get(0).plan().reposition()); assertFalse(merges.get(1).plan().reposition());
+        assertEquals(3,f.consumed); assertEquals(1,f.machineClicks()); assertEquals(0,f.tomatoWithdrawals);
+        assertTrue(f.inventory[0].hoe());
+    }
+
+    @Test void hotbarBridgeDoesNotTurnNativeMergeNoProgressIntoARepositionLoop() {
+        Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,2); f.inventory[2]=tomato(2,1); f.consolidationNoProgress=true;
+        f.machine(PoiKind.WINE_KEG,10,false,false,false);
+        MachineModule module=new MachineModule(Feature.WINE);
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state());
+        assertEquals(2,f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count());
+        ItemData moved=f.inventory[9]; f.inventory[9]=ItemData.EMPTY; f.inventory[1]=moved;
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state());
+        assertEquals(2,f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count());
+        assertEquals(0,f.machineClicks()); assertEquals(0,f.tomatoWithdrawals);
+    }
+
+    @Test void bulkWithdrawalWaitsForAcknowledgementAndRechecksTheNextSourceStack() {
+        Fixture f=new Fixture(); f.equipHoe();
+        Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,tomato(2,64)); f.chests.get(source)[1]=tomato(2,64);
+        for (int n=0;n<30;n++) f.machine(PoiKind.PRESERVES_JAR,10+n,false,false,false);
+        MachineModule module=new MachineModule(Feature.PRESERVES);
+        for (int n=0;n<100 && !(f.action instanceof Action.QuickMove);n++) { module.tick(f.context()); if (!(f.action instanceof Action.QuickMove)) f.advance(); }
+        assertTrue(f.action instanceof Action.QuickMove); int actions=f.history.size();
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state()); assertEquals(actions,f.history.size());
+        f.advance(); f.chests.get(source)[1]=tomato(3,64);
+        assertEquals(WorkResult.State.BLOCKED,module.tick(f.context()).state());
+        assertEquals(1,f.tomatoWithdrawals); assertEquals(64,ModuleSupport.count(f.context(),i -> ModuleSupport.tomatoGrade(i,2)));
+        assertEquals(0,f.machineClicks());
     }
 
     @Test void cancellationDiscardsChestCacheBeforeTheNextMachine() {
@@ -807,14 +1057,14 @@ class LogisticsTest {
     }
 
     @Test void recordedScale144NormalJarsCollects144OutputsConsumes720TomatoesAndSchedulesThreeDays() {
-        Fixture f=new Fixture(); f.dayTime=10*24000L+1000;
+        Fixture f=new Fixture(); f.dayTime=10*24000L+1000; f.equipHoe();
         Pos source=f.chest(PoiKind.TOMATO_CHEST,0,2,ItemData.EMPTY);
         ItemData[] supplies=new ItemData[12];
         Arrays.fill(supplies,tomato(2,64)); supplies[11]=tomato(2,16); f.chests.put(source,supplies);
         for (int i=0;i<144;i++) f.machine(PoiKind.PRESERVES_JAR,10+i,false,true,false);
         AutomationEngine engine=isolatedMachineEngine(Feature.PRESERVES);
         engine.startOnce(f.context(),Feature.PRESERVES); f.runUntilStopped(engine,5000);
-        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),() -> engine.status()+"; "+f.tomatoFragments());
         assertEquals(144,f.machineClicks()); assertEquals(720,f.consumed);
         assertEquals(144,ModuleSupport.count(f.context(),i -> i.is(ItemData.PRESERVES)));
         assertEquals(0,ModuleSupport.count(f.context(),i -> i.is(ItemData.TOMATO)));
@@ -822,6 +1072,8 @@ class LogisticsTest {
         assertTrue(f.usedGrades.stream().allMatch(grade -> grade==2));
         assertEquals(144,f.profile.nextEligibleDay.size());
         assertTrue(f.profile.nextEligibleDay.values().stream().allMatch(day -> day==13L));
+        assertEquals(720,f.tomatoesAtMachineUse.get(0)); assertEquals(12,f.tomatoWithdrawals);
+        assertTrue(f.opens.get(source)<=4,"144 jars must not require twelve separate ingredient hauls");
         int actions=f.history.size(), visits=f.navigationCalls;
         for (int day=11;day<13;day++) {
             f.dayTime=day*24000L+1000; engine.startOnce(f.context(),Feature.PRESERVES); f.runUntilStopped(engine,5);
@@ -873,6 +1125,7 @@ class LogisticsTest {
         final List<Action> history = new ArrayList<>();
         final List<Map<String,PendingMachineOutput>> savedOutputs=new ArrayList<>();
         final List<Integer> usedGrades = new ArrayList<>();
+        final List<Integer> tomatoesAtMachineUse=new ArrayList<>(), emptySlotsAfterWithdraw=new ArrayList<>();
         final List<NavVisit> navigationHistory=new ArrayList<>();
         final Map<Pos,Double> minimumReaches=new HashMap<>();
         final Map<Pos,Double> standingHeights=new HashMap<>();
@@ -881,11 +1134,12 @@ class LogisticsTest {
         final Set<Pos> unloaded=new HashSet<>(), blockedPaths=new HashSet<>(), unstandable=new HashSet<>();
         Integer wineClockYear=20;
         long ticks, dayTime, sequence;
-        int selected, consumed, navigationCalls, soldWine, withdrawnWine;
+        int selected, consumed, navigationCalls, soldWine, withdrawnWine, tomatoWithdrawals;
         Pos open, emptyOnSecondOpen;
         boolean sleeping, rejectSleep, pickup = true;
         boolean reportConfirmedCount;
-        boolean immediateMachine, requireSavedBeforeMachine;
+        boolean immediateMachine, requireSavedBeforeMachine, separateFreshWineSlots;
+        boolean consolidationNoProgress, consolidationFails;
         Runnable checkpointHook=() -> { };
         ItemData dropped;
         ItemData refillAfterWineSale;
@@ -893,6 +1147,9 @@ class LogisticsTest {
         Action action;
         ActionOutcome outcome = new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
         Fixture() { Arrays.fill(inventory,ItemData.EMPTY); }
+        void equipHoe() { inventory[profile.hoeHotbarSlot]=new ItemData("minecraft:golden_hoe",1,0,null,true,999); }
+        String tomatoFragments() { return inventory().stream().filter(s -> s.item().is(ItemData.TOMATO))
+            .map(s -> s.inventoryIndex()+"="+s.item().count()).reduce("tomatoes",(a,b) -> a+" "+b); }
         Context context() { return new Context(this,this,this,profile,session,this::checkpoint); }
         void checkpoint() { checkpointHook.run(); savedOutputs.add(Map.copyOf(profile.pendingMachineOutputs)); }
         Pos poi(PoiKind kind,int x,Integer group) { Pos p = new Pos(x,64,0); profile.pois.add(new Poi(p,kind,"test",group)); return p; }
@@ -945,6 +1202,7 @@ class LogisticsTest {
                         else sleeping = true;
                     }
                 } else if (next instanceof Action.CloseContainer) open = null;
+                else if (next instanceof Action.ConsolidateInventory merge) applyConsolidation(merge.plan());
                 else if (next instanceof Action.SelectHotbar select) selected = select.slot();
                 else if (next instanceof Action.SwapHotbar swap) { ItemData prior = inventory[swap.hotbarSlot()]; inventory[swap.hotbarSlot()] = inventory[swap.inventoryIndex()]; inventory[swap.inventoryIndex()] = prior; }
                 else if (next instanceof Action.ThrowRotten drop) {
@@ -971,14 +1229,48 @@ class LogisticsTest {
                         } else if (add(inventory,slot.item())) {
                             chests.get(open)[slot.index()] = ItemData.EMPTY;
                             if (slot.item().is(ItemData.WINE)) withdrawnWine+=slot.item().count();
+                            if (slot.item().is(ItemData.TOMATO)) {
+                                tomatoWithdrawals++;
+                                emptySlotsAfterWithdraw.add((int)Arrays.stream(inventory).filter(ItemData::empty).count());
+                            }
                         }
                         else outcome = new ActionOutcome(ActionOutcome.State.FAILED,"full inventory");
                     }
                 }
             }
-            if (pickup && dropped != null && add(inventory,dropped)) dropped = null;
+            pickupDropped();
+        }
+        private void pickupDropped() {
+            if (!pickup || dropped==null) return;
+            if (separateFreshWineSlots && dropped.is(ItemData.WINE)) {
+                for (int n=0;n<inventory.length;n++) if (inventory[n].empty()) { inventory[n]=dropped; dropped=null; return; }
+            } else if (add(inventory,dropped)) dropped=null;
+        }
+        private void applyConsolidation(ProductionMergePlanner.Plan plan) {
+            assertTrue(profile.pendingMachineOutputs.isEmpty(),"no consumer may rearrange output before durable pickup reconciliation");
+            assertTrue(ProductionMergePlanner.matchesSnapshot(plan,inventory()));
+            if (consolidationFails) { outcome=new ActionOutcome(ActionOutcome.State.FAILED,"native consolidation interrupted"); return; }
+            if (plan.reposition()) {
+                int destination=plan.destinations().get(0); assertTrue(inventory[destination].empty());
+                inventory[destination]=inventory[plan.sourceIndex()]; inventory[plan.sourceIndex()]=ItemData.EMPTY;
+                outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"hotbar ingredient moved into main inventory",0); return;
+            }
+            if (consolidationNoProgress) { outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"native tags were incompatible",0); return; }
+            // Net effect of the separately tested native SWAP/QUICK_MOVE/restore protocol.
+            // This fake assumes compatible native tags; the no-progress mode models rejection.
+            ItemData item=inventory[plan.sourceIndex()]; int left=item.count();
+            for (int destination:plan.destinations()) {
+                ItemData before=inventory[destination]; assertTrue(ModuleSupport.same(before,item));
+                int transferred=Math.min(left,64-before.count());
+                inventory[destination]=new ItemData(before.id(),before.count()+transferred,before.quality(),before.year(),before.hoe(),before.durability());
+                left-=transferred;
+            }
+            assertEquals(0,left,"the whole source fits before a composite is dispatched");
+            inventory[plan.sourceIndex()]=ItemData.EMPTY;
+            outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"confirmed inventory consolidation",1);
         }
         private void applyMachine(Action.UseBlock use) {
+            tomatoesAtMachineUse.add(ModuleSupport.count(context(),i -> i.is(ItemData.TOMATO)));
             BlockData block=blocks.get(use.pos());
             boolean wineMachine=block.id().equals("society:wine_keg");
             int batch=wineMachine || block.flag("upgraded") ? 3 : 5;
@@ -1038,7 +1330,7 @@ class LogisticsTest {
             history.add(next);
             if (machineUse && immediateMachine) {
                 applyMachine((Action.UseBlock)next);
-                if (pickup && dropped!=null && add(inventory,dropped)) dropped=null;
+                pickupDropped();
                 outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
             } else { action=next; outcome=new ActionOutcome(ActionOutcome.State.PENDING,""); }
             return ++sequence;
