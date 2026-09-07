@@ -77,19 +77,31 @@ public final class LocalNavigator implements Navigation {
             lastDistance = Double.POSITIVE_INFINITY;
             progressTick = world.tick();
         }
-        while (nextIndex < path.size() - 1 && nearWaypoint(player, path.get(nextIndex))) {
+        while (nextIndex < path.size() - 1 && nearWaypoint(world, player, path.get(nextIndex))) {
             nextIndex++;
             lastDistance = Double.POSITIVE_INFINITY;
             progressTick = world.tick();
         }
         Pos next = path.get(nextIndex);
         if (!world.loaded(next) || !world.canStand(next)) return blocked(actions, "이동 경로가 바뀌었습니다.");
+        boolean descendingEdge = verifiedDescendingEdge(world, player, next);
+        // A body's center can cross into the lower cell while its rear still
+        // rests on the previous step. The integer feet cell then has no floor.
+        // Revalidate only that already planned edge, never a guessed new fall.
+        if (!world.canStand(walkingFeet) && !descendingEdge)
+            return blocked(actions, "현재 발밑의 안전한 경로를 확인할 수 없습니다.");
         if (!walkingFeet.equals(next) && walkingFeet.distanceSquared(next) <= 2
-            && !world.canTraverse(walkingFeet, next)) return blocked(actions, "이동 경로가 막혔습니다.");
+            && !world.canTraverse(walkingFeet, next) && !descendingEdge) return blocked(actions, "이동 경로가 막혔습니다.");
+        if (descendingEdge && !player.onGround()) {
+            actions.stopMovement();
+            previousMoving = false;
+            if (world.tick() - progressTick > 60) return blocked(actions, "계단 착지가 3초 동안 완료되지 않았습니다.");
+            return Result.MOVING;
+        }
         if (distanceToCenter(player, next) > 3) return blocked(actions, "경로에서 벗어났습니다.");
         if (nextIndex == path.size() - 1
             && Math.hypot(player.x() - next.x() - .5,player.z() - next.z() - .5) < Math.min(.04,reach / 4)
-            && Math.abs(player.y() - next.y()) <= 1.05)
+            && player.onGround() && Math.abs(player.y() - waypointHeight(world,next)) <= .10001)
             return blocked(actions, "접근 위치에 도착했지만 목표가 보이지 않거나 손이 닿지 않습니다.");
         Pos door = closedDoor(world, next);
         if (door != null) {
@@ -141,9 +153,38 @@ public final class LocalNavigator implements Navigation {
             + Math.pow(player.z() - feet.z() - 0.5, 2));
     }
 
-    private static boolean nearWaypoint(PlayerState player, Pos feet) {
+    private static boolean nearWaypoint(WorldAccess world, PlayerState player, Pos feet) {
         return Math.hypot(player.x() - feet.x() - .5,player.z() - feet.z() - .5) < .38
-            && Math.abs(player.y() - feet.y()) <= 1.05;
+            && player.onGround() && Math.abs(player.y() - waypointHeight(world,feet)) <= .10001;
+    }
+
+    private static double waypointHeight(WorldAccess world, Pos feet) {
+        double height = world.standingY(feet);
+        // Legacy/pure adapters can still navigate flat integer floors, but
+        // unknown heights NEVER authorize the descending-edge exception below.
+        return Double.isFinite(height) ? height : feet.y();
+    }
+
+    private boolean verifiedDescendingEdge(WorldAccess world, PlayerState player, Pos next) {
+        if (nextIndex <= 0) return false;
+        Pos from = path.get(nextIndex - 1);
+        int dx = next.x() - from.x(), dz = next.z() - from.z();
+        if (Math.abs(dx) + Math.abs(dz) != 1 || next.y() > from.y()) return false;
+        double fromHeight = world.standingY(from), toHeight = world.standingY(next);
+        if (!Double.isFinite(fromHeight) || !Double.isFinite(toHeight)
+            || fromHeight - toHeight <= .10001 || fromHeight - toHeight > 1.00001
+            || player.y() < toHeight - .10001 || player.y() > fromHeight + .10001) return false;
+        double relativeX = player.x() - from.x() - .5, relativeZ = player.z() - from.z() - .5;
+        double along = relativeX * dx + relativeZ * dz;
+        double lateral = Math.abs(relativeX * dz - relativeZ * dx);
+        // The exception is local to this one center-to-center corridor. It
+        // cannot authorize a side fall, a skipped step, or an unobserved floor.
+        if (along < 0 || along > 1.00001 || lateral > .38) return false;
+        Pos actual = player.feet();
+        if (!(actual.x() == from.x() && actual.z() == from.z())
+            && !(actual.x() == next.x() && actual.z() == next.z())) return false;
+        return world.loaded(from) && world.loaded(next) && world.canStand(from)
+            && world.canStand(next) && world.canTraverse(from,next);
     }
 
     private static Pos walkingFeet(WorldAccess world, PlayerState player) {

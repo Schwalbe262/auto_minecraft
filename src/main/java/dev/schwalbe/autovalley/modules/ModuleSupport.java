@@ -7,6 +7,10 @@ import java.util.function.Predicate;
 /** Shared read-only inventory rules. Every mutation still passes through ActionPort. */
 final class ModuleSupport {
     private ModuleSupport() { }
+    static String navigationFailure(Context c, String summary) {
+        String detail=c.navigation().failureReason();
+        return detail==null || detail.isBlank() ? summary : summary+": "+detail;
+    }
     static int count(Context c, Predicate<ItemData> predicate) {
         return c.world().inventory().stream().map(ItemSlot::item).filter(predicate).mapToInt(ItemData::count).sum();
     }

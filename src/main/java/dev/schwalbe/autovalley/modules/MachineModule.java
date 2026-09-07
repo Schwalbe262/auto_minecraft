@@ -96,7 +96,7 @@ public final class MachineModule implements AutomationModule {
                 if (machineIndex >= machines.size()) { clearRun(); return WorkResult.idle(); }
                 if (closeIfNeeded(c,Stage.MACHINE)) return WorkResult.busy("Closing container before production");
                 Navigation.Result nav = c.navigation().moveTo(target().pos(),4.0,c);
-                if (nav == Navigation.Result.BLOCKED) return fail("Registered production machine cannot be reached");
+                if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Registered production machine cannot be reached"));
                 if (nav != Navigation.Result.ARRIVED) return WorkResult.busy("Approaching production machine");
                 BlockData block = machine(c);
                 if (!block.id().equals(blockId())) return fail("Registered production machine no longer matches its type");
@@ -118,7 +118,7 @@ public final class MachineModule implements AutomationModule {
                 source = sources.get(sourceIndex);
                 if (source.classifier() == null || source.classifier() < 0 || source.classifier() > 3) return fail("Register a valid grade for each tomato source");
                 Navigation.Result nav = c.navigation().moveTo(source.pos(),2.5,c);
-                if (nav == Navigation.Result.BLOCKED) return fail("Registered tomato source cannot be reached");
+                if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Registered tomato source cannot be reached"));
                 if (nav == Navigation.Result.ARRIVED) submit(c,new Action.UseBlock(source.pos(),Action.Use.OPEN_CONTAINER),Pending.OPEN_SCAN);
             }
             case SNAPSHOT -> {
@@ -171,7 +171,7 @@ public final class MachineModule implements AutomationModule {
             }
             case FETCH_SOURCE -> {
                 Navigation.Result nav = c.navigation().moveTo(source.pos(),2.5,c);
-                if (nav == Navigation.Result.BLOCKED) return fail("Selected tomato source cannot be reached");
+                if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Selected tomato source cannot be reached"));
                 if (nav == Navigation.Result.ARRIVED) submit(c,new Action.UseBlock(source.pos(),Action.Use.OPEN_CONTAINER),Pending.OPEN_FETCH);
             }
             case FETCH -> {
@@ -216,7 +216,7 @@ public final class MachineModule implements AutomationModule {
             }
             case RETURN -> {
                 Navigation.Result nav = c.navigation().moveTo(target().pos(),4.0,c);
-                if (nav == Navigation.Result.BLOCKED) return fail("Production machine cannot be reached with ingredients");
+                if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Production machine cannot be reached with ingredients"));
                 if (nav == Navigation.Result.ARRIVED) {
                     BlockData block = machine(c);
                     if (!block.id().equals(blockId())) return fail("Production machine changed");
