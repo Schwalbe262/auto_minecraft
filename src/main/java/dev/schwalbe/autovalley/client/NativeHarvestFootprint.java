@@ -1,6 +1,7 @@
 package dev.schwalbe.autovalley.client;
 
 import dev.schwalbe.autovalley.core.HarvestFootprint;
+import dev.schwalbe.autovalley.core.HarvestArea;
 import dev.schwalbe.autovalley.core.Pos;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -27,16 +28,16 @@ import net.minecraft.world.level.block.state.BlockState;
  *
  * <p>Quark's "radius" is a range: offsets are 1-range through range-1. The core
  * radius returned here is therefore the half-span (gold hoe: 1, diamond: 2).
- * It is only a route hint. Safety always checks half-span 4, the maximum allowed
- * by both native range fields' {@code @Config.Max(5)} annotations.
+ * Geometry uses the actual configured range, not the maximum permitted by the
+ * native configuration schema. Coverage remains a hint, never harvest proof.
  * The lower and upper cell are both included when potentially actionable: the
  * native upper fallback can run after a lower click returns PASS or is denied.
  *
  * <p>IMPORTANT: supported behavior is Society 4.1.4's default harvest rules,
- * without server-only custom non-crop harvest mappings. Zeta's login/update
- * flag packets synchronize booleans, not numeric ranges or crop lists. The
- * maximum geometry, native crop categories, any-age local crop block types,
- * and ignored blacklist cover ordinary range/maturity/search differences.
+ * with matching client/server range settings and no server-only custom crop
+ * mappings. The user's golden-hoe demonstration matches the installed 3-by-3
+ * range. Zeta flags do not establish numeric range or crop-list equality.
+ * A changed server range requires revalidation, not a claim of compatibility.
  * Arbitrary server entries can make even stone actionable and cannot be
  * inferred by this client; known identifies this supported model, not proof
  * of every possible server configuration or third-party event handler.
@@ -49,14 +50,19 @@ public final class NativeHarvestFootprint {
     private NativeHarvestFootprint() { }
 
     public static HarvestFootprint inspect(Player player, Level level, Pos target) {
-        if (player == null || level == null || target == null || HOOKS == null || !loaded(level,target))
+        return inspectTool(level,target,player==null ? null : player.getMainHandItem());
+    }
+
+    /** Read-only preflight for an inventory tool without selecting or modifying its stack. */
+    public static HarvestFootprint inspectTool(Level level,Pos target,ItemStack tool) {
+        if (tool == null || level == null || target == null || HOOKS == null || !loaded(level,target))
             return HarvestFootprint.UNKNOWN;
         try {
             // The selected block may still receive Farmer's Delight's direct use
             // even when Simple Harvest is disabled or its own predicate is NONE.
             Set<Pos> candidates = new LinkedHashSet<>();
             candidates.add(target);
-            Object rangeValue = HOOKS.range().invoke(null,player.getMainHandItem());
+            Object rangeValue = HOOKS.range().invoke(null,tool);
             if (!(rangeValue instanceof Integer range) || range < 1 || range > 5)
                 return HarvestFootprint.UNKNOWN;
             Object cropsValue = HOOKS.crops().get(null), clickableValue = HOOKS.clickable().get(null);
@@ -67,23 +73,19 @@ public final class NativeHarvestFootprint {
                 if (!(key instanceof BlockState crop)) return HarvestFootprint.UNKNOWN;
                 cropBlocks.add(crop.getBlock());
             }
-            int radius = HOOKS.enabled().getBoolean(null) ? range-1 : 0;
-            int safetyRadius = 4;
-            for (int dx=-safetyRadius;dx<=safetyRadius;dx++) for (int dz=-safetyRadius;dz<=safetyRadius;dz++) {
-                for (int dy=0;dy<=1;dy++) {
-                    Pos p = target.offset(dx,dy,dz);
-                    if (!loaded(level,p)) return HarvestFootprint.UNKNOWN;
-                    BlockState state = level.getBlockState(nativePos(p));
-                    Block block = state.getBlock();
-                    // Deliberately broader than current getActionForBlock:
-                    // don't trust a local disable, blacklist, or immature age.
-                    boolean nativePlant = block instanceof CropBlock
-                        || (block instanceof BushBlock || block instanceof GrowingPlantBlock) && block instanceof BonemealableBlock;
-                    if (nativePlant || cropBlocks.contains(block) || clickable.contains(block))
-                        candidates.add(p);
-                }
+            int radius = HarvestArea.halfSpan(range,HOOKS.enabled().getBoolean(null));
+            if (radius<0) return HarvestFootprint.UNKNOWN;
+            for (Pos p:HarvestArea.cells(target,radius)) {
+                if (!loaded(level,p)) return HarvestFootprint.UNKNOWN;
+                BlockState state = level.getBlockState(nativePos(p));
+                Block block = state.getBlock();
+                // Within this range, retain conservative plant/maturity checks.
+                boolean nativePlant = block instanceof CropBlock
+                    || (block instanceof BushBlock || block instanceof GrowingPlantBlock) && block instanceof BonemealableBlock;
+                if (nativePlant || cropBlocks.contains(block) || clickable.contains(block))
+                    candidates.add(p);
             }
-            return new HarvestFootprint(true,radius,safetyRadius,List.copyOf(candidates));
+            return new HarvestFootprint(true,radius,radius,List.copyOf(candidates));
         } catch (ReflectiveOperationException | RuntimeException | LinkageError unavailable) {
             return HarvestFootprint.UNKNOWN;
         }
