@@ -27,6 +27,7 @@ public final class MachineModule implements AutomationModule {
     private Map<Integer,ItemData> inventoryBeforeOutput=Map.of();
     private Integer outputWineYear, preferredOutputSource;
     private String rejectedInputMerge, rejectedOutputMerge, pendingMergeState;
+    private String singleStackFallbackState;
     private String repositionedInputState;
     private boolean pendingReposition;
     private int inputMergeAttempts, outputMergeAttempts;
@@ -159,8 +160,15 @@ public final class MachineModule implements AutomationModule {
                             submit(c,new Action.ConsolidateInventory(merge.get()),Pending.INPUT_MERGE); break;
                         }
                     }
-                    if (ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade))>=cost)
-                        return fail("Combine fragmented tomatoes of the selected grade into a compatible stack before retrying");
+                    if (ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade))>=cost) {
+                        int fundedGrade=singleStackGrade(c);
+                        if (fundedGrade<0) return fail("Combine fragmented tomatoes of the selected grade into a compatible stack before retrying");
+                        // Zero progress or no safe merge plan does not invalidate a
+                        // real single recipe stack. Permit it without claiming a merge,
+                        // or use another carried grade before any new supply trip.
+                        grade=fundedGrade;
+                        singleStackFallbackState=mergeState(c,ItemData.TOMATO,grade);
+                    }
                     // Even1+1 fragments may need merging to make room for another haul.
                     // If fewer than one recipe remain, a normal refill is still necessary.
                 }
@@ -488,8 +496,20 @@ public final class MachineModule implements AutomationModule {
         // More work and carried same-grade fragments warrant a bounded merge
         // before emptying the hand. A genuinely final recipe
         // keeps the old exact-cost completion semantics; it needs no later refill.
-        if (grade>=0 && remainingIngredientDemand(c)>cost && heldCounts(c)[grade]>cost) return null;
+        if (grade>=0 && remainingIngredientDemand(c)>cost && heldCounts(c)[grade]>cost
+                && !mergeState(c,ItemData.TOMATO,grade).equals(singleStackFallbackState)) return null;
         return held.stream().filter(s -> s.item().count()>=cost).findFirst().orElse(null);
+    }
+    private int singleStackGrade(Context c) {
+        int[] counts=heldCounts(c); boolean[] funded=new boolean[4];
+        for (ItemSlot slot:c.world().inventory()) {
+            ItemData item=slot.item();
+            if (slot.inventoryIndex()>=0 && slot.inventoryIndex()<36 && item.is(ItemData.TOMATO)
+                    && item.quality()>=0 && item.quality()<4 && item.count()>=cost) funded[item.quality()]=true;
+        }
+        if (grade>=0 && funded[grade]) return grade;
+        for (int candidate=0;candidate<4;candidate++) if (!funded[candidate]) counts[candidate]=0;
+        return chooseGrade(counts,cost);
     }
     private ItemSlot emptySlot(Context c) {
         for (int i = 0; i < 36; i++) {
@@ -553,7 +573,7 @@ public final class MachineModule implements AutomationModule {
         source = null; containerId = -1; grade = -1; collected = false; feeding = false;
         outputOperationId=null;
         inventoryBeforeOutput=Map.of(); outputWineYear=null; preferredOutputSource=null;
-        pendingMergeState=null; inputMergeAttempts=0; outputMergeAttempts=0;
+        pendingMergeState=null; singleStackFallbackState=null; inputMergeAttempts=0; outputMergeAttempts=0;
         pendingReposition=false;
     }
 }

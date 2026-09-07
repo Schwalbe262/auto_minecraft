@@ -261,3 +261,27 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   its initial navigation and supply work; this is one observed run, not a general
   throughput guarantee. A subsequent TOMATO_STORAGE one-shot returned all 49
   leftover tomatoes and completed with none remaining in inventory.
+- A native surplus-reserve check found room for the current wine cohort, so it
+  correctly retained all 133 bottles and authorized no sale. WINE_STORAGE then
+  deposited all 133 bottles: server-confirmed quantities were 1, 4, 64 and 64.
+  The tomato return likewise confirmed six one-item transfers and one of 43.
+  Both jobs completed with empty cursor and no corresponding items left in the
+  player's inventory. This verifies reserve storage, not smart-bin payout.
+
+## Usable recipe-stack fallback after incompatible fragments — 2026-09-08
+
+- Independent review found a separate liveness corner: a same-grade 3+1 wine
+  ingredient layout could reject the usable three-item stack if native tags
+  prevented merging the fragments. After a safely completed zero-progress merge
+  or absence of a safe plan, production may now use a sufficiently large real
+  single stack or another usable carried grade. A position-independent state
+  fingerprint prevents repeating the same optional merge. An actual failed or
+  uncertain native transaction still pauses; no acknowledgement is fabricated.
+- Integrated Java 17 `test build` passed **596 tests, zero failures, errors or
+  skips**, including wine 3+1, preserves 5+1, alternate carried-grade and no-safe-
+  scratch regressions. Snapshot SHA-256:
+  `6FE02D186C2A66CB5B5B5802EA2107E5D18B80FF30288457BABD76EADA42FCCD`.
+  The earlier live 133-keg run used the batch/route build above; these added
+  incompatible-fragment cases are fixture evidence, not fabricated live items.
+  After the wine and storage one-shots completed, the same instance was normally
+  restarted again to install this final fallback build, preserving its profile.

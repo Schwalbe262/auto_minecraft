@@ -866,6 +866,65 @@ class LogisticsTest {
         assertEquals(0,f.machineClicks());
     }
 
+    @Test void incompatibleLastRecipePlusOneUsesItsRealStackBeforeAnySupplyVisit() {
+        for (Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) {
+            int cost=feature==Feature.WINE ? 3 : 5;
+            PoiKind kind=feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR;
+            Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,cost); f.inventory[9]=tomato(2,1);
+            f.consolidationNoProgress=true;
+            f.chest(PoiKind.TOMATO_CHEST,0,null,ItemData.EMPTY);
+            f.machine(kind,10,false,false,false); f.machine(kind,11,false,false,false);
+            AutomationEngine engine=isolatedMachineEngine(feature); engine.startOnce(f.context(),feature);
+            for (int tick=0;tick<100 && f.machineClicks()==0 && engine.running();tick++) { engine.tick(f.context()); f.advance(); }
+            assertTrue(engine.running(),engine.status()); assertEquals(List.of(cost),f.handCountsAtMachineUse);
+            assertEquals(cost,f.consumed); assertTrue(f.opens.isEmpty(),"an acknowledged no-op merge cannot force a supply visit while a recipe is held");
+            assertEquals(1,f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count());
+            assertEquals(1,ModuleSupport.count(f.context(),i -> i.is(ItemData.TOMATO)));
+            f.runUntilStopped(engine,100);
+            assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertTrue(engine.status().contains("Not enough tomatoes"));
+            assertEquals(1,f.machineClicks()); assertEquals(1,f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count());
+            assertEquals(0,f.tomatoWithdrawals); assertTrue(f.inventory[0].hoe());
+        }
+    }
+
+    @Test void lockedIncompatibleFragmentsFallBackToRealCarriedRecipesWithoutRescanning() {
+        for (boolean selectedGradeStillFunded:new boolean[]{true,false}) {
+            Fixture f=new Fixture(); f.equipHoe();
+            f.inventory[1]=tomato(2,selectedGradeStillFunded ? 6 : 5);
+            f.inventory[9]=tomato(2,selectedGradeStillFunded ? 1 : 2);
+            f.inventory[10]=tomato(1,6); f.consolidationNoProgress=true;
+            f.chest(PoiKind.TOMATO_CHEST,0,null,tomato(3,64));
+            int count=selectedGradeStillFunded ? 4 : 3;
+            for (int index=0;index<count;index++) f.machine(PoiKind.WINE_KEG,10+index,false,false,false);
+            AutomationEngine engine=isolatedMachineEngine(Feature.WINE); engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,200);
+            assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+            assertEquals(selectedGradeStillFunded ? List.of(2,2,1,1) : List.of(2,1,1),f.usedGrades);
+            assertEquals(count*3,f.consumed); assertEquals(selectedGradeStillFunded ? 1 : 4,ModuleSupport.count(f.context(),i -> i.is(ItemData.TOMATO)));
+            assertEquals(1,f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count());
+            assertTrue(f.opens.isEmpty()); assertEquals(0,f.tomatoWithdrawals); assertTrue(f.inventory[0].hoe());
+            assertTrue(f.history.stream().noneMatch(a -> a instanceof Action.SwapHotbar swap && swap.inventoryIndex()==swap.hotbarSlot()));
+        }
+    }
+
+    @Test void noSafeIngredientMergePlanStillAllowsASufficientSingleStack() {
+        Fixture f=new Fixture(); f.equipHoe();
+        // MAIN-only fragments have neither a compatible hotbar destination nor
+        // a safe scratch: actual hoes may never be borrowed by a merge plan.
+        for (int index=1;index<9;index++) f.inventory[index]=new ItemData("minecraft:iron_hoe",1,0,null,true,999);
+        f.inventory[9]=tomato(2,3); f.inventory[10]=tomato(2,1);
+        f.chest(PoiKind.TOMATO_CHEST,0,null,ItemData.EMPTY);
+        f.machine(PoiKind.WINE_KEG,10,false,false,false); f.machine(PoiKind.WINE_KEG,11,false,false,false);
+        assertTrue(ProductionMergePlanner.planTomatoes(f.inventory(),Feature.WINE,f.profile.hoeHotbarSlot,2,null).isEmpty());
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE); engine.startOnce(f.context(),Feature.WINE);
+        for (int tick=0;tick<100 && f.machineClicks()==0 && engine.running();tick++) { engine.tick(f.context()); f.advance(); }
+        assertTrue(engine.running(),engine.status()); assertEquals(List.of(2),f.usedGrades); assertTrue(f.opens.isEmpty());
+        f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertTrue(engine.status().contains("Not enough tomatoes"));
+        assertEquals(1,f.machineClicks()); assertEquals(3,f.consumed); assertEquals(0,f.tomatoWithdrawals);
+        assertEquals(9,Arrays.stream(f.inventory).filter(ItemData::hoe).count());
+        assertTrue(f.history.stream().noneMatch(Action.ConsolidateInventory.class::isInstance));
+    }
+
     @Test void failedInventoryConsolidationPausesTheProductionOnlyRunWithoutFallbackActions() {
         Fixture f=new Fixture(); f.inventory[0]=tomato(2,1); f.inventory[9]=tomato(2,2);
         f.profile.hoeHotbarSlot=4; f.consolidationFails=true; f.machine(PoiKind.WINE_KEG,10,false,false,false);
