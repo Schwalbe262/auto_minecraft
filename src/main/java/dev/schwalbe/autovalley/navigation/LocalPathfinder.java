@@ -10,6 +10,11 @@ public final class LocalPathfinder {
     private record Node(Pos pos, double cost, double score) { }
 
     public List<Pos> find(Pos start, Pos target, double reach, WorldAccess world, Profile profile) {
+        return find(start,target,reach,world,profile,Set.of());
+    }
+
+    /** Rejected interaction centers remain traversable; only their goal eligibility is excluded. */
+    public List<Pos> find(Pos start, Pos target, double reach, WorldAccess world, Profile profile, Set<Pos> excludedGoals) {
         ProfileBounds bounds = new ProfileBounds(profile);
         if (!world.loaded(start) || !bounds.contains(start)) return List.of();
         PriorityQueue<Node> open = new PriorityQueue<>(Comparator.comparingDouble(Node::score));
@@ -22,7 +27,7 @@ public final class LocalPathfinder {
             Node node = open.remove();
             if (!closed.add(node.pos())) continue;
             // LOS checks can trace many blocks; only candidate cells near the interaction volume need them.
-            if (node.pos().distanceSquared(target) <= Math.pow(reach + 2.5,2)
+            if (!excludedGoals.contains(node.pos()) && node.pos().distanceSquared(target) <= Math.pow(reach + 2.5,2)
                 && world.canInteractFrom(node.pos(), target, reach)) return unwind(node.pos(), parent);
             for (int[] direction : DIRECTIONS) {
                 for (int dy : new int[]{0, 1, -1}) {

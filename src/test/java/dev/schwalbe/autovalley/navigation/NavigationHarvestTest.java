@@ -77,13 +77,13 @@ class NavigationHarvestTest {
         assertFalse(actions.movement.jump());
     }
 
-    @Test void invalidInteractionAtFinalApproachCenterStopsWithoutForwardDrift() {
+    @Test void invalidInteractionAtFinalApproachCenterSettlesWithoutForwardDrift() {
         FakeWorld world = new FakeWorld();
         world.allowCurrentInteraction = false;
         FakeActions actions = new FakeActions();
         LocalNavigator navigation = new LocalNavigator();
         Context context = new Context(world,actions,navigation,farmProfile(ORIGIN));
-        assertEquals(Navigation.Result.BLOCKED,navigation.moveTo(ORIGIN,2.15,context));
+        assertEquals(Navigation.Result.MOVING,navigation.moveTo(ORIGIN,2.15,context));
         assertNull(actions.movement);
         assertTrue(actions.submitted.isEmpty());
     }

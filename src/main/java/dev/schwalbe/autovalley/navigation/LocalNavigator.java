@@ -2,6 +2,8 @@ package dev.schwalbe.autovalley.navigation;
 
 import dev.schwalbe.autovalley.core.*;
 import java.util.List;
+import java.util.Set;
+import java.util.HashSet;
 
 /** Tick-driven movement; reset/cancel never produces an interaction. */
 public final class LocalNavigator implements Navigation {
@@ -20,6 +22,12 @@ public final class LocalNavigator implements Navigation {
     private double walkingDistance;
     private double sprintingDistance;
     private String failure = "";
+    private static final int MAX_REJECTED_ENDPOINTS = 4;
+    private static final int ENDPOINT_SETTLE_TIMEOUT_TICKS = 10;
+    private final Set<Pos> rejectedEndpoints = new HashSet<>();
+    private long endpointSettleTick = -1, endpointSampleTick;
+    private int endpointQuietTicks;
+    private PlayerState endpointSample;
 
     public void setSprint(boolean sprint) { this.sprint = sprint; }
     public String failureReason() { return failure; }
@@ -62,16 +70,19 @@ public final class LocalNavigator implements Navigation {
             if (!outcome.success()) return blocked(actions, "문을 열지 못했습니다: " + outcome.message());
             progressTick = world.tick();
         }
-        if (player.distance(target) <= reach + 2.5 && world.canInteract(target, reach)) {
+        if (endpointSettleTick < 0 && player.distance(target) <= reach + 2.5 && world.canInteract(target, reach)) {
             actions.stopMovement();
             previousMoving = false;
             path = List.of();
+            rejectedEndpoints.clear();
             failure = "";
             return Result.ARRIVED;
         }
         if (world.menu() != null && world.menu().container()) return blocked(actions, "상자가 열린 동안 이동하지 않습니다.");
         if (path.isEmpty()) {
-            path = pathfinder.find(walkingFeet, target, reach, world, context.profile());
+            if (rejectedEndpoints.size() >= MAX_REJECTED_ENDPOINTS)
+                return blocked(actions,"정지 후에도 확인한 접근 위치 4곳에서 목표가 보이지 않거나 손이 닿지 않습니다.");
+            path = pathfinder.find(walkingFeet, target, reach, world, context.profile(), rejectedEndpoints);
             if (path.isEmpty()) return blocked(actions, "등록된 통로에 통행 가능한 경로가 없습니다.");
             nextIndex = path.size() > 1 ? 1 : 0;
             lastDistance = Double.POSITIVE_INFINITY;
@@ -99,10 +110,19 @@ public final class LocalNavigator implements Navigation {
             return Result.MOVING;
         }
         if (distanceToCenter(player, next) > 3) return blocked(actions, "경로에서 벗어났습니다.");
+        if (endpointSettleTick >= 0) return settleEndpoint(next,target,reach,context,player);
         if (nextIndex == path.size() - 1
             && Math.hypot(player.x() - next.x() - .5,player.z() - next.z() - .5) < Math.min(.04,reach / 4)
             && player.onGround() && Math.abs(player.y() - waypointHeight(world,next)) <= .10001)
-            return blocked(actions, "접근 위치에 도착했지만 목표가 보이지 않거나 손이 닿지 않습니다.");
+        {
+            // A* evaluates an exact block center; the real eye ray can still be
+            // occluded a few hundredths away. Stop residual motion before rejecting
+            // this center, then try another validated goal instead of failing at once.
+            endpointSettleTick=world.tick(); endpointSampleTick=world.tick();
+            endpointQuietTicks=0; endpointSample=player;
+            actions.stopMovement(); previousMoving=false;
+            return Result.MOVING;
+        }
         Pos door = closedDoor(world, next);
         if (door != null) {
             actions.stopMovement();
@@ -126,6 +146,35 @@ public final class LocalNavigator implements Navigation {
         previousSprint = sprint && flat && distance > 0.55;
         actions.move(new Movement(yaw, 0, true, previousSprint, false, false));
         return Result.MOVING;
+    }
+
+    private Result settleEndpoint(Pos endpoint,Pos target,double reach,Context context,PlayerState player) {
+        WorldAccess world=context.world(); ActionPort actions=context.actions();
+        actions.stopMovement(); previousMoving=false;
+        if (world.tick()>endpointSampleTick) {
+            double displacement=Math.sqrt(Math.pow(player.x()-endpointSample.x(),2)
+                +Math.pow(player.y()-endpointSample.y(),2)+Math.pow(player.z()-endpointSample.z(),2));
+            endpointQuietTicks=player.onGround() && displacement<=.02 ? endpointQuietTicks+1 : 0;
+            endpointSample=player; endpointSampleTick=world.tick();
+        }
+        if (endpointQuietTicks>=2 && world.tick()-endpointSettleTick>=2) {
+            if (world.canInteract(target,reach)) {
+                clearEndpointSettle(); rejectedEndpoints.clear(); path=List.of(); failure="";
+                return Result.ARRIVED;
+            }
+            rejectedEndpoints.add(endpoint); clearEndpointSettle(); path=List.of();
+            lastDistance=Double.POSITIVE_INFINITY; progressTick=world.tick();
+            if (rejectedEndpoints.size()>=MAX_REJECTED_ENDPOINTS)
+                return blocked(actions,"정지 후에도 확인한 접근 위치 4곳에서 목표가 보이지 않거나 손이 닿지 않습니다.");
+            return Result.MOVING; // Replan next tick; this tick remains stopped.
+        }
+        if (world.tick()-endpointSettleTick>=ENDPOINT_SETTLE_TIMEOUT_TICKS)
+            return blocked(actions,"접근 위치에서 안전하게 정지하지 못했습니다.");
+        return Result.MOVING;
+    }
+
+    private void clearEndpointSettle() {
+        endpointSettleTick=-1; endpointSampleTick=0; endpointQuietTicks=0; endpointSample=null;
     }
 
     private void observeMotion(PlayerState player) {
@@ -198,6 +247,7 @@ public final class LocalNavigator implements Navigation {
         previousMoving = false;
         failure = reason;
         path = List.of();
+        clearEndpointSettle();
         return Result.BLOCKED;
     }
 
@@ -210,5 +260,6 @@ public final class LocalNavigator implements Navigation {
         nextIndex = 0;
         previousMoving = false;
         failure = "";
+        rejectedEndpoints.clear(); clearEndpointSettle();
     }
 }
