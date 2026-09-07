@@ -35,6 +35,14 @@ Explicit local diagnostic/control request files support inspection and start/pau
 
 The passive recorder uses an explicit outbound packet allow-list and sampled client state, not OS hooks or raw packet dumps. Intent and server-observed state have distinct event types. A recent use-block target is only an unverified temporal hint for menu ownership. Connection and recording generations fence queued callbacks. Local UTF-8 JSONL journals flush each second and require a user-supplied name; no replay or upload is included. Gameplay coordinates/inventory are private and ignored by version control.
 
+### Durable machine output
+
+A mature-machine use first saves an immutable output obligation synchronously, before `submit` can send its main-hand use. Confirmed refill state and confirmed pickup are separate checkpoints. Reset, F8, feature disable, day deadlines and reconnect never erase the obligation. The scheduler pauses other work rather than allowing storage, sale or sleep to hide unresolved output; only the active owning machine can finish its confirmation/pickup stage.
+
+Same-connection inventory observations can resolve a confirmed pickup, including while OFF and before a storage consumer runs. Wine counts must match the expected native production year. Manual item interactions or unmanaged screens permanently invalidate that live evidence, so a later manual withdrawal cannot masquerade as the pending bottle. A reconnect starts without live evidence. Ground disappearance alone never resolves an obligation.
+
+The settings UI distinguishes explicit manual recovery/cleanup from confirmed loss, requires a second confirmation for one unchanged operation ID, remains paused and retains the entry if saving fails. Resolution history is bounded to 64 entries. Profile schema 1 is validated and migrated to schema 2 in memory; the next save uses schema 2 so old clients reject it instead of ignoring pending output. Back up the local profile before a deliberate version downgrade.
+
 ### Storage, magnet and scale
 
 Up to eight immutable full-menu ACK snapshots per container preserve an earlier successful transfer even if magnet pickup refills the player slot before the next tick. Confirmed source removal and destination increase, not a later live count alone, establish deposit quantity. A session ledger retains undelivered overflow until confirmed storage/disposal removes it; disappearance is not delivery. Production and sleep wait for the ledger to clear.

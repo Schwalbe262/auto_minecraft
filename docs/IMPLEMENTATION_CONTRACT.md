@@ -8,6 +8,7 @@ UI agent owns `ui/` and `assets/autovalley/lang/` only.
 
 Core APIs are source of truth in `core/`. Ask root before changing them.
 Everything runs once per client tick. Modules never access Minecraft directly: use Context.
+Context.checkpoint is a synchronous persistence boundary in the live runtime; compatibility test constructors use an explicit no-op. Mature machine Use must follow MachineOutputLedger.prepare/checkpoint and separate machine-confirmation/pickup checkpoints. Profile schema 2 retains pending output and bounded resolution history; live evidence belongs to SessionState only and is invalidated by manual item interaction or reconnect. F8/reset must never clear the persistent ledger.
 ActionPort submit returns ticket; poll outcome on subsequent ticks. One pending action at a time. Do not repeat an action until acknowledged. Cancel requires immediate silence, no cleanup clicks. All world attack/break commands are absent.
 Inventory indices 0..35 match Player inventory. Menu ItemSlot.index is actual menu slot, inventoryIndex refers to Player inventory if player=true, -1 otherwise. world.menu() always returns inventory menu when no container is open, with container=false. Only player inventory entries 0..35 are exposed via world.inventory().
 SelectHotbar and SwapHotbar allow moving ingredients to held slot without a cursor transaction. QuickMove uses standard shift-transfer and verifies state change. Do not depend on unopened chest contents, server persistentData, or unsynced machine fields.
