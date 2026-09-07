@@ -1,10 +1,14 @@
 package dev.schwalbe.autovalley.client;
 
 import dev.schwalbe.autovalley.core.InventoryConsolidation;
+import dev.schwalbe.autovalley.core.ItemData;
 import dev.schwalbe.autovalley.core.ProductionMergePlanner;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.world.item.HoeItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
 import java.util.*;
 
 /** Native snapshots are kept in RAM only, and never placed in diagnostics or recordings. */
@@ -16,10 +20,13 @@ final class NativeInventoryConsolidation {
     final int protectedHotbar;
     long beforeSequence;
     private final int[] menuSlots;
+    private final Level level;
+    private final Integer wineYear;
     private List<InventoryConsolidation.Stack> expectedMenu;
 
     private NativeInventoryConsolidation(LocalPlayer player,ProductionMergePlanner.Plan plan,ServerObservations observations,int protectedHotbar) {
         this.plan=plan; this.protectedHotbar=protectedHotbar;
+        level=player.level(); wineYear=VineryClock.year(level);
         menuId=player.inventoryMenu.containerId; generation=observations.generation(); beforeSequence=observations.sequence();
         menuSlots=new int[36]; Arrays.fill(menuSlots,-1);
         for (var slot:player.inventoryMenu.slots) {
@@ -37,11 +44,23 @@ final class NativeInventoryConsolidation {
     static NativeInventoryConsolidation create(LocalPlayer player,ProductionMergePlanner.Plan plan,ServerObservations observations,int protectedHotbar) {
         if (player.containerMenu!=player.inventoryMenu || !player.inventoryMenu.getCarried().isEmpty())
             throw new IllegalArgumentException("Close menus and empty the cursor first");
+        if (!ProductionMergePlanner.protectsProductionSlots(plan,protectedHotbar)) return null;
         ItemStack source=player.getInventory().getItem(plan.sourceIndex());
-        if (!plan.direct() && ItemStack.matches(source,player.getInventory().getItem(plan.scratchHotbar()))) return null;
+        if (!plan.direct()) {
+            ItemStack scratch=player.getInventory().getItem(plan.scratchHotbar());
+            // Prefer EMPTY, but an unrelated item may use the exact inverse-SWAP
+            // protocol. Never displace an ingredient, any hoe, or the same product.
+            if (!scratch.isEmpty() && (scratch.getItem() instanceof HoeItem
+                || ItemData.TOMATO.equals(BuiltInRegistries.ITEM.getKey(scratch.getItem()).toString())
+                || scratch.getItem()==source.getItem())) return null;
+        }
         ItemStack protectedItem=player.getInventory().getItem(protectedHotbar);
         if (plan.direct() && plan.sourceIndex()>=9 && (protectedItem.isEmpty()
             || ItemStack.isSameItemSameTags(source,protectedItem) && protectedItem.getCount()<protectedItem.getMaxStackSize())) return null;
+        ItemStack material=player.getInventory().getItem((protectedHotbar+1)%9);
+        if (!ItemData.TOMATO.equals(plan.itemId()) && plan.direct() && plan.sourceIndex()>=9
+            && (material.isEmpty() || ItemStack.isSameItemSameTags(source,material)
+                && material.getCount()<material.getMaxStackSize())) return null;
         int capacity=0;
         for (int destination:plan.destinations()) {
             ItemStack stack=player.getInventory().getItem(destination);
@@ -68,7 +87,12 @@ final class NativeInventoryConsolidation {
             for (int index:menuSlots) if (index==slot) { inventorySlot=true; break; }
             if (!inventorySlot && !expectedMenu.get(slot).equals(after.get(slot))) return InventoryConsolidation.Confirmation.WAIT;
         }
-        var confirmation=transaction.acknowledge(inventory(after));
+        Set<Integer> passiveUpdates=new HashSet<>();
+        for (int index=0;index<menuSlots.length;index++) {
+            int slot=menuSlots[index];
+            if (NativeWineMetadata.passiveChange(expectedMenu.get(slot),after.get(slot),level,wineYear)) passiveUpdates.add(index);
+        }
+        var confirmation=transaction.acknowledge(inventory(after),passiveUpdates);
         if (confirmation!=InventoryConsolidation.Confirmation.WAIT) expectedMenu=after;
         return confirmation;
     }

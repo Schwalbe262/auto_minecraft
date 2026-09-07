@@ -51,15 +51,40 @@ public final class InventoryConsolidation {
 
     /** An unrelated/unchanged refresh never authorizes a subsequent primitive. */
     public Confirmation acknowledge(Snapshot after) {
+        return acknowledge(after,Set.of());
+    }
+
+    /**
+     * The native adapter may prove a passive metadata update using the installed
+     * item's own initialization/cache functions. Such proof is valid only for
+     * untouched slots, never the source, swapped partner or a receiving stack.
+     * This method still requires the actual native permutation/conserved move;
+     * metadata alone cannot advance the transaction. Raw ACK identities become
+     * the next baseline only after the complete primitive is verified.
+     */
+    public Confirmation acknowledge(Snapshot after,Set<Integer> verifiedPassiveUpdates) {
         if (stage==Stage.DONE || before.equals(after)) return Confirmation.WAIT;
+        if (verifiedPassiveUpdates==null) return Confirmation.WAIT;
+        List<Stack> comparisonItems=new ArrayList<>(before.items());
+        for (Integer index:verifiedPassiveUpdates) {
+            if (index==null || index<0 || index>=36) return Confirmation.WAIT;
+            if (stage==Stage.SWAP_OUT || stage==Stage.RESTORE) {
+                if (index==plan.sourceIndex() || index==plan.scratchHotbar()) return Confirmation.WAIT;
+            } else if (index==plan.quickMoveIndex()) return Confirmation.WAIT;
+            Stack old=before.items().get(index),now=after.items().get(index);
+            if (old.empty() || now.empty() || old.count()!=now.count() || old.limit()!=now.limit()) return Confirmation.WAIT;
+            comparisonItems.set(index,now);
+        }
+        Snapshot comparisonBefore=new Snapshot(comparisonItems);
+        if (comparisonBefore.equals(after)) return Confirmation.WAIT;
         if (stage==Stage.SWAP_OUT || stage==Stage.RESTORE) {
-            List<Stack> expected=new ArrayList<>(before.items());
+            List<Stack> expected=new ArrayList<>(comparisonBefore.items());
             Collections.swap(expected,plan.sourceIndex(),plan.scratchHotbar());
             if (!expected.equals(after.items())) return Confirmation.WAIT;
             before=after;
             stage=stage==Stage.SWAP_OUT ? Stage.MERGE : Stage.DONE;
         } else {
-            if (!validNativeMove(before,after,plan.quickMoveIndex())) return Confirmation.WAIT;
+            if (!validNativeMove(comparisonBefore,after,plan.quickMoveIndex())) return Confirmation.WAIT;
             before=after;
             // Original EMPTY scratch needs no inverse swap: native QUICK_MOVE may
             // have placed the item into the now-empty original source slot itself.

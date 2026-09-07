@@ -148,3 +148,45 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   SHA-256: `F389933632ADDE969CDEB51F7C68E47F04FAB619A81B626EC9B6642F6F94EDBE`.
   The same Society instance was normally restarted with the backed-up replacement.
   Full live wine/preserves/storage/sale/sleep acceptance remains open.
+
+## Production-hand refill and interrupted consolidation — 2026-09-08
+
+- Production now prepares another ingredient stack before the last recipe would
+  empty its hand while further work and ingredients remain. A final exact-size
+  recipe is still allowed; this is not an extra stock requirement. Progress text
+  distinguishes the complete source-stock survey, withdrawal, and machine work
+  with counters, so surveying storage is not mislabeled as servicing a keg.
+- Java 17 `test build` passed **525 tests, zero failures, errors or skips** for
+  that change. This build was not installed while the operator resumed manual play.
+- A prior live wine run confirmed four additional collection/refill interactions,
+  then stopped during output-stack consolidation. A private read-only examination
+  of retained native replies proved that a SWAP had moved wine into the ingredient
+  hotbar slot, before its inverse restoration. Tomatoes had not been exhausted.
+  An unchanged-count wine in another inventory slot also changed native metadata
+  in the reply, causing the strict whole-inventory acknowledgement to reject it.
+- A subsequent keys/types-only inspection identified the passive change as an
+  initially untagged `vinery:stal_wine` receiving integer `Year`, `EffectAmplifier`
+  and `EffectDuration` fields. Installed Vinery code initializes those fields on
+  inventory ticks. No private tag values were exported, and no passive metadata
+  change was treated as proof that an inventory click succeeded.
+- Output consolidation now protects both the configured hoe and the ingredient
+  hand from source/destination/scratch selection, including implicit native
+  QUICK_MOVE fallback. It prefers a separate empty scratch; a suitable occupied
+  scratch requires exact restoration. No safe scratch skips optional merging,
+  not machine work. Independent planner/safety/logistics regression runs passed
+  **163 tests**, including a full-hotbar three-ACK restore with 52 ingredients
+  unchanged at every step. Full integrated build results are recorded separately.
+- No failed click was resent and no unresolved acknowledgement was manually
+  cleared. The operator continued manual play while the cause was inspected.
+  Full rack completion, preserves, automated delivery and sleep are still unverified.
+- The passive-metadata exception now requires the installed Vinery initialization
+  or refresh function's exact result on a detached stack, in the same native wine
+  calendar year. Only unchanged-count nonparticipant wine slots qualify. Existing
+  cohort, quality, capabilities and unrelated tags remain exact; metadata-only
+  replies do not advance a click. Participants and count-changing receivers still
+  require exact identities and conserved quantities. This does not cover a wine
+  that initializes and simultaneously becomes a transfer participant.
+- Integrated Java 17 `test build` passed **550 tests, zero failures, errors or
+  skips**. Snapshot SHA-256:
+  `158E705D74DF5BC75ABBAEEC7576DF0DDDA4CE7D8DEED7BD8BDB1747A8993971`.
+  These are build/fixture results; real-client acceptance follows separately.

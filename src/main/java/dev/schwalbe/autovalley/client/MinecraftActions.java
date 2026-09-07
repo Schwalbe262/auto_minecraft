@@ -257,7 +257,7 @@ public final class MinecraftActions implements ActionPort {
                 lateTrashReply=null;
             }
         }
-        if (lateTrashReply!=null) return "Waiting for the cancelled TrashSlot request's exact server reply; no new actions. Reconnect if it never arrives.";
+        if (lateTrashReply!=null) return "Waiting for an unconfirmed TrashSlot request's exact server reply; no new actions. Reconnect if it never arrives.";
         if (trashFailure!=null) return trashFailure;
         if (failureGeneration!=observations.generation()) consolidationFailure=null;
         if (lateInventoryReply!=null) {
@@ -266,7 +266,7 @@ public final class MinecraftActions implements ActionPort {
                 if (lateInventoryReply.acknowledge(acknowledgement)!=InventoryConsolidation.Confirmation.WAIT) { lateInventoryReply=null; break; }
             }
         }
-        return lateInventoryReply!=null ? "Waiting for the cancelled inventory click's exact server reply; no new actions. Reconnect if it never arrives."
+        return lateInventoryReply!=null ? "Waiting for an unconfirmed inventory click's exact server reply; no new actions. Reconnect if it never arrives."
             : consolidationFailure;
     }
     @Override public String startRejection() {
