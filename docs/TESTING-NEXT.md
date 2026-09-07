@@ -325,3 +325,20 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   `3AAD931A2C272051C9DB8BE47E471A3577D357B40F64D7E84FA22C30ACF2840C`.
   The same existing client was normally restarted to install this build together
   with the common wine cycle. Live multi-hour acceptance is still in progress.
+
+## Farmland movement-gate mismatch — 2026-09-08
+
+- The first soak attempt moved about 20 blocks, then stalled at a corridor edge.
+  A read-only native snapshot confirmed no horizontal collision and a valid
+  108-node path, but raw feet failed the movement permission gate while the
+  planner's verified standing cell passed. Farmland's 1/16-block lower surface
+  put raw feet one integer Y below the cell used by pathfinding. That extra
+  squared-distance unit incorrectly rejected a position on the corridor boundary.
+- `NavigationFeet.resolve` now supplies the same existing raw-first, verified-
+  above fallback to both the path follower and the native movement bounds gate.
+  This does not widen registered corridors or add jump/escape permissions.
+- Integrated Java 17 `test build` passed **634 tests, zero failures or errors**.
+  Snapshot SHA-256:
+  `D71E625EB986F4789360B1705A76226292768C2DE9A3DCE5129066DFC3980826`.
+  The interrupted attempt is not counted as stable runtime. Movement from the
+  original stopped position and a new multi-hour run require live verification.

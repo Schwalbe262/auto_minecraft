@@ -53,7 +53,7 @@ public final class LocalNavigator implements Navigation {
         observeMotion(player);
         if (player == null || !player.connected() || !player.focused() && !context.profile().allowBackground)
             return blocked(actions, "플레이어가 게임을 조작할 수 없습니다.");
-        Pos walkingFeet = walkingFeet(world,player);
+        Pos walkingFeet = NavigationFeet.resolve(world,player);
         if (!target.equals(destination) || Double.compare(reach, destinationReach) != 0) {
             reset();
             destination = target;
@@ -234,12 +234,6 @@ public final class LocalNavigator implements Navigation {
             && !(actual.x() == next.x() && actual.z() == next.z())) return false;
         return world.loaded(from) && world.loaded(next) && world.canStand(from)
             && world.canStand(next) && world.canTraverse(from,next);
-    }
-
-    private static Pos walkingFeet(WorldAccess world, PlayerState player) {
-        Pos feet = player.feet();
-        // Farmland, bottom slabs, and stair halves put the physical feet inside their block cell.
-        return !world.canStand(feet) && world.canStand(feet.offset(0,1,0)) ? feet.offset(0,1,0) : feet;
     }
 
     private Result blocked(ActionPort actions, String reason) {

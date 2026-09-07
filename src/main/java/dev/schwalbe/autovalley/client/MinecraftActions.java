@@ -339,7 +339,7 @@ public final class MinecraftActions implements ActionPort {
         if (harvesting && !HarvestMovementRules.mayOverlap(pending,intent,beforePlayer,world.player(),world.tick()-started,
             context.profile().continueHarvestWhenFull && context.session().allows(context.profile(),Feature.HARVEST))) { stopMovement(); return; }
         // Navigation cannot gain permission to jump or leave the approved farm/corridor.
-        Pos feet=world.player().feet();
+        Pos feet=NavigationFeet.resolve(world,world.player());
         if (!ProfileBounds.contains(context.profile(),feet) || intent.jump()) { stopMovement(); return; }
         movement=new Movement(intent.yaw(),intent.pitch(),intent.forward(),intent.sprint(),false,intent.sneak());
         movementAt=world.tick();
