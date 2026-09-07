@@ -1,0 +1,17 @@
+# Shared implementation contract
+
+Package: `dev.schwalbe.autovalley`. Java 17, Forge 1.20.1 / 47.4.0.
+Root owns `core/`, `client/` adapter/runtime, build files, safety, profile persistence, documentation and release scripts.
+Navigation agent owns `navigation/`, `modules/HarvestModule.java`, navigation/harvest tests.
+Logistics agent owns other `modules/` and logistics tests (including SleepModule).
+UI agent owns `ui/` and `assets/autovalley/lang/` only.
+
+Core APIs are source of truth in `core/`. Ask root before changing them.
+Everything runs once per client tick. Modules never access Minecraft directly: use Context.
+ActionPort submit returns ticket; poll outcome on subsequent ticks. One pending action at a time. Do not repeat an action until acknowledged. Cancel requires immediate silence, no cleanup clicks. All world attack/break commands are absent.
+Inventory indices 0..35 match Player inventory. Menu ItemSlot.index is actual menu slot, inventoryIndex refers to Player inventory if player=true, -1 otherwise. world.menu() always returns inventory menu when no container is open, with container=false. Only player inventory entries 0..35 are exposed via world.inventory().
+SelectHotbar and SwapHotbar allow moving ingredients to held slot without a cursor transaction. QuickMove uses standard shift-transfer and verifies state change. Do not depend on unopened chest contents, server persistentData, or unsynced machine fields.
+UseBlock(MACHINE) checks actual block state and inventory decrease; products may drop. Modules must separately wait for pickup before declaring harvest success. UseBlock(HARVEST) verifies mature state change; native tomato age=3. UseBlock(OPEN_CONTAINER) waits for new synchronized container. Only normal main hand useItemOn, no air-use fallback. Range and visibility checked by adapter.
+Profile POIs are individually confirmed. classifier: grade 0..3 for TOMATO_CHEST, production Year for WINE_CHEST; null for others. Each container has one classification. Farms are two corner inclusive bounds (include vines at both heights), cap volume 32768. Waypoints record walkable feet positions and form connected approved corridors. Poi DISPOSAL marks player standing position when registered, not a block to interact with.
+Harvest prioritizes 50; logistics 10..40; wine 60 before preserves 70; sleep 100. A BUSY module owns the scheduler until IDLE/BLOCKED, or cancellation. IDLE means nothing actionable, BLOCKED is user-actionable failure and prevents automatic sleep that cycle. Resource shortages/processing machines are IDLE, not BLOCKED. Disabled modules receive no tick and any active module is cancelled on toggle. Sleep time uses dayTime modulo 24000 >=12584, actual next day observed.
+Client facade for UI (root will implement): `ClientRuntime.instance()`, `.profile()`, `.world()`, `.status()` string, `.running()` boolean, `.toggle()`, `.pause(String)`, `.saveProfile()`, `.toggleFeature(Feature)`, `.startCalibration()`; `openSettings()` from root handles GUI. UI entry `new ValleyScreen()` extends Screen, can call these methods. UI can request scan through world().scan(center, radius<=32, vertical<=16); scan on demand only. Registration must pause automation. Never include server address/coordinates in tracked defaults or diagnostics uploaded to GitHub.

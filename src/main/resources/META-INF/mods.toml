@@ -1,0 +1,25 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="autovalley"
+version="0.1.0"
+displayName="Auto Valley"
+authors="Schwalbe262"
+displayTest="IGNORE_ALL_VERSION"
+description='''Client-side, interruptible farming assistance for Society: Sunlit Valley.'''
+
+[[dependencies.autovalley]]
+modId="forge"
+mandatory=true
+versionRange="[47.4.0,48)"
+ordering="NONE"
+side="CLIENT"
+
+[[dependencies.autovalley]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.20.2)"
+ordering="NONE"
+side="CLIENT"

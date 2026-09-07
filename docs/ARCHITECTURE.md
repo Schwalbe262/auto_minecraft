@@ -1,0 +1,40 @@
+# Architecture and validation
+
+## Boundaries
+
+`core` is independent of Minecraft: immutable observations, a sealed action allow-list, module lifecycle, persistent per-profile game-day schedules, and the single-owner scheduler. `navigation` plans only through loaded, registered farm/waypoint corridors. Each feature in `modules` is independently enabled. `client` adapts these ports to the real local player, observes standard server packets, persists local settings, and handles focus/manual-input cancellation. `ui` handles explicit registration and configuration.
+
+There is no server module, custom networking protocol, fake player, world-state editor, break/place action, or external AI call during operation.
+
+## Authoritative inventory handling
+
+Minecraft 1.20.1 can omit confirmation packets when a predicted inventory click exactly matches the server. Auto Valley therefore sends **one** ordinary container click without client prediction, using state ID `-1` to request vanilla's full resynchronization. The server executes the click once and sends the authoritative container content. The client requires a subsequent full-content update for that exact container ID plus the expected item change. Unrelated slot updates do not confirm a transfer. Timeout never resends a click.
+
+Only cursor-free QUICK_MOVE, SWAP, and exact rotten-item THROW operations are exposed. Deposits are constrained by the opened registered container's grade/year/product classification. The action layer checks focus, actual reach, line of sight, current held item, menu identity, and cursor state again before dispatch. Main-hand block interactions have no air-use fallback. Output pickup is verified separately from machine block-state changes.
+
+A Netty handler observes vanilla replies after vanilla queues their application. It sends no custom packets and suppresses world destroy/entity interaction packets while automation owns control. Raw attack input is also fenced when it triggers manual takeover, including remapped attack controls.
+
+## Scheduling
+
+- Date is `floor(dayTime / 24000)`; UI shows date + 1.
+- Successful harvest stores a per-farm next date. Successful refill stores a per-machine next date. Start/stop and reconnect retain these dates.
+- Harvest checks wait until day tick 20 for Dew Drop's dawn growth. Busy machines wait through day tick 219 before being declared unfinished for that day.
+- Machine defaults: wine 6 days, preserves 3 days. Harvest 1 day is a conservative observation interval; actual growth depends on crop stage and fertilizer.
+- Resource shortage is ordinary waiting. Uncertain mutation or missing output remains blocked until manual review. A blocked wine task suppresses preserves; any unresolved work suppresses automatic sleep.
+- A backwards game date clears obsolete deadlines and pauses for review.
+
+## Verification
+
+JUnit tests cover classification, source recounts, grade ties, priority, action cancellation, server-state waits, production/pickup failures, game-day deadlines, dawn races, sleep rejection, path constraints, door acknowledgement, real upper tomato vines, calibration, profile round trips and malformed-file preservation, and registration validation.
+
+Build the distributable with `gradlew test build`; `reobfJar` produces the mapped release JAR. A separate title-screen-only UI preview is available with `gradlew runClient -PuiPreview`. This property opens settings in a development client without loading a world.
+
+These checks do not substitute for actual registration and first-cycle verification on the user's server. No unattended production-server run is claimed by the build tests.
+
+## Development references
+
+- [Forge one-sided mods](https://docs.minecraftforge.net/en/1.20.x/concepts/sides/#writing-one-sided-mods)
+- [Society source](https://github.com/Chakyl/society-sunlit-valley)
+- [Farmer's Delight](https://github.com/vectorwing/FarmersDelight)
+
+Installed Society 4.1.4 scripts and the installed Farmer's Delight 1.3.2, Dew Drop 9.0, and Vinery 1.4.41 JARs were used to verify exact local behavior. Moving upstream branches can differ. Third-party game/mod binaries are not redistributed in this repository.
