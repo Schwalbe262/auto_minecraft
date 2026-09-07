@@ -24,6 +24,7 @@ public final class Profile {
     public int wineCycleDays = 6;
     public int preservesCycleDays = 3;
     public Map<String, Long> nextEligibleDay = new HashMap<>();
+    public WineBatchSchedule wineBatchSchedule;
     public Map<String,PendingMachineOutput> pendingMachineOutputs = new LinkedHashMap<>();
     public List<MachineOutputLedger.ResolutionEntry> machineOutputResolutions = new ArrayList<>();
     public long lastSeenDay = -1;

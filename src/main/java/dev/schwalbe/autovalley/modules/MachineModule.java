@@ -93,13 +93,19 @@ public final class MachineModule implements AutomationModule {
         }
         switch (stage) {
             case START -> {
-                machines = new ArrayList<>(ModuleSupport.nearest(c,c.profile().pois(feature == Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR)
+                if (feature==Feature.WINE) {
+                    WorkResult waiting=prepareWineRun(c);
+                    if (waiting!=null) return waiting;
+                } else machines = new ArrayList<>(ModuleSupport.nearest(c,c.profile().pois(PoiKind.PRESERVES_JAR)
                     .stream().filter(p -> eligible(c,p)).toList()));
                 if (machines.isEmpty()) return WorkResult.idle();
                 machineIndex = 0; stage = Stage.MACHINE;
             }
             case MACHINE -> {
-                if (machineIndex >= machines.size()) { clearRun(); return WorkResult.idle(); }
+                if (machineIndex >= machines.size()) {
+                    if (feature==Feature.WINE) WineBatchRules.finish(c);
+                    clearRun(); return WorkResult.idle();
+                }
                 if (closeIfNeeded(c,Stage.MACHINE)) return WorkResult.busy(machineStatus("상자 닫는 중"));
                 if (selectedMachineIndex!=machineIndex) {
                     // Select only at a new-machine boundary. A source haul, hotbar
@@ -115,6 +121,7 @@ public final class MachineModule implements AutomationModule {
                 if (!block.id().equals(blockId())) return fail("Registered production machine no longer matches its type");
                 if (!block.properties().containsKey("working") || !block.properties().containsKey("mature")) return fail("Machine state is not synchronized");
                 if (block.flag("working") && !block.flag("mature")) {
+                    if (feature==Feature.WINE) return unfinishedWine();
                     if (morningSettled(c)) schedule(c,target(),1);
                     machineIndex++; return WorkResult.busy(machineStatus("생산 중인 설비를 건너뛰고 다음 확인"));
                 }
@@ -176,7 +183,7 @@ public final class MachineModule implements AutomationModule {
                     // A one-shot must not report an unfunded refill as completed or hide
                     // it behind tomorrow's polling deadline. Leave mature output in place
                     // so supplying ingredients permits a safe retry on this same game day.
-                    if (c.session().oneShotFeature==feature)
+                    if (feature==Feature.WINE || c.session().oneShotFeature==feature)
                         return fail("Not enough tomatoes: "+(machines.size()-machineIndex)+" machine(s) remaining; need "
                             +cost+" tomatoes of one grade to refill the machine at "+target().pos()+". Add ingredients and retry.");
                     feeding = false;
@@ -240,7 +247,10 @@ public final class MachineModule implements AutomationModule {
                 if (nav == Navigation.Result.ARRIVED) {
                     BlockData block = machine(c);
                     if (!block.id().equals(blockId())) return fail("Production machine changed");
-                    if (block.flag("working") && !block.flag("mature")) { machineIndex++; stage = Stage.MACHINE; break; }
+                    if (block.flag("working") && !block.flag("mature")) {
+                        if (feature==Feature.WINE) return unfinishedWine();
+                        machineIndex++; stage = Stage.MACHINE; break;
+                    }
                     if (!feeding && !block.flag("mature")) { machineIndex++; stage = Stage.MACHINE; break; }
                     c.actions().stopMovement();
                     useSettleAt = -1;
@@ -266,7 +276,10 @@ public final class MachineModule implements AutomationModule {
                 if (c.world().player().selectedSlot() != hotbar) { submit(c,new Action.SelectHotbar(hotbar),Pending.SELECT); break; }
                 BlockData block = machine(c);
                 if (!block.id().equals(blockId())) return fail("Production machine changed before interaction");
-                if (block.flag("working") && !block.flag("mature")) { machineIndex++; stage = Stage.MACHINE; break; }
+                if (block.flag("working") && !block.flag("mature")) {
+                    if (feature==Feature.WINE) return unfinishedWine();
+                    machineIndex++; stage = Stage.MACHINE; break;
+                }
                 collected = block.flag("mature");
                 if (!feeding && !collected) { machineIndex++; stage = Stage.MACHINE; break; }
                 // Preserves still require durable pickup evidence. Wine pickup tracking,
@@ -306,7 +319,8 @@ public final class MachineModule implements AutomationModule {
                 boolean stateConfirmed = !block.flag("mature") && (!feeding || block.flag("working"));
                 if (inputConfirmed && stateConfirmed) {
                     if (feeding) { freshForHaul = false; inputMergeAttempts=0; }
-                    schedule(c,target(),feeding ? (feature == Feature.WINE ? c.profile().wineCycleDays : c.profile().preservesCycleDays) : 1);
+                    if (feature==Feature.WINE) WineBatchRules.confirmFeed(c,target().pos());
+                    else schedule(c,target(),feeding ? c.profile().preservesCycleDays : 1);
                     if (collected && feature==Feature.PRESERVES) {
                         MachineOutputLedger.confirmMachine(c,outputOperationId);
                         stage = Stage.PICKUP;
@@ -381,6 +395,40 @@ public final class MachineModule implements AutomationModule {
         return (feature==Feature.WINE ? "와인통 " : "절임통 ") + current + "/" + machines.size() + " — " + phase;
     }
 
+    /** Whole-rack preflight is read-only; a few early mature kegs cannot open a new cycle. */
+    private WorkResult prepareWineRun(Context c) {
+        WineBatchSchedule schedule=WineBatchRules.ensure(c);
+        if (schedule==null) return WorkResult.idle();
+        if (!schedule.active() && gameDay(c)<schedule.nextDueDay())
+            return new WorkResult(WorkResult.State.IDLE,"와인 랙 공통 생산일 "+schedule.nextDueDay()+"일 대기 — 개별 조기 완료 통은 방문하지 않습니다");
+        if (schedule.active() && schedule.remaining().isEmpty()) {
+            WineBatchRules.finish(c); return WorkResult.idle();
+        }
+        Map<Pos,Poi> registered=new LinkedHashMap<>();
+        for (Poi poi:c.profile().pois(PoiKind.WINE_KEG)) registered.put(poi.pos(),poi);
+        List<Pos> targets=schedule.active() ? schedule.remaining() : new ArrayList<>(registered.keySet());
+        if (targets.isEmpty()) return fail("Registered wine rack is empty; review the common production schedule");
+        boolean processing=false;
+        for (Pos pos:targets) {
+            if (!registered.containsKey(pos)) return fail("An unfinished wine batch member is no longer registered; restore or review the rack registration");
+            if (!c.world().loaded(pos)) return fail("Wine rack member is not loaded; the whole-rack batch has not been completed");
+            BlockData block=c.world().block(pos);
+            if (!block.id().equals(blockId())) return fail("Registered production machine no longer matches its type");
+            if (!block.properties().containsKey("working") || !block.properties().containsKey("mature")) return fail("Wine rack state is not synchronized");
+            processing|=block.flag("working") && !block.flag("mature");
+        }
+        if (processing) {
+            if (schedule.active()) return unfinishedWine();
+            return new WorkResult(WorkResult.State.IDLE,"와인 랙 전체 완료 대기 — 아직 생산 중인 통이 있어 공통 작업을 시작하지 않습니다");
+        }
+        if (!schedule.active()) WineBatchRules.open(c,targets);
+        machines=new ArrayList<>(ModuleSupport.nearest(c,targets.stream().map(registered::get).toList()));
+        return null;
+    }
+    private WorkResult unfinishedWine() {
+        return fail("Unfinished wine batch contains a working machine without its native refill confirmation; inspect it before resuming");
+    }
+
     /** Largest total stock wins, with lower grade winning ties. Counts include synchronized chests and player inventory. */
     static int chooseGrade(int[] counts, int required) {
         int best = -1;
@@ -416,7 +464,7 @@ public final class MachineModule implements AutomationModule {
         long demand=0, day=gameDay(c);
         for (int n=machineIndex;n<machines.size();n++) {
             Poi poi=machines.get(n);
-            if (day<c.profile().nextEligibleDay.getOrDefault(scheduleKey(poi),Long.MIN_VALUE)) continue;
+            if (feature!=Feature.WINE && day<c.profile().nextEligibleDay.getOrDefault(scheduleKey(poi),Long.MIN_VALUE)) continue;
             if (!c.world().loaded(poi.pos())) { demand+=feature==Feature.WINE ? 3 : 5; continue; }
             BlockData block=c.world().block(poi.pos());
             if (!block.id().equals(blockId()) || block.flag("working") && !block.flag("mature")) continue;

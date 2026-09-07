@@ -351,8 +351,10 @@ public final class ValleyScreen extends Screen {
         button(left, 179, third, tr("back"), () -> { scheduleEditor = false; rebuild(); });
         button(left + third + 6, 179, third, tr("schedule.clear"), () -> {
             Map<String, Long> before = new HashMap<>(runtime.profile().nextEligibleDay);
+            var beforeWineBatch = runtime.profile().wineBatchSchedule;
             runtime.profile().nextEligibleDay.clear();
-            if (persist(() -> runtime.profile().nextEligibleDay.putAll(before))) { success("schedule.cleared"); rebuild(); }
+            runtime.profile().wineBatchSchedule = null;
+            if (persist(() -> { runtime.profile().nextEligibleDay.putAll(before); runtime.profile().wineBatchSchedule = beforeWineBatch; })) { success("schedule.cleared"); rebuild(); }
         });
         button(left + (third + 6) * 2, 179, third, tr("confirm"), () -> {
             int harvestDays, wineDays, preservesDays;

@@ -225,7 +225,7 @@ class LogisticsTest {
         assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),150).state());
         assertEquals(List.of(near),f.tomatoWithdrawalSources); assertEquals(9,f.chests.get(far)[0].count());
         assertEquals(WorkResult.State.IDLE,f.run(new TomatoStorageModule(),100).state());
-        assertEquals(6,f.chests.get(near)[0].count()); assertTrue(f.savedOutputs.isEmpty());
+        assertEquals(6,f.chests.get(near)[0].count()); assertTrue(f.savedOutputs.stream().allMatch(Map::isEmpty));
     }
 
     @Test void instantRefillDoesNotHideConfirmedStorageTransfers() {
@@ -1047,7 +1047,7 @@ class LogisticsTest {
         f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY); Pos richer=f.chest(PoiKind.TOMATO_CHEST,1,2,ItemData.EMPTY);
         f.machine(PoiKind.WINE_KEG,10,false,false,false); f.machine(PoiKind.WINE_KEG,11,false,false,false);
         MachineModule module=new MachineModule(Feature.WINE);
-        while (f.machineClicks()==0) { module.tick(f.context()); f.advance(); }
+        while (!f.profile.nextEligibleDay.containsKey("wine:10:64:0")) { module.tick(f.context()); f.advance(); }
         module.reset(); f.cancel(); f.chests.get(richer)[0]=tomato(2,30);
         assertEquals(WorkResult.State.IDLE,f.run(module,100).state());
         assertEquals(List.of(0,2),f.usedGrades);
@@ -1424,7 +1424,7 @@ class LogisticsTest {
         assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),40).state());
         assertEquals(1,f.machineClicks()); assertEquals(3,f.consumed); assertNotNull(f.dropped);
         assertFalse(f.blocks.get(keg).flag("mature")); assertEquals(List.of(old),f.ground);
-        assertTrue(f.profile.pendingMachineOutputs.isEmpty()); assertTrue(f.savedOutputs.isEmpty());
+        assertTrue(f.profile.pendingMachineOutputs.isEmpty()); assertTrue(f.savedOutputs.stream().allMatch(Map::isEmpty));
         assertTrue(f.navigationHistory.stream().noneMatch(v -> v.reach()<1.25));
     }
 
@@ -1444,9 +1444,9 @@ class LogisticsTest {
         assertEquals(1,f.profile.pendingMachineOutputs.size());
     }
 
-    @Test void noIngredientsAndProcessingMachinesAreIdle() {
-        Fixture f = new Fixture(); f.machine(PoiKind.WINE_KEG,0,false,false,false);
-        assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),20).state());
+    @Test void preservesWithoutIngredientsAndProcessingMachinesRemainIdle() {
+        Fixture f = new Fixture(); f.machine(PoiKind.PRESERVES_JAR,0,false,false,false);
+        assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.PRESERVES),20).state());
         Fixture processing = new Fixture(); processing.machine(PoiKind.PRESERVES_JAR,0,true,false,false);
         assertEquals(WorkResult.State.IDLE,processing.run(new MachineModule(Feature.PRESERVES),20).state());
         assertEquals(0,processing.machineClicks());
@@ -1684,10 +1684,9 @@ class LogisticsTest {
     @Test void resourcesRetryNextDayAndProductionScheduleSurvivesReset() {
         Fixture f = new Fixture(); Pos keg = f.machine(PoiKind.WINE_KEG,0,false,false,false);
         MachineModule module = new MachineModule(Feature.WINE);
-        assertEquals(WorkResult.State.IDLE,f.run(module,20).state());
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,20).state());
+        assertTrue(f.profile.wineBatchSchedule.active()); assertEquals(List.of(keg),f.profile.wineBatchSchedule.remaining());
         int visits = f.navigationCalls;
-        assertEquals(WorkResult.State.IDLE,module.tick(f.context()).state());
-        assertEquals(visits,f.navigationCalls);
         f.inventory[0] = tomato(0,9); f.dayTime = 24000;
         assertEquals(WorkResult.State.IDLE,f.run(module,40).state());
         assertEquals(1,f.machineClicks());
@@ -1708,16 +1707,127 @@ class LogisticsTest {
         assertEquals(13L,f.profile.nextEligibleDay.get("wine:0:64:0"));
     }
 
-    @Test void dueButStillWorkingReschedulesOneDayWithoutVisiting() {
+    @Test void fourEarlyWinesCannotStartBeforeTheLatestRegisteredRackDeadlineInEitherMode() {
+        for (boolean once:new boolean[]{true,false}) {
+            Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,24); List<Pos> rack=new ArrayList<>();
+            for (int index=0;index<8;index++) {
+                Pos keg=f.machine(PoiKind.WINE_KEG,10+index,true,true,false); rack.add(keg);
+                f.profile.nextEligibleDay.put(WineBatchRules.key(keg),index<4 ? 330L : 332L);
+            }
+            // Old unrelated/stale registrations cannot postpone this actual rack.
+            f.profile.nextEligibleDay.put("wine:999:64:0",999L);
+            AutomationEngine engine=new AutomationEngine(List.of(new MachineModule(Feature.WINE)));
+            for (long day=330;day<332;day++) {
+                f.dayTime=day*24000+1000;
+                if (once) { engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,10); assertEquals(AutomationEngine.State.COMPLETE,engine.state()); }
+                else { engine.start(f.context()); for (int tick=0;tick<40;tick++) { engine.tick(f.context()); f.advance(); } engine.stop(f.context(),AutomationEngine.State.OFF,"test pause"); }
+                assertEquals(0,f.navigationCalls); assertEquals(0,f.machineClicks()); assertTrue(f.history.isEmpty());
+                assertEquals(332,f.profile.wineBatchSchedule.nextDueDay()); assertFalse(f.profile.wineBatchSchedule.active());
+            }
+            f.dayTime=332*24000L+1000; engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,250);
+            assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status()); assertEquals(8,f.machineClicks());
+            assertEquals(24,f.consumed); assertEquals(338,f.profile.wineBatchSchedule.nextDueDay());
+            assertFalse(f.profile.wineBatchSchedule.active()); assertTrue(f.profile.wineBatchSchedule.remaining().isEmpty());
+        }
+    }
+
+    @Test void globalDueWaitsForEveryRackMemberBeforeOpeningAnyOfTheEarlyReadyMachines() {
+        Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(0,15); f.dayTime=332*24000L+220;
+        for (int index=0;index<4;index++) f.machine(PoiKind.WINE_KEG,10+index,true,true,false);
+        Pos processing=f.machine(PoiKind.WINE_KEG,14,true,false,false);
+        MachineModule module=new MachineModule(Feature.WINE);
+        WorkResult waiting=module.tick(f.context()); assertEquals(WorkResult.State.IDLE,waiting.state());
+        assertTrue(waiting.message().contains("랙 전체 완료 대기")); assertEquals(0,f.navigationCalls); assertEquals(0,f.machineClicks());
+        assertFalse(f.profile.wineBatchSchedule.active()); assertEquals(332,f.profile.wineBatchSchedule.nextDueDay());
+        f.blocks.put(processing,new BlockData(processing,"society:wine_keg",Map.of("working","true","mature","true","upgraded","false")));
+        assertEquals(WorkResult.State.IDLE,f.run(module,200).state()); assertEquals(5,f.machineClicks());
+        assertEquals(338,f.profile.wineBatchSchedule.nextDueDay());
+    }
+
+    @Test void pausedRackBatchResumesOnlyItsUnfinishedMembersAndUsesTheLatestActualFeedDay() {
+        Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,9); f.dayTime=326*24000L+1000;
+        List<Pos> rack=new ArrayList<>(); for (int index=0;index<3;index++) rack.add(f.machine(PoiKind.WINE_KEG,10+index,true,true,false));
+        AutomationEngine first=isolatedMachineEngine(Feature.WINE); first.startOnce(f.context(),Feature.WINE);
+        for (int tick=0;tick<100 && !f.profile.nextEligibleDay.containsKey(WineBatchRules.key(rack.get(0)));tick++) { first.tick(f.context()); f.advance(); }
+        assertEquals(1,f.machineClicks()); assertEquals(rack.subList(1,3),f.profile.wineBatchSchedule.remaining());
+        assertEquals(326L,f.profile.wineBatchSchedule.latestFeedDay()); assertTrue(f.profile.wineBatchSchedule.active());
+        first.stop(f.context(),AutomationEngine.State.OFF,"manual pause");
+        f.dayTime=327*24000L+1000;
+        AutomationEngine resumed=isolatedMachineEngine(Feature.WINE); resumed.startOnce(f.context(),Feature.WINE); f.runUntilStopped(resumed,200);
+        assertEquals(AutomationEngine.State.COMPLETE,resumed.state(),resumed.status()); assertEquals(3,f.machineClicks());
+        assertEquals(rack,f.history.stream().filter(a -> a instanceof Action.UseBlock use && use.purpose()==Action.Use.MACHINE)
+            .map(a -> ((Action.UseBlock)a).pos()).toList());
+        assertEquals(333,f.profile.wineBatchSchedule.nextDueDay()); assertEquals(327L,f.profile.wineBatchSchedule.latestFeedDay());
+        assertFalse(f.profile.wineBatchSchedule.active()); assertEquals(9,f.consumed);
+    }
+
+    @Test void addingANewKegAfterCompletionCannotStartAnEarlySubsetBatch() {
+        Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,9); f.dayTime=326*24000L;
+        Pos old=f.machine(PoiKind.WINE_KEG,10,false,false,false);
+        MachineModule module=new MachineModule(Feature.WINE); assertEquals(WorkResult.State.IDLE,f.run(module,80).state());
+        f.machine(PoiKind.WINE_KEG,11,false,false,false); f.dayTime=327*24000L;
+        int visits=f.navigationCalls, actions=f.history.size(); module.reset();
+        assertEquals(WorkResult.State.IDLE,module.tick(f.context()).state()); assertEquals(visits,f.navigationCalls); assertEquals(actions,f.history.size());
+        assertEquals(332,f.profile.wineBatchSchedule.nextDueDay());
+        f.dayTime=332*24000L; f.blocks.put(old,new BlockData(old,"society:wine_keg",Map.of("working","true","mature","true","upgraded","false")));
+        assertEquals(WorkResult.State.IDLE,f.run(module,120).state()); assertEquals(3,f.machineClicks());
+        assertEquals(338,f.profile.wineBatchSchedule.nextDueDay());
+    }
+
+    @Test void globalWineBatchDoesNotFinishOnIngredientShortageAndCanResumeThatSameDay() {
+        Fixture f=new Fixture(); f.equipHoe(); f.dayTime=326*24000L;
+        Pos target=f.machine(PoiKind.WINE_KEG,10,true,true,false);
+        MachineModule module=new MachineModule(Feature.WINE);
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,50).state()); assertEquals(0,f.machineClicks());
+        assertTrue(f.blocks.get(target).flag("mature")); assertEquals(List.of(target),f.profile.wineBatchSchedule.remaining());
+        assertNull(f.profile.wineBatchSchedule.latestFeedDay()); assertTrue(f.profile.wineBatchSchedule.active());
+        f.inventory[1]=tomato(0,3); module.reset();
+        assertEquals(WorkResult.State.IDLE,f.run(module,80).state()); assertEquals(1,f.machineClicks());
+        assertEquals(332,f.profile.wineBatchSchedule.nextDueDay()); assertFalse(f.profile.wineBatchSchedule.active());
+    }
+
+    @Test void invalidOrUnloadedWholeRackMemberIsReportedBeforeAnyReadySubsetIsVisited() {
+        for (boolean unloaded:new boolean[]{true,false}) {
+            Fixture f=new Fixture(); f.inventory[1]=tomato(2,9);
+            f.machine(PoiKind.WINE_KEG,10,true,true,false); Pos bad=f.machine(PoiKind.WINE_KEG,11,true,true,false);
+            if (unloaded) f.unloaded.add(bad); else f.blocks.put(bad,new BlockData(bad,"minecraft:air",Map.of()));
+            WorkResult result=new MachineModule(Feature.WINE).tick(f.context());
+            assertEquals(WorkResult.State.BLOCKED,result.state()); assertFalse(f.profile.wineBatchSchedule.active());
+            assertEquals(0,f.navigationCalls); assertTrue(f.history.isEmpty()); assertEquals(0,f.consumed);
+        }
+    }
+
+    @Test void batchMustBeSavedBeforeAnyMachineActionAndFailedConfirmationCannotDisappearAfterRestart() {
+        for (boolean failAtOpen:new boolean[]{true,false}) {
+            Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(2,3); Pos target=f.machine(PoiKind.WINE_KEG,10,false,false,false);
+            f.checkpointHook=() -> {
+                WineBatchSchedule state=f.profile.wineBatchSchedule;
+                if (state!=null && state.active() && (failAtOpen || state.remaining().isEmpty())) throw new IllegalStateException("disk unavailable");
+            };
+            MachineModule module=new MachineModule(Feature.WINE);
+            assertThrows(IllegalStateException.class,() -> f.run(module,100));
+            assertEquals(failAtOpen ? 0 : 1,f.machineClicks()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+            if (failAtOpen) { assertFalse(f.profile.wineBatchSchedule.active()); assertTrue(f.history.isEmpty()); }
+            else {
+                assertTrue(f.profile.wineBatchSchedule.active()); assertEquals(List.of(target),f.profile.wineBatchSchedule.remaining());
+                assertNull(f.profile.wineBatchSchedule.latestFeedDay());
+                f.checkpointHook=() -> { }; module.reset(); f.cancel();
+                assertEquals(WorkResult.State.BLOCKED,module.tick(f.context()).state()); assertEquals(1,f.machineClicks());
+            }
+        }
+    }
+
+    @Test void dueWineRackWaitsWithoutMovingItsCommonDeadlineOrVisiting() {
         Fixture f = new Fixture(); f.machine(PoiKind.WINE_KEG,0,true,false,false);
         f.profile.nextEligibleDay.put("wine:0:64:0",6L); f.dayTime = 6*24000L+220;
         assertEquals(WorkResult.State.IDLE,new MachineModule(Feature.WINE).tick(f.context()).state());
-        assertEquals(7L,f.profile.nextEligibleDay.get("wine:0:64:0"));
+        assertEquals(6L,f.profile.nextEligibleDay.get("wine:0:64:0"));
+        assertEquals(6L,f.profile.wineBatchSchedule.nextDueDay()); assertFalse(f.profile.wineBatchSchedule.active());
         assertEquals(0,f.navigationCalls);
     }
 
     @Test void dueMachineWaitsForMorningProcessingWithoutSkippingItsDueDay() {
-        Fixture f = new Fixture(); Pos keg=f.machine(PoiKind.WINE_KEG,0,true,false,false);
+        Fixture f = new Fixture(); f.inventory[0]=tomato(0,3); Pos keg=f.machine(PoiKind.WINE_KEG,0,true,false,false);
         f.profile.nextEligibleDay.put("wine:0:64:0",6L); f.dayTime=6*24000L;
         MachineModule module=new MachineModule(Feature.WINE);
         assertEquals(WorkResult.State.IDLE,module.tick(f.context()).state());
@@ -1728,10 +1838,10 @@ class LogisticsTest {
         assertEquals(1,f.machineClicks());
     }
 
-    @Test void matureMachineCanCollectWithEmptyHandWithoutIngredients() {
-        Fixture f = new Fixture(); f.machine(PoiKind.WINE_KEG,0,true,true,false);
-        assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),40).state());
-        assertEquals(0,f.consumed); assertEquals(1,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE)));
+    @Test void maturePreservesCanStillCollectWithEmptyHandWithoutIngredients() {
+        Fixture f = new Fixture(); f.machine(PoiKind.PRESERVES_JAR,0,true,true,false);
+        assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.PRESERVES),40).state());
+        assertEquals(0,f.consumed); assertEquals(1,ModuleSupport.count(f.context(),i -> i.is(ItemData.PRESERVES)));
     }
 
     @Test void preservesRecipeUsesFiveOrThreeWhenUpgraded() {
@@ -1769,7 +1879,7 @@ class LogisticsTest {
         }
     }
 
-    @Test void cancellationProducesNoCleanupClickAndRestartObservesState() {
+    @Test void cancellationBeforeRefillConfirmationDoesNotInferBatchCompletionFromWorkingState() {
         Fixture f = new Fixture(); f.inventory[0] = tomato(0,9);
         f.machine(PoiKind.WINE_KEG,0,false,false,false);
         MachineModule module = new MachineModule(Feature.WINE);
@@ -1777,7 +1887,9 @@ class LogisticsTest {
         int actions = f.history.size();
         module.reset(); f.cancel();
         assertEquals(actions,f.history.size());
-        assertEquals(WorkResult.State.IDLE,f.run(module,10).state());
+        WorkResult resumed=f.run(module,10);
+        assertEquals(WorkResult.State.BLOCKED,resumed.state()); assertTrue(resumed.message().contains("without its native refill confirmation"));
+        assertTrue(f.profile.wineBatchSchedule.active()); assertEquals(1,f.profile.wineBatchSchedule.remaining().size());
         assertEquals(1,f.machineClicks());
     }
 

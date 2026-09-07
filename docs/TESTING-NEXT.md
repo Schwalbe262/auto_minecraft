@@ -285,3 +285,29 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   incompatible-fragment cases are fixture evidence, not fabricated live items.
   After the wine and storage one-shots completed, the same instance was normally
   restarted again to install this final fallback build, preserving its profile.
+
+## Common whole-rack wine cycle — 2026-09-08
+
+- Wine now persists one common rack deadline and an unfinished-member list.
+  Migration uses the latest deadline among registered kegs; a few earlier mature
+  kegs cannot trigger a separate supply/production visit. The complete registered
+  rack must be ready before a new batch opens. Only confirmed native refills
+  remove members; interruption retains unfinished work. The next cycle is six
+  configured game days after the last confirmed feed, not the first early keg.
+- Java 17 `test build` passed **620 tests, zero failures or errors**. Snapshot
+  SHA-256: `D116776FB261C7D307AD803EA124770CB13B69FF75A4B622603157EECB4BF0F6`.
+  This is build evidence; the new common-cycle behavior still requires live
+  installation and a real production boundary. No cooldown was advanced for tests.
+- A recorded route exposed a missing outdoor connection to the second farm.
+  A bounded, read-only preview verified the existing route failed and the recorded
+  connection allowed both outbound and return paths. Only revalidated route
+  waypoints were added to the private profile. The actual client then reached
+  that farm and harvested before a separate crop-footprint protection stopped it.
+- The wine-cellar exit recording was checked against live collision geometry.
+  The original registered corridor has valid 20-node paths in both directions
+  from its actual half-block standing level. A higher, non-standable cell is not
+  evidence of a missing exit corridor. This check is path-planning evidence,
+  not a claim of a fresh end-to-end movement test.
+- A continuous run also deposited 34 pine tar into the registered shipping bin;
+  native inventory acknowledgements confirmed the transfer. Later monetary
+  payout was not independently attributed.

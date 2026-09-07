@@ -166,7 +166,7 @@ public final class ClientRuntime {
         try { saveProfile(); notifyUser("경유지를 저장했습니다."); }
         catch (RuntimeException e) { profile.pois.remove(profile.pois.size()-1); notifyUser(e.getMessage()); }
     }
-    private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest,profile.pendingMachineOutputs,profile.machineOutputResolutions); }
+    private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.wineBatchSchedule,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest,profile.pendingMachineOutputs,profile.machineOutputResolutions); }
     private void checkpointMachineState() {
         try { saveProfile(); }
         catch (RuntimeException e) { persistenceError=e.getMessage(); throw e; }
@@ -224,7 +224,7 @@ public final class ClientRuntime {
         attackFence=running() || world.tick()<attackFenceUntil;
         if (running()) {
             long day=Math.floorDiv(world.dayTime(),24000);
-            if (profile.lastSeenDay>=0 && day<profile.lastSeenDay) { profile.nextEligibleDay.clear(); pause("게임 날짜가 되돌아가 일정 확인이 필요합니다."); }
+            if (profile.lastSeenDay>=0 && day<profile.lastSeenDay) { profile.nextEligibleDay.clear(); profile.wineBatchSchedule=null; pause("게임 날짜가 되돌아가 일정 확인이 필요합니다."); }
             profile.lastSeenDay=day;
             actions.tick();
             try { engine.tick(context); }

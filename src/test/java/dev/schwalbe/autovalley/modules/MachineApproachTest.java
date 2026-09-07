@@ -74,7 +74,7 @@ class MachineApproachTest {
             f.inventory[n]=new ItemData("minecraft:cobblestone",64,0,null,false,999);
         f.ground.add(new GroundItem(1,2,66,0,new ItemData(ItemData.WINE,64,0,7,false,999)));
         for(int n=0;n<20 && f.uses==0;n++) { f.step(); f.advance(); }
-        assertEquals(1,f.uses); assertEquals(0,f.checkpoints);
+        assertEquals(1,f.uses); assertEquals(2,f.checkpoints,"persist migrated rack deadline and active batch, not an output pickup obligation");
         assertTrue(f.profile.pendingMachineOutputs.isEmpty());
         assertTrue(f.navigationReaches.stream().allMatch(r -> r==4.0));
     }

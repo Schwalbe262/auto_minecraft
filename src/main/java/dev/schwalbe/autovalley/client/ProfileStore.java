@@ -69,6 +69,7 @@ public final class ProfileStore {
         // Obsolete desired-grade layouts are inert compatibility data, not a
         // migration requirement or a reason to block otherwise valid settings.
         MachineGroupRules.validate(profile);
+        WineBatchRules.validate(profile);
         MachineOutputLedger.validate(profile);
         for (Feature feature:Feature.values()) profile.enabled.putIfAbsent(feature,true);
         // Old clients reject schema 2 instead of silently ignoring an unresolved output.
