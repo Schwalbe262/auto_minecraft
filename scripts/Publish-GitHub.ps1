@@ -65,7 +65,12 @@ function Invoke-GitHub([string]$Path, [string]$Method = 'GET', [string]$Body = '
     $separator = $responseText.LastIndexOf("`n")
     $statusCode = [int]$responseText.Substring($separator+1)
     if ($statusCode -eq 404 -and $Method -eq 'GET') { return $null }
-    if ($statusCode -lt 200 -or $statusCode -ge 300) { throw "GitHub returned HTTP $statusCode." }
+    if ($statusCode -lt 200 -or $statusCode -ge 300) {
+        $apiError = $null
+        try { $apiError = $responseText.Substring(0,$separator) | ConvertFrom-Json } catch { }
+        $detail = if ($apiError) { (@{message=$apiError.message;errors=$apiError.errors} | ConvertTo-Json -Depth 5 -Compress) } else { 'No structured error.' }
+        throw "GitHub $Method $Path returned HTTP ${statusCode}: $detail"
+    }
     return $responseText.Substring(0,$separator) | ConvertFrom-Json
 }
 try {
