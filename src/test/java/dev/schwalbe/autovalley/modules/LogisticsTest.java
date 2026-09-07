@@ -8,6 +8,212 @@ import static org.junit.jupiter.api.Assertions.*;
 class LogisticsTest {
     private static ItemData tomato(int grade, int count) { return new ItemData(ItemData.TOMATO,count,grade,null,false,999); }
     private static ItemData wine(Integer year) { return new ItemData(ItemData.WINE,1,0,year,false,999); }
+    private static ItemData wine(int year,int count,int grade) { return new ItemData(ItemData.WINE,count,grade,year,false,999); }
+
+    @Test void magnetRefillDrainsOnlyAcknowledgedStoredQuantityAndNeverCountsTheSameAckTwice() {
+        for (boolean confirmedCount:new boolean[]{false,true}) {
+            Fixture f=new Fixture(); f.inventory[0]=tomato(0,64); f.tomatoRefills.add(tomato(0,64)); f.reportConfirmedCount=confirmedCount;
+            f.session.magnetHaulPending=true; f.session.magnetHaulRemaining.put(ItemData.TOMATO,128);
+            Pos chest=f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY); TomatoStorageModule module=new TomatoStorageModule();
+            while (f.history.stream().noneMatch(Action.QuickMove.class::isInstance)) { module.tick(f.context()); f.advance(); }
+            assertEquals(64,f.inventory[0].count(),"magnet instantly replaced the deposited stack");
+            assertEquals(128,f.session.magnetHaulRemaining.get(ItemData.TOMATO),"sending/receiving a packet alone does not settle the ledger");
+            module.tick(f.context());
+            assertEquals(64,f.session.magnetHaulRemaining.get(ItemData.TOMATO)); assertTrue(f.session.magnetHaulPending);
+            module.tick(f.context());
+            assertEquals(64,f.session.magnetHaulRemaining.get(ItemData.TOMATO),"polling pending next transfer cannot replay previous ACK");
+            f.advance(); assertEquals(WorkResult.State.IDLE,f.run(module,30).state());
+            assertFalse(f.session.magnetHaulPending); assertTrue(f.session.magnetHaulRemaining.isEmpty());
+            assertEquals(128,Arrays.stream(f.chests.get(chest)).mapToInt(ItemData::count).sum());
+        }
+    }
+
+    @Test void disappearedGroundItemsNeverClearTheLedgerOrAllowProductionAndSleep() {
+        Fixture f=new Fixture(); f.dayTime=13000; f.inventory[0]=tomato(0,3);
+        f.session.magnetHaulPending=true; f.session.magnetHaulRemaining.put(ItemData.TOMATO,64);
+        f.ground.add(new GroundItem(1,.5,64,.5,tomato(0,61)));
+        f.machine(PoiKind.WINE_KEG,0,false,false,false); f.machine(PoiKind.PRESERVES_JAR,1,false,false,false); f.poi(PoiKind.BED,2,null);
+        AutomationEngine engine=new AutomationEngine(List.of(new MachineModule(Feature.WINE),new MachineModule(Feature.PRESERVES),new SleepModule()));
+        engine.start(f.context()); engine.tick(f.context()); f.ground.clear();
+        for (int i=0;i<200;i++) { f.advance(); engine.tick(f.context()); }
+        assertTrue(f.session.magnetHaulPending); assertEquals(64,f.session.magnetHaulRemaining.get(ItemData.TOMATO));
+        assertEquals(0,f.machineClicks()); assertFalse(f.sleeping); assertTrue(f.history.isEmpty());
+    }
+
+    @Test void realStorageMustFinishTheMagnetLedgerBeforeProductionAndSleepStart() {
+        Fixture f=new Fixture(); f.dayTime=13000; f.inventory[0]=tomato(0,64); f.tomatoRefills.add(tomato(0,64)); f.reportConfirmedCount=true;
+        f.session.magnetHaulPending=true; f.session.magnetHaulRemaining.put(ItemData.TOMATO,128);
+        f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY); f.machine(PoiKind.WINE_KEG,1,false,false,false); f.poi(PoiKind.BED,2,null);
+        AutomationEngine engine=new AutomationEngine(List.of(new TomatoStorageModule(),new MachineModule(Feature.WINE),new SleepModule()));
+        engine.start(f.context());
+        for (int i=0;i<250 && !f.sleeping;i++) {
+            engine.tick(f.context());
+            if (f.session.magnetHaulPending) { assertEquals(0,f.machineClicks()); assertFalse(f.sleeping); }
+            f.advance();
+        }
+        assertTrue(f.session.magnetHaulRemaining.isEmpty()); assertFalse(f.session.magnetHaulPending);
+        assertEquals(1,f.machineClicks()); assertEquals(3,f.consumed); assertTrue(f.sleeping);
+    }
+
+    @Test void failedStorageAcknowledgementNeverSettlesTheMagnetLedger() {
+        Fixture f=new Fixture(); f.inventory[0]=tomato(0,64); f.session.magnetHaulPending=true;
+        f.session.magnetHaulRemaining.put(ItemData.TOMATO,64); f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY);
+        TomatoStorageModule module=new TomatoStorageModule();
+        while (!(f.action instanceof Action.QuickMove)) { module.tick(f.context()); if (!(f.action instanceof Action.QuickMove)) f.advance(); }
+        f.cancel();
+        assertEquals(WorkResult.State.BLOCKED,module.tick(f.context()).state());
+        assertEquals(64,f.session.magnetHaulRemaining.get(ItemData.TOMATO)); assertTrue(f.session.magnetHaulPending);
+    }
+
+    @Test void surplusShipsOnlyHeldFreshWineAfterEveryBirthCohortReserveIsCompletelyFull() {
+        Fixture f=new Fixture(); f.wineClockYear=8; f.inventory[0]=wine(8,5,0);
+        Pos barrel=f.fullWineReserve(0,8,27), doubleChest=f.fullWineReserve(1,8,54);
+        f.chest(PoiKind.WINE_CHEST,2,7,ItemData.EMPTY); // Another current-age group is irrelevant.
+        Pos bin=f.chest(PoiKind.SHIPPING_BIN,3,null,ItemData.EMPTY);
+        assertEquals(WorkResult.State.IDLE,f.run(new WineSurplusShippingModule(),100).state());
+        assertEquals(5,f.soldWine); assertEquals(0,f.withdrawnWine); assertEquals(5,f.chests.get(bin)[0].count());
+        assertEquals(1728,Arrays.stream(f.chests.get(barrel)).mapToInt(ItemData::count).sum());
+        assertEquals(3456,Arrays.stream(f.chests.get(doubleChest)).mapToInt(ItemData::count).sum());
+        assertEquals(1,f.opens.get(barrel)); assertEquals(1,f.opens.get(doubleChest)); assertFalse(f.opens.containsKey(new Pos(2,64,0)));
+        assertTrue(f.session.wineSalePermits.isEmpty());
+    }
+
+    @Test void onePartialStackOfAnotherQualityPreventsSaleEvenWhenEverySlotIsOccupied() {
+        Fixture f=new Fixture(); f.inventory[0]=wine(8,5,0); f.fullWineReserve(0,8,27);
+        Pos partial=f.fullWineReserve(1,8,27); f.chests.get(partial)[26]=wine(8,63,3);
+        f.chest(PoiKind.SHIPPING_BIN,2,null,ItemData.EMPTY);
+        assertEquals(WorkResult.State.BLOCKED,f.run(new WineSurplusShippingModule(),100).state());
+        assertEquals(0,f.soldWine); assertEquals(0,f.withdrawnWine); assertTrue(f.session.wineSalePermits.isEmpty());
+    }
+
+    @Test void missingOrConflictingWineReserveContentsNeverAuthorizeSurplus() {
+        for (ItemData conflict:new ItemData[]{ItemData.EMPTY,wine(9,64,0),tomato(0,64)}) {
+            Fixture f=new Fixture(); f.inventory[0]=wine(8,5,0); Pos barrel=f.fullWineReserve(0,8,27);
+            f.chests.get(barrel)[3]=conflict; f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
+            assertEquals(WorkResult.State.BLOCKED,f.run(new WineSurplusShippingModule(),60).state());
+            assertEquals(0,f.soldWine); assertTrue(f.session.wineSalePermits.isEmpty());
+        }
+    }
+
+    @Test void unknownWineClockUnknownBirthAndFutureBirthNeverAuthorizeSurplus() {
+        for (int scenario=0;scenario<3;scenario++) {
+            Fixture f=new Fixture(); f.wineClockYear=scenario==0 ? null : 8;
+            f.inventory[0]=scenario==1 ? wine((Integer)null) : wine(scenario==2 ? 9 : 8,5,0);
+            f.fullWineReserve(0,8,27); f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
+            assertEquals(WorkResult.State.BLOCKED,f.run(new WineSurplusShippingModule(),60).state());
+            assertEquals(0,f.soldWine); assertTrue(f.history.isEmpty());
+        }
+    }
+
+    @Test void absentUnloadedUnreachableOrUnsupportedReservePreventsSurplusSale() {
+        for (int scenario=0;scenario<4;scenario++) {
+            Fixture f=new Fixture(); f.inventory[0]=wine(8,5,0);
+            if (scenario!=0) {
+                Pos barrel=f.fullWineReserve(0,8,scenario==3 ? 2 : 27);
+                if (scenario==1) f.unloaded.add(barrel);
+                if (scenario==2) f.blockedPaths.add(barrel);
+            }
+            f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
+            assertEquals(WorkResult.State.BLOCKED,f.run(new WineSurplusShippingModule(),60).state());
+            assertEquals(0,f.soldWine); assertTrue(f.session.wineSalePermits.isEmpty());
+        }
+    }
+
+    @Test void expiryDayChangeOrAddedReserveInvalidatesTheVerifiedSaleAllowance() {
+        for (int scenario=0;scenario<3;scenario++) {
+            Fixture f=new Fixture(); f.inventory[0]=wine(8,5,0); f.fullWineReserve(0,8,27); f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
+            WineSurplusShippingModule module=new WineSurplusShippingModule();
+            while (!f.session.wineSalePermits.containsKey(8)) { module.tick(f.context()); f.advance(); }
+            if (scenario==0) f.ticks+=1200;
+            else if (scenario==1) f.dayTime+=24000;
+            else f.chest(PoiKind.WINE_CHEST,2,8,ItemData.EMPTY);
+            assertEquals(WorkResult.State.BLOCKED,f.run(module,30).state());
+            assertEquals(0,f.soldWine); assertTrue(f.session.wineSalePermits.isEmpty());
+        }
+    }
+
+    @Test void cancellingSurplusClearsPermitsAndRequiresNewReserveVerification() {
+        Fixture f=new Fixture(); f.inventory[0]=wine(8,5,0); Pos barrel=f.fullWineReserve(0,8,27); f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
+        WineSurplusShippingModule module=new WineSurplusShippingModule();
+        while (!f.session.wineSalePermits.containsKey(8)) { module.tick(f.context()); f.advance(); }
+        int actions=f.history.size(); module.reset(); f.cancel();
+        assertTrue(f.session.wineSalePermits.isEmpty()); assertEquals(actions,f.history.size());
+        f.chests.get(barrel)[0]=wine(8,63,0);
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,60).state()); assertEquals(0,f.soldWine);
+    }
+
+    @Test void destinationAcknowledgementConsumesAllowanceDespiteInstantMagnetRefill() {
+        Fixture f=new Fixture(); f.inventory[0]=wine(8,5,0); f.refillAfterWineSale=wine(8,5,0);
+        f.fullWineReserve(0,8,27); Pos bin=f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
+        assertEquals(WorkResult.State.BLOCKED,f.run(new WineSurplusShippingModule(),100).state());
+        assertEquals(5,f.soldWine); assertEquals(5,f.chests.get(bin)[0].count()); assertEquals(5,f.inventory[0].count());
+        assertTrue(f.session.wineSalePermits.isEmpty(),"newly picked-up wine needs a new reserve verification");
+    }
+
+    @Test void enlargedHeldStackCannotExceedThePreviouslyVerifiedSurplus() {
+        Fixture f=new Fixture(); f.inventory[0]=wine(8,5,0); f.fullWineReserve(0,8,27); f.chest(PoiKind.SHIPPING_BIN,1,null,ItemData.EMPTY);
+        WineSurplusShippingModule module=new WineSurplusShippingModule();
+        while (!f.session.wineSalePermits.containsKey(8)) { module.tick(f.context()); f.advance(); }
+        f.inventory[0]=wine(8,9,0);
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,30).state()); assertEquals(0,f.soldWine);
+    }
+
+    @Test void largeFarmServices397KegsBefore144JarsWithoutCountingEveryChestForEveryMachine() {
+        Fixture f=new Fixture(); f.dayTime=1000;
+        for (int grade=0;grade<4;grade++) {
+            Pos chest=f.chest(PoiKind.TOMATO_CHEST,grade,grade,ItemData.EMPTY);
+            ItemData[] stacks=new ItemData[grade==2 ? 54 : 2]; Arrays.fill(stacks,tomato(grade,64)); f.chests.put(chest,stacks);
+        }
+        Set<Pos> kegs=new HashSet<>();
+        for (int i=0;i<397;i++) kegs.add(f.machine(PoiKind.WINE_KEG,20+i,false,false,false));
+        for (int i=0;i<144;i++) f.machine(PoiKind.PRESERVES_JAR,500+i,false,false,false);
+        AutomationEngine engine=new AutomationEngine(List.of(new MachineModule(Feature.PRESERVES),new MachineModule(Feature.WINE)));
+        engine.start(f.context());
+        for (int i=0;i<30000 && f.profile.nextEligibleDay.size()<541;i++) { engine.tick(f.context()); f.advance(); }
+        List<Action.UseBlock> uses=f.history.stream().filter(a -> a instanceof Action.UseBlock u && u.purpose()==Action.Use.MACHINE).map(a -> (Action.UseBlock)a).toList();
+        assertEquals(541,uses.size()); assertEquals(397*3+144*5,f.consumed);
+        assertTrue(uses.subList(0,397).stream().allMatch(u -> kegs.contains(u.pos())),"all due wine batches have priority over jars");
+        assertTrue(f.usedGrades.stream().allMatch(g -> g==2),"the largest total stock is selected throughout this workload");
+        int sourceOpens=f.opens.values().stream().mapToInt(Integer::intValue).sum();
+        assertTrue(sourceOpens<=200,"source visits must scale with ingredient hauls, not541machines; actual="+sourceOpens);
+        assertEquals(541,f.profile.nextEligibleDay.size());
+    }
+
+    @Test void cachedChestCountsStillSwitchGradeWhenLiveInventoryTotalsCrossOver() {
+        Fixture f=new Fixture(); f.inventory[0]=tomato(0,6); f.inventory[1]=tomato(2,7);
+        f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY); f.chest(PoiKind.TOMATO_CHEST,1,2,ItemData.EMPTY);
+        for (int i=0;i<3;i++) f.machine(PoiKind.WINE_KEG,10+i,false,false,false);
+        assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),150).state());
+        assertEquals(List.of(2,0,2),f.usedGrades);
+        assertEquals(2,f.opens.values().stream().mapToInt(Integer::intValue).sum(),"held ingredients need no repeat chest count");
+    }
+
+    @Test void cancellationDiscardsChestCacheBeforeTheNextMachine() {
+        Fixture f=new Fixture(); f.inventory[0]=tomato(0,9);
+        f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY); Pos richer=f.chest(PoiKind.TOMATO_CHEST,1,2,ItemData.EMPTY);
+        f.machine(PoiKind.WINE_KEG,10,false,false,false); f.machine(PoiKind.WINE_KEG,11,false,false,false);
+        MachineModule module=new MachineModule(Feature.WINE);
+        while (f.machineClicks()==0) { module.tick(f.context()); f.advance(); }
+        module.reset(); f.cancel(); f.chests.get(richer)[0]=tomato(2,30);
+        assertEquals(WorkResult.State.IDLE,f.run(module,100).state());
+        assertEquals(List.of(0,2),f.usedGrades);
+        assertTrue(f.opens.get(richer)>=3,"resume recounts all sources and reopens the selected source before withdrawal");
+    }
+
+    @Test void dayChangeOrBoundedRefreshRecountsExternalChestChangesDespiteHeldIngredients() {
+        for (boolean nextDay:new boolean[]{false,true}) {
+            Fixture f=new Fixture(); f.dayTime=1000; f.inventory[0]=tomato(0,9);
+            f.chest(PoiKind.TOMATO_CHEST,0,0,ItemData.EMPTY); Pos richer=f.chest(PoiKind.TOMATO_CHEST,1,2,ItemData.EMPTY);
+            f.machine(PoiKind.WINE_KEG,10,false,false,false); f.machine(PoiKind.WINE_KEG,11,false,false,false);
+            MachineModule module=new MachineModule(Feature.WINE);
+            while (!f.profile.nextEligibleDay.containsKey("wine:10:64:0")) { module.tick(f.context()); f.advance(); }
+            f.chests.get(richer)[0]=tomato(2,30);
+            if (nextDay) f.dayTime+=24000; else f.ticks+=1201;
+            assertEquals(WorkResult.State.IDLE,f.run(module,100).state());
+            assertEquals(List.of(0,2),f.usedGrades,"newly larger stock must win after day/refresh boundary");
+            assertTrue(f.opens.get(richer)>=3);
+        }
+    }
 
     @Test void fullTomatoStorageYieldsToProductionAndSleepsOnlyAfterTomatoesAreUsed() {
         Fixture f=new Fixture(); f.inventory[0]=tomato(0,3); f.dayTime=13000;
@@ -295,24 +501,36 @@ class LogisticsTest {
     /** Models server changes only on advance(), so polling twice cannot fabricate acknowledgement. */
     private static final class Fixture implements WorldAccess, ActionPort, Navigation {
         final Profile profile = new Profile();
+        final SessionState session = new SessionState();
         final ItemData[] inventory = new ItemData[36];
         final Map<Pos,ItemData[]> chests = new HashMap<>();
         final Map<Pos,BlockData> blocks = new HashMap<>();
         final Map<Pos,Integer> opens = new HashMap<>();
         final List<Action> history = new ArrayList<>();
         final List<Integer> usedGrades = new ArrayList<>();
+        final List<GroundItem> ground=new ArrayList<>();
+        final Deque<ItemData> tomatoRefills=new ArrayDeque<>();
+        final Set<Pos> unloaded=new HashSet<>(), blockedPaths=new HashSet<>();
+        Integer wineClockYear=20;
         long ticks, dayTime, sequence;
-        int selected, consumed, navigationCalls;
+        int selected, consumed, navigationCalls, soldWine, withdrawnWine;
         Pos open, emptyOnSecondOpen;
         boolean sleeping, rejectSleep, pickup = true;
+        boolean reportConfirmedCount;
         ItemData dropped;
+        ItemData refillAfterWineSale;
         ItemSlot extraMenuSlot;
         Action action;
         ActionOutcome outcome = new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
         Fixture() { Arrays.fill(inventory,ItemData.EMPTY); }
-        Context context() { return new Context(this,this,this,profile); }
+        Context context() { return new Context(this,this,this,profile,session); }
         Pos poi(PoiKind kind,int x,Integer group) { Pos p = new Pos(x,64,0); profile.pois.add(new Poi(p,kind,"test",group)); return p; }
         Pos chest(PoiKind kind,int x,Integer group,ItemData initial) { Pos p = poi(kind,x,group); chests.put(p,new ItemData[]{initial,ItemData.EMPTY}); return p; }
+        Pos fullWineReserve(int x,int birth,int size) {
+            Pos p=chest(PoiKind.WINE_CHEST,x,birth,ItemData.EMPTY); ItemData[] slots=new ItemData[size];
+            for (int i=0;i<size;i++) slots[i]=wine(birth,64,i%4);
+            chests.put(p,slots); return p;
+        }
         Pos machine(PoiKind kind,int x,boolean working,boolean mature,boolean upgraded) {
             Pos p = poi(kind,x,null);
             blocks.put(p,new BlockData(p,kind == PoiKind.WINE_KEG ? "society:wine_keg" : "society:preserves_jar",
@@ -358,9 +576,22 @@ class LogisticsTest {
                     else {
                         ItemSlot slot = menu().slot(move.slot());
                         if (slot.player()) {
-                            if (add(chests.get(open),slot.item())) inventory[slot.inventoryIndex()] = ItemData.EMPTY;
+                            if (add(chests.get(open),slot.item())) {
+                                inventory[slot.inventoryIndex()] = ItemData.EMPTY;
+                                if (reportConfirmedCount) outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"confirmed destination transfer",slot.item().count());
+                                if (slot.item().is(ItemData.TOMATO) && !tomatoRefills.isEmpty()) inventory[slot.inventoryIndex()]=tomatoRefills.removeFirst();
+                                boolean wineSale=slot.item().is(ItemData.WINE) && profile.pois.stream().anyMatch(p -> p.pos().equals(open) && p.kind()==PoiKind.SHIPPING_BIN);
+                                if (wineSale) {
+                                    soldWine+=slot.item().count();
+                                    session.wineSalePermits.computeIfPresent(slot.item().year(),(year,permit) -> permit.consumed(slot.item().count()));
+                                    if (refillAfterWineSale!=null) inventory[slot.inventoryIndex()]=refillAfterWineSale;
+                                }
+                            }
                             else outcome = new ActionOutcome(ActionOutcome.State.FAILED,"full chest");
-                        } else if (add(inventory,slot.item())) chests.get(open)[slot.index()] = ItemData.EMPTY;
+                        } else if (add(inventory,slot.item())) {
+                            chests.get(open)[slot.index()] = ItemData.EMPTY;
+                            if (slot.item().is(ItemData.WINE)) withdrawnWine+=slot.item().count();
+                        }
                         else outcome = new ActionOutcome(ActionOutcome.State.FAILED,"full inventory");
                     }
                 }
@@ -376,9 +607,11 @@ class LogisticsTest {
         }
         @Override public long tick() { return ticks; }
         @Override public long dayTime() { return dayTime; }
+        @Override public Integer wineYear() { return wineClockYear; }
+        @Override public List<GroundItem> groundItems() { return List.copyOf(ground); }
         @Override public PlayerState player() { return new PlayerState(.5,64,.5,0,0,true,sleeping,20,20,selected,true,true); }
         @Override public BlockData block(Pos pos) { return blocks.getOrDefault(pos,new BlockData(pos,"minecraft:air",Map.of())); }
-        @Override public boolean loaded(Pos pos) { return true; }
+        @Override public boolean loaded(Pos pos) { return !unloaded.contains(pos); }
         @Override public boolean canStand(Pos feet) { return true; }
         @Override public boolean canTraverse(Pos from,Pos to) { return true; }
         @Override public List<BlockData> scan(Pos center,int horizontalRadius,int verticalRadius) { return List.of(); }
@@ -397,7 +630,7 @@ class LogisticsTest {
         @Override public void move(Movement movement) { }
         @Override public void stopMovement() { }
         @Override public void cancel() { action = null; outcome = new ActionOutcome(ActionOutcome.State.CANCELLED,""); }
-        @Override public Navigation.Result moveTo(Pos target,double reach,Context context) { navigationCalls++; return Navigation.Result.ARRIVED; }
+        @Override public Navigation.Result moveTo(Pos target,double reach,Context context) { navigationCalls++; return blockedPaths.contains(target) ? Navigation.Result.BLOCKED : Navigation.Result.ARRIVED; }
         @Override public void reset() { }
     }
 }

@@ -10,6 +10,9 @@ public interface WorldAccess {
     boolean canTraverse(Pos from, Pos to);
     List<BlockData> scan(Pos center, int horizontalRadius, int verticalRadius);
     List<ItemSlot> inventory();
+    default List<GroundItem> groundItems() { return List.of(); }
+    /** Vinery's live clock, not Minecraft's sleep-skipping dayTime. Null means unavailable. */
+    default Integer wineYear() { return null; }
     MenuData menu();
     boolean mayPlace(int menuSlot, ItemData item);
     default boolean canInteract(Pos target, double reach) { return player().distance(target) <= reach; }

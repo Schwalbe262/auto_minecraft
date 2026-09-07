@@ -15,7 +15,11 @@ public final class DisposalModule implements AutomationModule {
             if (!result.done()) return WorkResult.busy("Waiting for rotten tomato disposal");
             ticket = -1;
             if (!result.success()) return fail("Disposal action failed: " + result.message());
-            if (throwing && ModuleSupport.count(c,i -> i.is(ItemData.ROTTEN)) >= before) return fail("Rotten tomato disposal was not acknowledged");
+            if (throwing) {
+                int removed=result.confirmedCount()>0 ? result.confirmedCount() : before-ModuleSupport.count(c,i -> i.is(ItemData.ROTTEN));
+                if (removed<=0) return fail("Rotten tomato disposal was not acknowledged");
+                c.session().recordFarmRemoval(ItemData.ROTTEN,removed);
+            }
             throwing = false;
         }
         if (ModuleSupport.inventoryItem(c,i -> i.is(ItemData.ROTTEN)) == null) return WorkResult.idle();

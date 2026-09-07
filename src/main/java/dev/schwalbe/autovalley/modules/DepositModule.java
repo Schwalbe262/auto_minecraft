@@ -7,10 +7,10 @@ import java.util.*;
 abstract class DepositModule implements AutomationModule {
     private enum Stage { FIND, APPROACH, OPEN, TRANSFER, CLOSE }
     private Stage stage = Stage.FIND;
-    private long ticket = -1, unknownSince = -1;
+    private long ticket = -1, unknownSince = -1, groundWaitSince=-1;
     private ItemData selected;
     private List<Poi> candidates = List.of();
-    private int candidate, containerId = -1, before;
+    private int candidate, containerId = -1, before, beforeDestination;
     protected abstract String itemId();
     protected abstract PoiKind destinationKind();
     protected abstract Integer classifier(ItemData item);
@@ -25,7 +25,9 @@ abstract class DepositModule implements AutomationModule {
                 if (!c.world().menu().container() || !c.world().menu().carried().empty()) return fail("Storage menu changed or cursor occupied");
                 containerId = c.world().menu().id(); stage = Stage.TRANSFER;
             } else if (stage == Stage.TRANSFER) {
-                if (ModuleSupport.count(c,selected) >= before) return fail("Storage transfer was not acknowledged in inventory");
+                int moved=result.confirmedCount()>0 ? result.confirmedCount() : Math.max(before-ModuleSupport.count(c,selected),destinationCount(c)-beforeDestination);
+                if (moved<=0) return fail("Storage transfer was not acknowledged by the server");
+                c.session().recordFarmRemoval(selected.id(),moved);
             } else if (stage == Stage.CLOSE) {
                 stage = Stage.FIND; containerId = -1;
             }
@@ -33,7 +35,17 @@ abstract class DepositModule implements AutomationModule {
         switch (stage) {
             case FIND -> {
                 ItemSlot slot = ModuleSupport.inventoryItem(c, i -> i.is(itemId()));
-                if (slot == null) { unknownSince = -1; return WorkResult.idle(); }
+                if (slot == null) {
+                    unknownSince = -1;
+                    if (itemId().equals(ItemData.TOMATO) && c.session().magnetHaulRemaining.getOrDefault(itemId(),0)>0) {
+                        if (groundWaitSince<0) groundWaitSince=c.world().tick();
+                        if (c.world().tick()-groundWaitSince<c.profile().interactionTimeoutTicks)
+                            return WorkResult.busy("Waiting for magnet-held tomatoes to enter freed inventory slots");
+                        return fail("Unstored magnet harvest remains; check following ground items or free an inventory slot");
+                    }
+                    groundWaitSince=-1; return WorkResult.idle();
+                }
+                groundWaitSince=-1;
                 selected = slot.item();
                 if (selected.quality() < 0 || selected.quality() > 3) return fail("Unknown product quality; inspect the item");
                 Integer group = classifier(selected);
@@ -68,6 +80,7 @@ abstract class DepositModule implements AutomationModule {
                     stage = Stage.APPROACH; ticket = c.actions().submit(new Action.CloseContainer(containerId));
                 } else {
                     before = ModuleSupport.count(c,selected);
+                    beforeDestination=destinationCount(c);
                     ticket = c.actions().submit(new Action.QuickMove(containerId,source.index()));
                 }
             }
@@ -75,6 +88,10 @@ abstract class DepositModule implements AutomationModule {
         }
         return WorkResult.busy("Storing " + itemId());
     }
+    private int destinationCount(Context c) {
+        return c.world().menu().slots().stream().filter(s -> !s.player()).map(ItemSlot::item)
+            .filter(i -> ModuleSupport.same(i,selected)).mapToInt(ItemData::count).sum();
+    }
     private WorkResult fail(String message) { reset(); return WorkResult.blocked(message); }
-    @Override public void reset() { stage = Stage.FIND; ticket = -1; selected = null; candidates = List.of(); candidate = 0; containerId = -1; unknownSince = -1; }
+    @Override public void reset() { stage = Stage.FIND; ticket = -1; selected = null; candidates = List.of(); candidate = 0; containerId = -1; unknownSince = -1; groundWaitSince=-1; }
 }

@@ -6,6 +6,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.ChestType;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.network.protocol.game.ServerboundContainerClickPacket;
@@ -27,14 +28,19 @@ public final class MinecraftActions implements ActionPort {
     private Movement movement;
     private long movementAt;
     private Pos ownedContainer;
+    private ContainerShape openingShape, ownedShape;
     private int ownedMenu=-1;
     private final LinkedHashMap<Long,ActionOutcome> outcomes=new LinkedHashMap<>();
     public MinecraftActions(MinecraftWorld world,ServerObservations observations) { this.world=world; this.observations=observations; }
     public void context(Context context) { this.context=context; }
-    public void enabled(boolean enabled) { this.enabled=enabled; if (!enabled) stopMovement(); }
+    public void enabled(boolean enabled) { if (!enabled) stopMovement(); this.enabled=enabled; }
     public boolean busy() { return pending!=null; }
     public Movement movement() { return enabled && world.tick()-movementAt<=2 ? movement : null; }
-    public boolean ownsContainer() { return world.menu()!=null && world.menu().container() && world.menu().id()==ownedMenu; }
+    public boolean ownsContainer() {
+        MenuData menu=world.menu();
+        return menu!=null && menu.container() && menu.id()==ownedMenu && ownedShape!=null
+            && ownedShape.equals(containerShape(ownedContainer)) && ownedShape.matches(menu);
+    }
     public boolean openingContainer() { return pending instanceof Action.UseBlock use && use.purpose()==Action.Use.OPEN_CONTAINER; }
     public boolean expectingSleep() { return pending instanceof Action.UseBlock use && use.purpose()==Action.Use.SLEEP; }
     public long submit(Action action) {
@@ -42,10 +48,17 @@ public final class MinecraftActions implements ActionPort {
         if (!enabled || context==null) { put(ticket,ActionOutcome.State.CANCELLED,"Automation is paused"); return ticket; }
         if (pending!=null) { put(ticket,ActionOutcome.State.FAILED,"Another action is still awaiting the server"); return ticket; }
         String rejection=SafetyPolicy.rejection(action,context);
+        ContainerShape requestedShape=null;
+        if (rejection==null && action instanceof Action.UseBlock use && use.purpose()==Action.Use.OPEN_CONTAINER) {
+            requestedShape=containerShape(use.pos());
+            if (requestedShape==null || !requestedShape.canonical().equals(use.pos()))
+                rejection="Container is unloaded, incomplete, or no longer the registered chest pair";
+        }
         if (rejection==null && action instanceof Action.QuickMove transfer) rejection=transferRejection(transfer);
         if (rejection!=null) { put(ticket,ActionOutcome.State.FAILED,rejection); return ticket; }
         stopMovement();
         pendingTicket=ticket; pending=action; started=world.tick(); beforeSequence=observations.sequence();
+        openingShape=requestedShape;
         beforeMenu=world.menu(); beforeInventory=world.inventory();
         beforeBlock=action instanceof Action.UseBlock use ? world.block(use.pos()) : null;
         put(ticket,ActionOutcome.State.PENDING,"");
@@ -62,7 +75,8 @@ public final class MinecraftActions implements ActionPort {
         boolean kindMatches=switch (poi.kind()) {
             case TOMATO_CHEST -> item.is(ItemData.TOMATO) && poi.classifier()!=null && item.quality()==poi.classifier();
             case WINE_CHEST -> source.player() && item.is(ItemData.WINE) && item.year()!=null && item.year().equals(poi.classifier());
-            case SHIPPING_BIN -> source.player() && item.is(ItemData.PRESERVES);
+            case SHIPPING_BIN -> source.player() && (item.is(ItemData.PRESERVES) && context.session().allows(context.profile(),Feature.SHIPPING)
+                || item.is(ItemData.WINE) && WineSaleRules.permitted(item,context));
             default -> false;
         };
         if (!kindMatches) return "Item does not match the registered container classification";
@@ -72,6 +86,7 @@ public final class MinecraftActions implements ActionPort {
     }
     private void execute(Action action) {
         if (action instanceof Action.UseBlock use) {
+            if (use.purpose()==Action.Use.OPEN_CONTAINER) { ownedMenu=-1; ownedContainer=null; ownedShape=null; }
             var hit=world.hit(use.pos(),mc.player.getEyePosition());
             if (hit==null) { finish(ActionOutcome.State.FAILED,"Target no longer visible"); return; }
             lookAt(hit.getLocation());
@@ -94,7 +109,7 @@ public final class MinecraftActions implements ActionPort {
             confirmedClick(drop.containerId(),drop.slot(),1,ClickType.THROW);
         } else if (action instanceof Action.CloseContainer) {
             mc.player.closeContainer();
-            ownedMenu=-1; ownedContainer=null;
+            ownedMenu=-1; ownedContainer=null; ownedShape=null;
         }
     }
     private void confirmedClick(int containerId,int slot,int button,ClickType type) {
@@ -113,7 +128,12 @@ public final class MinecraftActions implements ActionPort {
             switch (use.purpose()) {
                 case OPEN_CONTAINER -> {
                     if (menu.container() && menu.id()!=beforeMenu.id() && observations.fullMenuSince(menu.id(),beforeSequence)) {
-                        ownedMenu=menu.id(); ownedContainer=canonicalContainer(use.pos()); finish(ActionOutcome.State.SUCCEEDED,"Container synchronized"); return;
+                        ContainerShape currentShape=containerShape(use.pos());
+                        if (openingShape==null || !openingShape.equals(currentShape) || !openingShape.matches(menu)) {
+                            finish(ActionOutcome.State.FAILED,"Container geometry changed or its complete contents were not opened"); return;
+                        }
+                        ownedMenu=menu.id(); ownedContainer=currentShape.canonical(); ownedShape=currentShape;
+                        finish(ActionOutcome.State.SUCCEEDED,"Container synchronized"); return;
                     }
                 }
                 case SLEEP -> { if (mc.player.isSleeping()) { finish(ActionOutcome.State.SUCCEEDED,"Entered bed"); return; } }
@@ -133,21 +153,57 @@ public final class MinecraftActions implements ActionPort {
             if (!menu.container()) { finish(ActionOutcome.State.SUCCEEDED,"Container closed"); return; }
         } else {
             if (menu.id()!=beforeMenu.id()) { finish(ActionOutcome.State.FAILED,"Container changed while waiting"); return; }
-            if (observations.fullMenuSince(menu.id(),beforeSequence) && (!world.inventory().equals(beforeInventory) || !menu.slots().equals(beforeMenu.slots()))) {
+            for (var acknowledgement:observations.fullMenuSnapshotsSince(menu.id(),beforeSequence)) {
+                if (!InventoryAcknowledgements.changed(beforeMenu,acknowledgement.items())) continue;
                 if (!menu.carried().empty()) { finish(ActionOutcome.State.FAILED,"Unexpected item on cursor"); return; }
-                finish(ActionOutcome.State.SUCCEEDED,"Server confirmed inventory change"); return;
+                int quantity=0;
+                boolean confirmed=true;
+                if (pending instanceof Action.QuickMove move) {
+                    quantity=InventoryAcknowledgements.removed(beforeMenu,acknowledgement.items(),move.slot());
+                    ItemSlot source=beforeMenu.slot(move.slot());
+                    confirmed=quantity>0 && source!=null && (!source.player()
+                        || InventoryAcknowledgements.destinationIncrease(beforeMenu,acknowledgement.items(),source.item())>=quantity);
+                    Poi destination=ownedContainer==null ? null : context.profile().pois.stream().filter(p -> p.pos().equals(ownedContainer)).findFirst().orElse(null);
+                    if (confirmed && destination!=null && destination.kind()==PoiKind.SHIPPING_BIN && source.item().is(ItemData.WINE))
+                        WineSaleRules.consume(source.item(),quantity,context);
+                } else if (pending instanceof Action.ThrowRotten drop) {
+                    quantity=InventoryAcknowledgements.removed(beforeMenu,acknowledgement.items(),drop.slot());
+                    confirmed=quantity>0;
+                }
+                if (confirmed) { finish(ActionOutcome.State.SUCCEEDED,"Server confirmed inventory change",quantity); return; }
             }
         }
         if (world.tick()-started>=context.profile().interactionTimeoutTicks) finish(ActionOutcome.State.FAILED,"No server confirmation; inspect before retrying");
     }
+    /** Null means unsafe, not a single chest fallback: both halves must be observable and reciprocal. */
     public Pos canonicalContainer(Pos pos) {
-        if (mc.level==null) return pos;
-        var state=mc.level.getBlockState(MinecraftWorld.nativePos(pos));
-        if (state.getBlock() instanceof ChestBlock && state.getValue(ChestBlock.TYPE)!=ChestType.SINGLE) {
-            Pos other=MinecraftWorld.pos(MinecraftWorld.nativePos(pos).relative(ChestBlock.getConnectedDirection(state)));
-            if (other.x()<pos.x() || other.x()==pos.x() && (other.y()<pos.y() || other.y()==pos.y() && other.z()<pos.z())) return other;
+        ContainerShape shape=containerShape(pos);
+        return shape==null ? null : shape.canonical();
+    }
+    private record ContainerShape(Pos canonical,String blockId,Map<Pos,BlockState> chestStates,int chestSlots) {
+        private ContainerShape { chestStates=Map.copyOf(chestStates); }
+        boolean matches(MenuData menu) {
+            return chestSlots==0 || menu.slots().stream().filter(s -> !s.player()).count()==chestSlots;
         }
-        return pos;
+    }
+    private ContainerShape containerShape(Pos pos) {
+        if (pos==null || mc.level==null || !world.loaded(pos)) return null;
+        BlockData block=world.block(pos);
+        if (!block.flag("container")) return null;
+        var state=mc.level.getBlockState(MinecraftWorld.nativePos(pos));
+        if (!(state.getBlock() instanceof ChestBlock)) return new ContainerShape(pos,block.id(),Map.of(),0);
+        if (state.getValue(ChestBlock.TYPE)==ChestType.SINGLE)
+            return new ContainerShape(pos,block.id(),Map.of(pos,state),27);
+        var nativeOther=MinecraftWorld.nativePos(pos).relative(ChestBlock.getConnectedDirection(state));
+        Pos other=MinecraftWorld.pos(nativeOther);
+        if (!world.loaded(other) || !world.block(other).flag("container")) return null;
+        var paired=mc.level.getBlockState(nativeOther);
+        if (paired.getBlock()!=state.getBlock() || !paired.hasProperty(ChestBlock.TYPE)
+            || paired.getValue(ChestBlock.TYPE)==ChestType.SINGLE || paired.getValue(ChestBlock.TYPE)==state.getValue(ChestBlock.TYPE)
+            || paired.getValue(ChestBlock.FACING)!=state.getValue(ChestBlock.FACING)
+            || !nativeOther.relative(ChestBlock.getConnectedDirection(paired)).equals(MinecraftWorld.nativePos(pos))) return null;
+        Pos canonical=other.x()<pos.x() || other.x()==pos.x() && (other.y()<pos.y() || other.y()==pos.y() && other.z()<pos.z()) ? other : pos;
+        return new ContainerShape(canonical,block.id(),Map.of(pos,state,other,paired),54);
     }
     private void lookAt(Vec3 target) {
         Vec3 delta=target.subtract(mc.player.getEyePosition());
@@ -172,6 +228,10 @@ public final class MinecraftActions implements ActionPort {
     }
     public ActionOutcome outcome(long ticket) { return outcomes.getOrDefault(ticket,new ActionOutcome(ActionOutcome.State.CANCELLED,"Expired action")); }
     private void finish(ActionOutcome.State state,String message) { put(pendingTicket,state,message); pending=null; }
+    private void finish(ActionOutcome.State state,String message,int quantity) {
+        outcomes.put(pendingTicket,new ActionOutcome(state,message,quantity)); pending=null;
+        if (outcomes.size()>512) outcomes.remove(outcomes.keySet().iterator().next());
+    }
     private void put(long ticket,ActionOutcome.State state,String message) {
         outcomes.put(ticket,new ActionOutcome(state,message));
         if (outcomes.size()>512) outcomes.remove(outcomes.keySet().iterator().next());

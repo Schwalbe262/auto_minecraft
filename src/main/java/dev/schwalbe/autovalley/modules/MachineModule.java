@@ -13,6 +13,9 @@ public final class MachineModule implements AutomationModule {
     private long ticket = -1, verifySince;
     private List<Poi> machines = List.of(), sources = List.of();
     private final Map<Poi,int[]> stock = new LinkedHashMap<>();
+    private static final int STOCK_REFRESH_TICKS = 1200;
+    private boolean stockReady, freshForHaul;
+    private long stockDay, stockTick;
     private int machineIndex, sourceIndex, containerId = -1, grade = -1, cost, hotbar, inputBefore, outputBefore, withdrawalBefore;
     private Poi source;
     private boolean collected, feeding;
@@ -54,6 +57,14 @@ public final class MachineModule implements AutomationModule {
             }
             pending = null;
         }
+        if (stockReady && stockDay != gameDay(c) && switch (stage) {
+            case CHOOSE, FETCH_SOURCE, FETCH, RETURN, EQUIP -> true;
+            default -> false;
+        }) {
+            beginStockScan(c);
+            if (c.world().menu().container()) close(c,Stage.SOURCE);
+            return WorkResult.busy("Refreshing tomato stock for the new game day");
+        }
         switch (stage) {
             case START -> {
                 machines = ModuleSupport.nearest(c,c.profile().pois(feature == Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR)
@@ -75,11 +86,15 @@ public final class MachineModule implements AutomationModule {
                     machineIndex++; return WorkResult.busy("Production in progress; checking next machine");
                 }
                 cost = feature == Feature.WINE || block.flag("upgraded") ? 3 : 5;
-                sources = ModuleSupport.nearest(c,c.profile().pois(PoiKind.TOMATO_CHEST));
-                stock.clear(); sourceIndex = 0; grade = -1; stage = Stage.SOURCE;
+                grade = -1;
+                if (stockReady && stockDay == gameDay(c) && c.world().tick()-stockTick < STOCK_REFRESH_TICKS) stage = Stage.CHOOSE;
+                else beginStockScan(c);
             }
             case SOURCE -> {
-                if (sourceIndex >= sources.size()) { stage = Stage.CHOOSE; break; }
+                if (sourceIndex >= sources.size()) {
+                    stockReady = true; freshForHaul = true; stockDay = gameDay(c); stockTick = c.world().tick();
+                    stage = Stage.CHOOSE; break;
+                }
                 source = sources.get(sourceIndex);
                 if (source.classifier() == null || source.classifier() < 0 || source.classifier() > 3) return fail("Register a valid grade for each tomato source");
                 Navigation.Result nav = c.navigation().moveTo(source.pos(),2.5,c);
@@ -94,6 +109,9 @@ public final class MachineModule implements AutomationModule {
             }
             case CHOOSE -> {
                 grade = chooseGrade(totals(c),cost);
+                // Reuse known chest counts while consuming held stock. Before another
+                // underground haul (or concluding supplies ran out), recount all sources.
+                if (!freshForHaul && !sources.isEmpty() && (grade < 0 || heldCandidate(c) == null)) { beginStockScan(c); break; }
                 if (grade < 0) {
                     feeding = false;
                     if (!machine(c).flag("mature")) { schedule(c,target(),1); machineIndex++; stage = Stage.MACHINE; break; }
@@ -168,6 +186,7 @@ public final class MachineModule implements AutomationModule {
                 boolean inputConfirmed = !feeding || consumed == cost;
                 boolean stateConfirmed = !block.flag("mature") && (!feeding || block.flag("working"));
                 if (inputConfirmed && stateConfirmed) {
+                    if (feeding) freshForHaul = false;
                     schedule(c,target(),feeding ? (feature == Feature.WINE ? c.profile().wineCycleDays : c.profile().preservesCycleDays) : 1);
                     if (collected) stage = Stage.PICKUP;
                     else { machineIndex++; stage = Stage.MACHINE; }
@@ -195,6 +214,11 @@ public final class MachineModule implements AutomationModule {
         for (ItemSlot s : c.world().inventory()) if (s.item().is(ItemData.TOMATO) && s.item().quality() >= 0 && s.item().quality() < 4) counts[s.item().quality()] += s.item().count();
         return counts;
     }
+    private void beginStockScan(Context c) {
+        sources = ModuleSupport.nearest(c,c.profile().pois(PoiKind.TOMATO_CHEST));
+        stock.clear(); stockReady = false; freshForHaul = false; sourceIndex = 0; stage = Stage.SOURCE;
+    }
+    private static long gameDay(Context c) { return Math.floorDiv(c.world().dayTime(),24000); }
     private boolean eligible(Context c,Poi poi) {
         long day = Math.floorDiv(c.world().dayTime(),24000);
         if (day < c.profile().nextEligibleDay.getOrDefault(scheduleKey(poi),Long.MIN_VALUE)) return false;
@@ -265,6 +289,7 @@ public final class MachineModule implements AutomationModule {
     private void clearRun() {
         stage = Stage.START; afterClose = null; pending = null; ticket = -1; verifySince = 0;
         machines = List.of(); sources = List.of(); stock.clear(); machineIndex = 0; sourceIndex = 0;
+        stockReady = false; freshForHaul = false; stockDay = 0; stockTick = 0;
         source = null; containerId = -1; grade = -1; collected = false; feeding = false;
     }
 }

@@ -30,9 +30,7 @@ public final class LocalPathfinder {
                     if (closed.contains(next) || !bounds.contains(next) || !world.loaded(next)
                         || !world.loaded(next.offset(0,1,0)) || !world.loaded(next.offset(0,-1,0))
                         || !world.canStand(next) || !world.canTraverse(node.pos(), next)) continue;
-                    // Raising feet onto stairs/slabs can happen without jumping. Full block jumps are excluded.
-                    if (dy > 0 && !steppable(world.block(next.offset(0,-1,0)))
-                        && !steppable(world.block(node.pos().offset(0,-1,0)))) continue;
+                    // The world adapter validates collision geometry and step height, including modded supports.
                     double nextCost = node.cost() + (dy == 0 ? 1 : 1.5);
                     if (nextCost >= cost.getOrDefault(next, Double.POSITIVE_INFINITY)) continue;
                     cost.put(next, nextCost);
@@ -42,10 +40,6 @@ public final class LocalPathfinder {
             }
         }
         return List.of();
-    }
-
-    private static boolean steppable(BlockData block) {
-        return block != null && (block.id().endsWith("_stairs") || block.id().endsWith("_slab"));
     }
 
     private static double heuristic(Pos from, Pos target, double reach) {

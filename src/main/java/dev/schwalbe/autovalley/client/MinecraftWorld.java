@@ -25,6 +25,12 @@ public final class MinecraftWorld implements WorldAccess {
     public void advanceTick() { ticks++; }
     public long tick() { return ticks; }
     public long dayTime() { return mc.level==null ? 0 : mc.level.getDayTime(); }
+    public Integer wineYear() { return VineryClock.year(mc.level); }
+    public List<GroundItem> groundItems() {
+        if (mc.level==null || mc.player==null) return List.of();
+        return mc.level.getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,mc.player.getBoundingBox().inflate(48))
+            .stream().filter(e -> e.isAlive()).map(e -> new GroundItem(e.getId(),e.getX(),e.getY(),e.getZ(),item(e.getItem()))).toList();
+    }
     public static BlockPos nativePos(Pos p) { return new BlockPos(p.x(),p.y(),p.z()); }
     public static Pos pos(BlockPos p) { return new Pos(p.getX(),p.getY(),p.getZ()); }
     public PlayerState player() {
@@ -62,13 +68,71 @@ public final class MinecraftWorld implements WorldAccess {
     }
     public boolean canTraverse(Pos from, Pos to) {
         int dx=Math.abs(to.x()-from.x()), dz=Math.abs(to.z()-from.z()), dy=to.y()-from.y();
-        if (dx+dz!=1 || Math.abs(dy)>1 || !canStand(to)) return false;
-        if (dy>0) {
-            Block lower=mc.level.getBlockState(nativePos(from).below()).getBlock();
-            Block upper=mc.level.getBlockState(nativePos(to).below()).getBlock();
-            if (!(lower instanceof StairBlock || lower instanceof SlabBlock || upper instanceof StairBlock || upper instanceof SlabBlock)) return false;
+        if (dx+dz!=1 || Math.abs(dy)>1 || !canStand(from) || !canStand(to)) return false;
+        double stepHeight=mc.player.maxUpStep();
+        double previous=standingY(from);
+        BlockState destinationFloor=mc.level.getBlockState(nativePos(to).below());
+        // Uniform flat floor boxes cover ordinary terrain/farmland without repeated shape sampling.
+        if (dy==0 && uniformFloor(from) && uniformFloor(to))
+            return WalkingSurfaceRules.canStep(previous,standingY(to),stepHeight,destinationFloor.getBlock() instanceof FarmBlock);
+        int minSupportY=Math.min(from.y(),to.y())-2, maxSupportY=Math.max(from.y(),to.y())-1;
+        for (int i=1;i<=10;i++) {
+            double amount=i/10.0, x=from.x()+0.5+(to.x()-from.x())*amount, z=from.z()+0.5+(to.z()-from.z())*amount;
+            Surface next=surfaceAt(x,z,minSupportY,maxSupportY);
+            if (!WalkingSurfaceRules.canStep(previous,next.height(),stepHeight,next.farmland())
+                || !clearBodyAt(x,next.height(),z)) return false;
+            previous=next.height();
         }
-        if (dy<0 && mc.level.getBlockState(nativePos(to).below()).getBlock() instanceof FarmBlock) return false;
+        return Math.abs(previous-standingY(to))<1.0e-4;
+    }
+    public double standingY(Pos feet) {
+        if (mc.level==null || !loaded(feet.offset(0,-1,0))) return Double.NaN;
+        BlockPos floor=nativePos(feet).below();
+        var shape=mc.level.getBlockState(floor).getCollisionShape(mc.level,floor);
+        return shape.isEmpty() ? Double.NaN : floor.getY()+shape.max(net.minecraft.core.Direction.Axis.Y);
+    }
+    private boolean uniformFloor(Pos feet) {
+        BlockPos floor=nativePos(feet).below();
+        var boxes=mc.level.getBlockState(floor).getCollisionShape(mc.level,floor).toAabbs();
+        if (boxes.size()!=1) return false;
+        AABB box=boxes.get(0);
+        return box.minX==0 && box.minZ==0 && box.maxX==1 && box.maxZ==1;
+    }
+    private record Surface(double height,boolean farmland) { }
+    private Surface surfaceAt(double x,double z,int minY,int maxY) {
+        double radius=mc.player.getBbWidth()/2.0-1.0e-5, height=Double.NEGATIVE_INFINITY;
+        boolean farmland=false;
+        for (int bx=(int)Math.floor(x-radius);bx<=(int)Math.floor(x+radius);bx++)
+            for (int bz=(int)Math.floor(z-radius);bz<=(int)Math.floor(z+radius);bz++)
+                for (int by=minY;by<=maxY;by++) {
+                    Pos p=new Pos(bx,by,bz);
+                    if (!loaded(p)) return new Surface(Double.NaN,false);
+                    BlockPos bp=nativePos(p);
+                    BlockState state=mc.level.getBlockState(bp);
+                    if (door(state)) continue;
+                    for (AABB box:state.getCollisionShape(mc.level,bp,CollisionContext.of(mc.player)).toAabbs()) {
+                        if (bx+box.maxX<=x-radius || bx+box.minX>=x+radius || bz+box.maxZ<=z-radius || bz+box.minZ>=z+radius) continue;
+                        double top=by+box.maxY;
+                        if (top>height) { height=top; farmland=state.getBlock() instanceof FarmBlock; }
+                    }
+                }
+        return new Surface(height,farmland);
+    }
+    private boolean clearBodyAt(double x,double y,double z) {
+        double radius=mc.player.getBbWidth()/2.0-1.0e-5;
+        AABB body=new AABB(x-radius,y+1.0e-5,z-radius,x+radius,y+mc.player.getBbHeight()-1.0e-5,z+radius);
+        for (int bx=(int)Math.floor(body.minX);bx<=(int)Math.floor(body.maxX);bx++)
+            for (int bz=(int)Math.floor(body.minZ);bz<=(int)Math.floor(body.maxZ);bz++)
+                for (int by=(int)Math.floor(body.minY);by<=(int)Math.floor(body.maxY);by++) {
+                    Pos p=new Pos(bx,by,bz);
+                    if (!loaded(p)) return false;
+                    BlockPos bp=nativePos(p);
+                    BlockState state=mc.level.getBlockState(bp);
+                    if (hazard(state)) return false;
+                    if (door(state)) continue; // LocalNavigator opens registered-path doors before walking.
+                    for (AABB box:state.getCollisionShape(mc.level,bp,CollisionContext.of(mc.player)).toAabbs())
+                        if (body.intersects(box.move(bx,by,bz))) return false;
+                }
         return true;
     }
     public List<BlockData> scan(Pos center,int radius,int vertical) {
@@ -142,8 +206,10 @@ public final class MinecraftWorld implements WorldAccess {
     }
     public boolean canInteractFrom(Pos feet,Pos target,double reach) {
         if (!loaded(target)) return false;
-        if (reach<=1.25) return feet.distanceSquared(target)<=reach*reach;
-        Vec3 eye=new Vec3(feet.x()+0.5,feet.y()+1.62,feet.z()+0.5);
+        double surface=standingY(feet);
+        if (!Double.isFinite(surface)) return false;
+        if (reach<=1.25) return WalkingSurfaceRules.positionalDistance(feet,surface,target)<=reach;
+        Vec3 eye=new Vec3(feet.x()+0.5,surface+mc.player.getEyeHeight(),feet.z()+0.5);
         BlockHitResult hit=hit(target,eye);
         return hit!=null && hit.getLocation().distanceTo(eye)<=Math.min(4,reach);
     }

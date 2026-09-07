@@ -21,7 +21,7 @@ public final class SafetyPolicy {
                 case HARVEST -> {
                     ItemData held = held(world);
                     boolean inFarm = profile.farms.stream().anyMatch(f -> f.contains(use.pos()));
-                    yield !profile.enabled(Feature.HARVEST) || !inFarm || !block.matureTomato() || !held.hoe()
+                    yield !context.session().allows(profile,Feature.HARVEST) || !inFarm || !block.matureTomato() || !held.hoe()
                         ? "Harvest requires a mature registered tomato and the selected hoe" : null;
                 }
                 case MACHINE -> {
@@ -33,13 +33,13 @@ public final class SafetyPolicy {
                     boolean known = wine || block.id().equals("society:preserves_jar");
                     boolean validHand = held.is(ItemData.TOMATO) && held.count() >= cost
                         || block.flag("mature") && held.empty();
-                    yield !known || !profile.enabled(feature) || !registered(profile,use.pos(),kind)
+                    yield !known || !context.session().allows(profile,feature) || !registered(profile,use.pos(),kind)
                         || block.flag("working") && !block.flag("mature") || !validHand ? "Machine, ingredient, or batch is not ready" : null;
                 }
                 case OPEN_CONTAINER -> profile.pois.stream().noneMatch(p -> p.pos().equals(use.pos())
                     && (p.kind()==PoiKind.TOMATO_CHEST || p.kind()==PoiKind.WINE_CHEST || p.kind()==PoiKind.SHIPPING_BIN))
                     ? "Container is not registered" : null;
-                case SLEEP -> !profile.enabled(Feature.SLEEP) || !registered(profile,use.pos(),PoiKind.BED)
+                case SLEEP -> !context.session().allows(profile,Feature.SLEEP) || !registered(profile,use.pos(),PoiKind.BED)
                     || !block.id().endsWith("_bed") ? "Bed is not registered" : null;
                 case DOOR -> !block.id().endsWith("_door") || block.id().equals("minecraft:iron_door")
                     ? "Only normal wooden doors may be opened" : null;
@@ -66,7 +66,7 @@ public final class SafetyPolicy {
             if (facing==null || !Float.isFinite(facing.yaw()) || !Float.isFinite(facing.pitch()) || Math.abs(facing.pitch())>90)
                 return "Register the disposal direction first";
             ItemSlot slot=menu.slot(drop.slot());
-            return !profile.enabled(Feature.DISPOSAL) || slot==null || !slot.player() || !slot.item().is(ItemData.ROTTEN)
+            return !context.session().allows(profile,Feature.DISPOSAL) || slot==null || !slot.player() || !slot.item().is(ItemData.ROTTEN)
                 ? "Only rotten tomatoes may be discarded" : null;
         }
         if (action instanceof Action.CloseContainer close)

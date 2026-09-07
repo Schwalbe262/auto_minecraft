@@ -51,6 +51,43 @@ class NavigationHarvestTest {
         assertTrue(world.goalChecks < 10,"Only positions near the target should need ray traces");
     }
 
+    @Test void verticalPathHonorsWorldGeometryForCustomSupports() {
+        FakeWorld world = new FakeWorld();
+        Pos raised = new Pos(1,1,0);
+        world.extraStandable.add(raised);
+        world.obstacles.add(raised.offset(0,-1,0));
+        world.blocks.put(raised.offset(0,-1,0),new BlockData(raised.offset(0,-1,0),"example:custom_ramp",Map.of()));
+        Profile profile = farmProfile(raised);
+        LocalPathfinder pathfinder = new LocalPathfinder();
+        assertFalse(pathfinder.find(ORIGIN,raised,.2,world,profile).isEmpty());
+        world.allowAscent = false;
+        assertTrue(pathfinder.find(ORIGIN,raised,.2,world,profile).isEmpty(),"A blocked step must not become a jump route");
+    }
+
+    @Test void allowedVerticalSteeringNeverRequestsAJump() {
+        FakeWorld world = new FakeWorld();
+        Pos raised = new Pos(1,1,0);
+        world.extraStandable.add(raised);
+        world.obstacles.add(raised.offset(0,-1,0));
+        FakeActions actions = new FakeActions();
+        LocalNavigator navigation = new LocalNavigator();
+        Context context = new Context(world,actions,navigation,farmProfile(raised));
+        assertEquals(Navigation.Result.MOVING,navigation.moveTo(raised,.2,context));
+        assertNotNull(actions.movement);
+        assertFalse(actions.movement.jump());
+    }
+
+    @Test void invalidInteractionAtFinalApproachCenterStopsWithoutForwardDrift() {
+        FakeWorld world = new FakeWorld();
+        world.allowCurrentInteraction = false;
+        FakeActions actions = new FakeActions();
+        LocalNavigator navigation = new LocalNavigator();
+        Context context = new Context(world,actions,navigation,farmProfile(ORIGIN));
+        assertEquals(Navigation.Result.BLOCKED,navigation.moveTo(ORIGIN,2.15,context));
+        assertNull(actions.movement);
+        assertTrue(actions.submitted.isEmpty());
+    }
+
     @Test void navigatorStopsOnStallAndNeverRequestsJump() {
         FakeWorld world = new FakeWorld();
         FakeActions actions = new FakeActions();
@@ -227,9 +264,215 @@ class NavigationHarvestTest {
         for (int i = 1; i < 36; i++) world.put(i,new ItemData("minecraft:stone",64,0,null,false,0));
         world.tomato(ORIGIN,3);
         FakeActions actions = new FakeActions();
-        Context context = new Context(world,actions,new ArrivedNavigation(),farmProfile(ORIGIN));
+        Profile profile = farmProfile(ORIGIN);
+        profile.magnetOverflowHarvest = false;
+        Context context = new Context(world,actions,new ArrivedNavigation(),profile);
         assertEquals(WorkResult.State.BLOCKED,new HarvestModule().tick(context).state());
         assertTrue(actions.submitted.isEmpty());
+    }
+
+    @Test void unreachableRipeFarmStopsBeforeClickOrCompletionDeadline() {
+        FakeWorld world = new FakeWorld();
+        for (int z=-1;z<=1;z++) world.obstacles.add(new Pos(2,0,z));
+        Pos crop = new Pos(5,0,0);
+        world.tomato(crop,3);
+        FakeActions actions = new FakeActions();
+        Profile profile = farmProfile(crop);
+        Context context = new Context(world,actions,new LocalNavigator(),profile);
+        assertEquals(WorkResult.State.BLOCKED,new HarvestModule().tick(context).state());
+        assertTrue(actions.submitted.isEmpty());
+        assertNull(actions.movement);
+        assertFalse(profile.nextEligibleDay.containsKey("harvest:first"));
+    }
+
+    @Test void harvestedGroundCropRequiresWalkingPickupWithoutJumping() {
+        FakeWorld world = new FakeWorld();
+        world.y = -.0625;
+        world.supportOffset = -.0625;
+        Pos crop = new Pos(3,0,0);
+        world.tomato(crop,3);
+        FakeActions actions = new FakeActions();
+        Profile profile = farmProfile(crop);
+        profile.magnetOverflowHarvest = false;
+        HarvestModule module = new HarvestModule();
+        Context context = new Context(world,actions,new LocalNavigator(),profile);
+        boolean walkedAfterHarvest = false;
+        for (int i=0;i<200 && !profile.nextEligibleDay.containsKey("harvest:first");i++) {
+            WorkResult result = module.tick(context);
+            assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());
+            if (actions.busy()) {
+                world.tomato(crop,0);
+                actions.complete(true);
+            }
+            if (actions.movement != null && actions.movement.forward()) {
+                assertFalse(actions.movement.jump());
+                if (!actions.submitted.isEmpty()) walkedAfterHarvest = true;
+                double yaw = Math.toRadians(actions.movement.yaw());
+                world.x -= Math.sin(yaw)*.1;
+                world.z += Math.cos(yaw)*.1;
+            }
+            if (!actions.submitted.isEmpty() && world.player().distance(crop) <= 1)
+                world.put(1,new ItemData(ItemData.TOMATO,2,0,null,false,0));
+            world.now++;
+        }
+        assertTrue(walkedAfterHarvest);
+        assertEquals(1L,profile.nextEligibleDay.get("harvest:first"));
+        assertEquals(List.of(new Action.UseBlock(crop,Action.Use.HARVEST)),actions.submitted);
+        assertNull(actions.movement);
+    }
+
+    @Test void fullInventoryMagnetSweepConfirmsGroundDropsAndDefersStorageUntilFinished() {
+        FakeWorld world = new FakeWorld();
+        for (int i=1;i<36;i++) world.put(i,new ItemData("minecraft:stone",64,0,null,false,0));
+        Pos second = new Pos(1,0,0);
+        world.tomato(ORIGIN,3); world.tomato(second,3);
+        Profile profile = farmProfile(second);
+        profile.magnetOverflowHarvest = true;
+        FakeActions actions = new FakeActions();
+        RecordingNavigation navigation = new RecordingNavigation();
+        SessionState session = new SessionState();
+        Context context = new Context(world,actions,navigation,profile,session);
+        HarvestModule module = new HarvestModule();
+        WorkResult result = WorkResult.busy("");
+        for (int i=0;i<40;i++) {
+            result = module.tick(context);
+            assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());
+            if (actions.busy()) {
+                Action.UseBlock use = (Action.UseBlock)actions.submitted.get(actions.submitted.size()-1);
+                world.tomato(use.pos(),0);
+                // Item entities can merge: confirmation must count contents, not new entity IDs.
+                world.ground.clear();
+                world.ground.add(new GroundItem(7,.5,0,.5,new ItemData(ItemData.TOMATO,actions.submitted.size()*2,0,null,false,0)));
+                actions.complete(true);
+            }
+            world.now++;
+            if (result.state()==WorkResult.State.IDLE) break;
+        }
+        assertEquals(WorkResult.State.IDLE,result.state());
+        assertEquals(2,actions.submitted.size());
+        assertTrue(session.magnetHaulPending);
+        assertEquals(Map.of(ItemData.TOMATO,4),session.magnetHaulRemaining);
+        assertTrue(navigation.reaches.stream().allMatch(reach -> reach > 1.25),"Magnet output does not request per-crop pickup walks");
+        assertTrue(world.inventory().stream().noneMatch(s -> s.item().is(ItemData.TOMATO)));
+        assertEquals(1L,profile.nextEligibleDay.get("harvest:first"));
+        module.reset();
+        world.day = 29000;
+        world.tomato(ORIGIN,3);
+        assertEquals(WorkResult.State.BLOCKED,module.tick(context).state(),"Do not start another day with an undrained ground haul");
+        assertEquals(2,actions.submitted.size());
+        session.recordFarmRemoval(ItemData.TOMATO,4);
+        world.ground.clear();
+        assertEquals(WorkResult.State.BUSY,module.tick(context).state());
+        assertEquals(3,actions.submitted.size());
+    }
+
+    @Test void fullInventoryWithoutObservedMagnetOutputTimesOutWithoutClaimingHarvest() {
+        FakeWorld world = new FakeWorld();
+        for (int i=1;i<36;i++) world.put(i,new ItemData("minecraft:stone",64,0,null,false,0));
+        world.tomato(ORIGIN,3);
+        Profile profile = farmProfile(ORIGIN);
+        profile.magnetOverflowHarvest = true;
+        FakeActions actions = new FakeActions();
+        RecordingNavigation navigation = new RecordingNavigation();
+        SessionState session = new SessionState();
+        Context context = new Context(world,actions,navigation,profile,session);
+        HarvestModule module = new HarvestModule();
+        assertEquals(WorkResult.State.BUSY,module.tick(context).state());
+        assertEquals(1,actions.submitted.size(),"Inventory capacity does not block a magnet harvest click");
+        world.tomato(ORIGIN,0);
+        actions.complete(true);
+        module.tick(context);
+        world.now = profile.interactionTimeoutTicks+1;
+        assertEquals(WorkResult.State.BLOCKED,module.tick(context).state());
+        assertFalse(profile.nextEligibleDay.containsKey("harvest:first"));
+        assertFalse(session.magnetHaulPending);
+        assertEquals(1,actions.submitted.size());
+        assertEquals(1,navigation.reaches.size(),"No blind pickup movement after unconfirmed output");
+        world.now += 200;
+        world.day = 29000;
+        assertEquals(WorkResult.State.BLOCKED,module.tick(context).state(),"An automatic new-day scan must not hide unconfirmed output");
+        assertFalse(profile.nextEligibleDay.containsKey("harvest:first"));
+        world.tomato(ORIGIN,3);
+        assertEquals(WorkResult.State.BLOCKED,module.tick(context).state());
+        assertEquals(1,actions.submitted.size());
+        module.reset();
+        assertEquals(WorkResult.State.BUSY,module.tick(context).state(),"Explicit manual restart clears the unresolved-output latch");
+        assertEquals(2,actions.submitted.size());
+    }
+
+    @Test void existingGroundTransferredIntoInventoryDoesNotCountAsNewHarvestOutput() {
+        FakeWorld world = new FakeWorld();
+        world.tomato(ORIGIN,3);
+        world.ground.add(new GroundItem(7,.5,0,.5,new ItemData(ItemData.TOMATO,5,0,null,false,0)));
+        Profile profile = farmProfile(ORIGIN);
+        profile.magnetOverflowHarvest = true;
+        FakeActions actions = new FakeActions();
+        Context context = new Context(world,actions,new RecordingNavigation(),profile,new SessionState());
+        HarvestModule module = new HarvestModule();
+        module.tick(context);
+        world.tomato(ORIGIN,0);
+        world.ground.clear();
+        world.put(1,new ItemData(ItemData.TOMATO,5,0,null,false,0));
+        actions.complete(true);
+        module.tick(context);
+        world.now = profile.interactionTimeoutTicks+1;
+        assertEquals(WorkResult.State.BLOCKED,module.tick(context).state());
+        assertFalse(profile.nextEligibleDay.containsKey("harvest:first"));
+    }
+
+    @Test void magnetLedgerIncludesExistingHeldAndGroundCropsAndOnlyProvenRemovalsClearIt() {
+        FakeWorld world = new FakeWorld();
+        world.put(1,new ItemData(ItemData.TOMATO,10,0,null,false,0));
+        world.put(2,new ItemData(ItemData.ROTTEN,3,0,null,false,0));
+        world.ground.add(new GroundItem(7,.5,0,.5,new ItemData(ItemData.TOMATO,4,0,null,false,0)));
+        world.ground.add(new GroundItem(8,.5,0,.5,new ItemData(ItemData.ROTTEN,2,0,null,false,0)));
+        Pos second = new Pos(1,0,0);
+        world.tomato(ORIGIN,3); world.tomato(second,3);
+        Profile profile = farmProfile(second);
+        profile.magnetOverflowHarvest = true;
+        FakeActions actions = new FakeActions();
+        SessionState session = new SessionState();
+        Context context = new Context(world,actions,new RecordingNavigation(),profile,session);
+        HarvestModule module = new HarvestModule();
+        for (int i=0;i<40;i++) {
+            WorkResult result = module.tick(context);
+            assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());
+            if (actions.busy()) {
+                Action.UseBlock use = (Action.UseBlock)actions.submitted.get(actions.submitted.size()-1);
+                world.tomato(use.pos(),0);
+                if (actions.submitted.size()==1) {
+                    world.ground.add(new GroundItem(9,.5,0,.5,new ItemData(ItemData.TOMATO,2,0,null,false,0)));
+                } else {
+                    assertEquals(Map.of(ItemData.TOMATO,16,ItemData.ROTTEN,5),session.magnetHaulRemaining);
+                    // Magnet pickup changes location, while only three newly produced tomatoes add debt.
+                    world.ground.removeIf(g -> g.item().is(ItemData.TOMATO));
+                    world.put(1,new ItemData(ItemData.TOMATO,16,0,null,false,0));
+                    world.ground.add(new GroundItem(10,.5,0,.5,new ItemData(ItemData.TOMATO,3,0,null,false,0)));
+                }
+                actions.complete(true);
+            }
+            world.now++;
+            if (result.state()==WorkResult.State.IDLE) break;
+        }
+        Map<String,Integer> expected = Map.of(ItemData.TOMATO,19,ItemData.ROTTEN,5);
+        assertEquals(expected,session.magnetHaulRemaining);
+        world.ground.clear();
+        world.put(1,ItemData.EMPTY); world.put(2,ItemData.EMPTY);
+        module.reset();
+        world.day = 29000;
+        world.tomato(ORIGIN,3);
+        assertEquals(WorkResult.State.BLOCKED,module.tick(context).state());
+        assertEquals(expected,session.magnetHaulRemaining,"Disappearance or leaving observation range is not delivery");
+        profile.magnetOverflowHarvest = false;
+        assertEquals(WorkResult.State.BLOCKED,module.tick(context).state(),"Changing harvesting mode does not erase an earlier undelivered haul");
+        profile.magnetOverflowHarvest = true;
+        session.recordFarmRemoval(ItemData.TOMATO,19);
+        assertEquals(Map.of(ItemData.ROTTEN,5),session.magnetHaulRemaining);
+        assertTrue(session.magnetHaulPending);
+        session.recordFarmRemoval(ItemData.ROTTEN,5);
+        assertTrue(session.magnetHaulRemaining.isEmpty());
+        assertFalse(session.magnetHaulPending);
+        assertEquals(WorkResult.State.BUSY,module.tick(context).state());
     }
 
     @Test void buddingTomatoIsNotHarvestableEvenAtAgeThree() {
@@ -369,7 +612,8 @@ class NavigationHarvestTest {
         module.startCalibration();
         Context context = new Context(world,actions,new LocalNavigator(),profile);
         for (int i=0;i<1000 && module.calibrating();i++) {
-            module.tick(context);
+            WorkResult result = module.tick(context);
+            if (result.state()==WorkResult.State.BLOCKED) module.reset(); // Simulated explicit take-over between failed samples.
             if (actions.busy()) {
                 Action.UseBlock use = (Action.UseBlock)actions.submitted.get(actions.submitted.size()-1);
                 world.tomato(use.pos(),0);
@@ -400,6 +644,12 @@ class NavigationHarvestTest {
         public void reset() { }
     }
 
+    private static final class RecordingNavigation implements Navigation {
+        final List<Double> reaches = new ArrayList<>();
+        public Result moveTo(Pos target,double reach,Context context) { reaches.add(reach); return Result.ARRIVED; }
+        public void reset() { }
+    }
+
     private static final class FakeActions implements ActionPort {
         final List<Action> submitted = new ArrayList<>();
         final Map<Long,ActionOutcome> outcomes = new HashMap<>();
@@ -422,13 +672,16 @@ class NavigationHarvestTest {
     private static final class FakeWorld implements WorldAccess {
         long now;
         long day = 5000;
-        double x = .5, y, z = .5;
+        double x = .5, y, z = .5, supportOffset;
         int selected;
         int goalChecks;
         boolean focused = true, connected = true;
+        boolean allowAscent = true, allowCurrentInteraction = true;
         final Map<Pos,BlockData> blocks = new HashMap<>();
         final Set<Pos> obstacles = new HashSet<>(), unloaded = new HashSet<>();
+        final Set<Pos> extraStandable = new HashSet<>();
         final List<ItemSlot> slots = new ArrayList<>();
+        final List<GroundItem> ground = new ArrayList<>();
         FakeWorld() {
             for (int i=0;i<36;i++) slots.add(new ItemSlot(i,i,true,ItemData.EMPTY));
             put(0,new ItemData("minecraft:iron_hoe",1,0,null,true,200));
@@ -440,12 +693,19 @@ class NavigationHarvestTest {
         public PlayerState player() { return new PlayerState(x,y,z,0,0,true,false,20,20,selected,connected,focused); }
         public BlockData block(Pos p) { return blocks.getOrDefault(p,new BlockData(p,p.y()<0 ? "minecraft:stone" : "minecraft:air",Map.of())); }
         public boolean loaded(Pos p) { return !unloaded.contains(p); }
-        public boolean canStand(Pos p) { return p.y()==0 && !obstacles.contains(p); }
-        public boolean canTraverse(Pos from,Pos to) { return canStand(to); }
+        public boolean canStand(Pos p) { return (p.y()==0 || extraStandable.contains(p)) && !obstacles.contains(p); }
+        public boolean canTraverse(Pos from,Pos to) { return canStand(to) && (allowAscent || to.y() <= from.y()); }
         public List<BlockData> scan(Pos center,int radius,int vertical) { return List.copyOf(blocks.values()); }
         public List<ItemSlot> inventory() { return slots; }
+        public List<GroundItem> groundItems() { return ground; }
         public MenuData menu() { return new MenuData(0,0,slots,ItemData.EMPTY,false); }
         public boolean mayPlace(int slot,ItemData item) { return true; }
-        public boolean canInteractFrom(Pos feet,Pos target,double reach) { goalChecks++; return WorldAccess.super.canInteractFrom(feet,target,reach); }
+        public boolean canInteract(Pos target,double reach) { return allowCurrentInteraction && WorldAccess.super.canInteract(target,reach); }
+        public boolean canInteractFrom(Pos feet,Pos target,double reach) {
+            goalChecks++;
+            if (reach <= 1.25) return Math.pow(feet.x()-target.x(),2) + Math.pow(feet.y()+supportOffset-target.y(),2)
+                + Math.pow(feet.z()-target.z(),2) <= reach*reach;
+            return WorldAccess.super.canInteractFrom(feet,target,reach);
+        }
     }
 }

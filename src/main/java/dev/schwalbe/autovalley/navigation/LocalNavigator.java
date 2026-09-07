@@ -78,6 +78,10 @@ public final class LocalNavigator implements Navigation {
         if (!walkingFeet.equals(next) && walkingFeet.distanceSquared(next) <= 2
             && !world.canTraverse(walkingFeet, next)) return blocked(actions, "이동 경로가 막혔습니다.");
         if (distanceToCenter(player, next) > 3) return blocked(actions, "경로에서 벗어났습니다.");
+        if (nextIndex == path.size() - 1
+            && Math.hypot(player.x() - next.x() - .5,player.z() - next.z() - .5) < Math.min(.04,reach / 4)
+            && Math.abs(player.y() - next.y()) <= 1.05)
+            return blocked(actions, "접근 위치에 도착했지만 목표가 보이지 않거나 손이 닿지 않습니다.");
         Pos door = closedDoor(world, next);
         if (door != null) {
             actions.stopMovement();
