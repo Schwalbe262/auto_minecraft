@@ -205,7 +205,7 @@ public final class MinecraftActions implements ActionPort {
             || context.profile().hoeHotbarSlot!=consolidation.protectedHotbar) {
             finish(ActionOutcome.State.FAILED,"Production settings changed; no further inventory clicks were sent"); return;
         }
-        if (!consolidation.matchesLive(mc.player)) {
+        if (!consolidation.matchesLive(mc.player,observations)) {
             finish(ActionOutcome.State.FAILED,"Inventory changed before the next consolidation step; inspect the layout"); return;
         }
         var click=consolidation.transaction.click();
@@ -228,8 +228,8 @@ public final class MinecraftActions implements ActionPort {
             if (confirmation==InventoryConsolidation.Confirmation.COMPLETE) {
                 finish(ActionOutcome.State.SUCCEEDED,"Server verified inventory consolidation",consolidation.transaction.freedSlots()); return;
             }
-            // The ACK can be older than a later pickup already installed in live slots.
-            // Never let that stale layout authorize another SWAP.
+            // A later pickup needs exact post-ACK server slot evidence before
+            // rebasing unrelated slots. An unconfirmed primitive is never replayed.
             sendConsolidationClick(); return;
         }
         if (world.tick()-started>=context.profile().interactionTimeoutTicks)

@@ -384,3 +384,28 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
 - The engine returned to normal waiting with no tomatoes or preserves remaining
   in inventory. This confirms shipping-box deposit, not independent monetary
   payout verification. The minimum-three-hour observation is still underway.
+
+### Interrupted wine run: late pickup before ingredient restoration
+
+- The second observation window stopped after approximately 40 minutes, not
+  three stable hours. It had confirmed 378 of 384 wine refills; the durable
+  active batch retained the six unfinished targets.
+- A read-only native history audit found a completed ingredient transaction's
+  first two primitives: tomato fragments 2 + 1 became 3 after temporarily
+  borrowing a hotbar slot occupied by torches. Before the inverse restoration,
+  a separate empty material slot received one wine bottle and then its native
+  year initialization. Both swap partners were unchanged. A strict whole-menu
+  comparison nevertheless rejected the remaining restoration.
+- Baseline refresh now requires each changed slot's exact post-ACK server
+  packet item and a narrowly permitted addition/metadata change. It excludes
+  transaction participants, protected tools and implicit QUICK_MOVE receivers.
+  It never advances a primitive or substitutes live client state for an ACK.
+- Twelve new regressions cover the observed restoration race, missing/wrong
+  packet evidence, native identity/count changes, first-click and completed
+  states, protected partners, implicit receivers and exact subsequent ACKs.
+  Integrated Java 17 `test build`: **646 tests, zero failures or errors**.
+  Snapshot SHA-256:
+  `51B12D125F4F9F10C1BABE922A14117D417F2784A9929B5B4229481E3C9880CE`.
+- At this checkpoint the fix is built, not yet installed. The interrupted
+  layout needs its audited remaining restoration before normal restart/resume.
+  Live recovery and the requested long-duration stability check remain open.

@@ -6,6 +6,7 @@ import dev.schwalbe.autovalley.core.ProductionMergePlanner;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.TagParser;
 import net.minecraft.world.item.HoeItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
@@ -23,6 +24,7 @@ final class NativeInventoryConsolidation {
     private final Level level;
     private final Integer wineYear;
     private List<InventoryConsolidation.Stack> expectedMenu;
+    private long acknowledgedSequence=-1;
 
     private NativeInventoryConsolidation(LocalPlayer player,ProductionMergePlanner.Plan plan,ServerObservations observations,int protectedHotbar) {
         this.plan=plan; this.protectedHotbar=protectedHotbar;
@@ -72,10 +74,58 @@ final class NativeInventoryConsolidation {
         return new NativeInventoryConsolidation(player,plan,observations,protectedHotbar);
     }
     int sourceMenuSlot() { return menuSlots[transaction.click().sourceIndex()]; }
-    boolean matchesLive(LocalPlayer player) {
-        return player!=null && player.containerMenu==player.inventoryMenu && player.inventoryMenu.containerId==menuId
-            && player.inventoryMenu.getCarried().isEmpty()
-            && expectedMenu.equals(stacks(player.inventoryMenu.slots.stream().map(slot -> slot.getItem()).toList()));
+    boolean matchesLive(LocalPlayer player,ServerObservations observations) {
+        if (player==null || player.containerMenu!=player.inventoryMenu || player.inventoryMenu.containerId!=menuId
+            || !player.inventoryMenu.getCarried().isEmpty() || observations.generation()!=generation) return false;
+        List<InventoryConsolidation.Stack> live=stacks(player.inventoryMenu.slots.stream().map(slot -> slot.getItem()).toList());
+        if (expectedMenu.equals(live)) return true;
+        if (acknowledgedSequence<0) return false;
+
+        // A pickup can arrive after a complete click ACK but before its inverse
+        // SWAP. Only the actual subsequent per-slot packet item is evidence;
+        // appliedMenu is client state and must never stand in for a full ACK.
+        Map<Integer,InventoryConsolidation.Stack> latestServerItems=new HashMap<>();
+        for (var update:observations.nativeSlotSnapshotsSince(menuId,acknowledgedSequence))
+            latestServerItems.put(update.slot(),stacks(List.of(update.packetItem())).get(0));
+        Set<Integer> changed=matchingServerSlotUpdates(expectedMenu,live,latestServerItems);
+        if (changed==null || changed.isEmpty()) return false;
+        Set<Integer> verifiedInventoryIndices=new HashSet<>();
+        for (int slot:changed) {
+            int index=-1;
+            for (int candidate=0;candidate<menuSlots.length;candidate++) if (menuSlots[candidate]==slot) { index=candidate; break; }
+            if (index<0 || index==protectedHotbar) return false;
+            var old=expectedMenu.get(slot); var now=live.get(slot);
+            if (!productionAddition(old,now) && !NativeWineMetadata.passiveChange(old,now,level,wineYear)) return false;
+            verifiedInventoryIndices.add(index);
+        }
+        // This cannot acknowledge a click or change the next primitive. The
+        // core additionally excludes the source, scratch and implicit receivers.
+        if (!transaction.rebaseVerifiedUpdates(inventory(live),verifiedInventoryIndices)) return false;
+        expectedMenu=live;
+        return true;
+    }
+
+    /** Detached exact comparison; callers supply only post-ACK server packet items. */
+    static Set<Integer> matchingServerSlotUpdates(List<InventoryConsolidation.Stack> expected,
+            List<InventoryConsolidation.Stack> live,Map<Integer,InventoryConsolidation.Stack> latestServerItems) {
+        if (expected==null || live==null || latestServerItems==null || expected.size()!=live.size()) return null;
+        Set<Integer> changed=new HashSet<>();
+        for (int slot=0;slot<expected.size();slot++) {
+            if (Objects.equals(expected.get(slot),live.get(slot))) continue;
+            if (!Objects.equals(live.get(slot),latestServerItems.get(slot))) return null;
+            changed.add(slot);
+        }
+        return Set.copyOf(changed);
+    }
+
+    /** No deletion, replacement, quality change, or arbitrary item movement. */
+    static boolean productionAddition(InventoryConsolidation.Stack before,InventoryConsolidation.Stack after) {
+        if (after.empty() || after.count()<=before.count()) return false;
+        try {
+            String id=TagParser.parseTag(after.identity()).getString("id");
+            if (!Set.of(ItemData.TOMATO,ItemData.WINE,ItemData.PRESERVES).contains(id)) return false;
+            return before.empty() || before.limit()==after.limit() && before.identity().equals(after.identity());
+        } catch (com.mojang.brigadier.exceptions.CommandSyntaxException failure) { return false; }
     }
     InventoryConsolidation.Confirmation acknowledge(ServerObservations.NativeMenuSnapshot acknowledgement) {
         if (!acknowledgement.carried().isEmpty()) return InventoryConsolidation.Confirmation.WAIT;
@@ -93,7 +143,9 @@ final class NativeInventoryConsolidation {
             if (NativeWineMetadata.passiveChange(expectedMenu.get(slot),after.get(slot),level,wineYear)) passiveUpdates.add(index);
         }
         var confirmation=transaction.acknowledge(inventory(after),passiveUpdates);
-        if (confirmation!=InventoryConsolidation.Confirmation.WAIT) expectedMenu=after;
+        if (confirmation!=InventoryConsolidation.Confirmation.WAIT) {
+            expectedMenu=after; acknowledgedSequence=acknowledgement.seq();
+        }
         return confirmation;
     }
     private InventoryConsolidation.Snapshot inventory(List<InventoryConsolidation.Stack> menu) {

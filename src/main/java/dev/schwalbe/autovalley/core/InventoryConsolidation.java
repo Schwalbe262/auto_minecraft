@@ -30,6 +30,7 @@ public final class InventoryConsolidation {
     private final Snapshot initial;
     private Snapshot before;
     private Stage stage;
+    private int acknowledgedPrimitives;
 
     public InventoryConsolidation(ProductionMergePlanner.Plan plan, Snapshot initial) {
         this.plan=Objects.requireNonNull(plan); this.initial=initial; this.before=initial;
@@ -47,6 +48,35 @@ public final class InventoryConsolidation {
             case MERGE -> new Click(Type.QUICK_MOVE,plan.quickMoveIndex(),-1);
             case DONE -> throw new IllegalStateException("Transaction finished");
         };
+    }
+
+    /**
+     * Refreshes a completed primitive's baseline without acknowledging or sending
+     * another click. The native caller must prove every supplied change using
+     * authoritative slot packets and independently restrict the allowed item
+     * deltas; this pure transaction has no packet or item-type information.
+     *
+     * The original source and borrowed hotbar slot remain exact throughout the
+     * transaction. Before QUICK_MOVE, its entire implicit destination region also
+     * remains exact, not merely the planner's advertised partial stacks. Before
+     * RESTORE, only the two exact swap partners participate in the remaining click.
+     * A rejected refresh leaves both the baseline and progress untouched.
+     */
+    public boolean rebaseVerifiedUpdates(Snapshot after,Set<Integer> verifiedUpdates) {
+        if (after==null || verifiedUpdates==null || acknowledgedPrimitives==0
+                || stage!=Stage.MERGE && stage!=Stage.RESTORE) return false;
+        for (Integer index:verifiedUpdates) {
+            if (index==null || index<0 || index>=36
+                    || index==plan.sourceIndex() || index==plan.scratchHotbar()) return false;
+            if (stage==Stage.MERGE && (index==plan.quickMoveIndex()
+                    || (index<9)!=(plan.quickMoveIndex()<9))) return false;
+        }
+        for (int index=0;index<36;index++) {
+            if (!before.items().get(index).equals(after.items().get(index))
+                    && !verifiedUpdates.contains(index)) return false;
+        }
+        before=after;
+        return true;
     }
 
     /** An unrelated/unchanged refresh never authorizes a subsequent primitive. */
@@ -90,6 +120,7 @@ public final class InventoryConsolidation {
             // have placed the item into the now-empty original source slot itself.
             stage=plan.requiresRestore() ? Stage.RESTORE : Stage.DONE;
         }
+        acknowledgedPrimitives++;
         return complete() ? Confirmation.COMPLETE : Confirmation.NEXT;
     }
 
