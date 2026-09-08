@@ -116,3 +116,44 @@ revised draft. Existing registrations did not conflict with that observed mask.
 The original draft was preserved, and the revised draft still enables no features.
 Neither draft has been applied to the live profile; geometry readiness is not a
 harvest acknowledgement or a future guarantee.
+
+## Additional crop and artisan checkpoint
+
+The next offline Java 17 / ForgeGradle `test build` passed **1,445 tests in 108
+suites**, with zero failures, errors or skips. The candidate also passed the
+same-instance installation script's read-only compatibility validation.
+
+Candidate SHA-256:
+`84FB342525E71599AC2D86357D537D5C720A91134A781A8C44BFACC056B92F2A`.
+This supersedes the previous candidate, not the installed game artifact. No game
+restart, installation, registration import, action replay or profile write was
+performed for this checkpoint.
+
+- Late-arriving starfruit can be deposited at a later authorized boundary after
+  an actual confirmed harvest. Its exact patch and storage definition are pinned;
+  changing even the same store ID's coordinates invalidates that remembered route.
+- A clean target-specific artisan uncertainty skips that machine, lets independent
+  registered jobs finish and returns a deferred result after held-item cleanup.
+  It cannot bypass a global action, menu, cursor or borrowed-slot restriction.
+- Successful artisan dispatches use their dispatch day for the next inspection
+  date, avoiding an extra day of delay when the acknowledgement crosses midnight.
+- A currently pending artisan ticket may prove a rapidly completed cycle using
+  retained native WORKING-then-MATURE receipts plus the existing selected-slot
+  consumption checks. Strict additional-property and connection checks apply.
+  Neither an initial mature state nor a cancelled historical ticket grants this
+  proof, and the machine is not clicked twice in the same pass.
+
+The private V3 registration draft connects the ancient seed makers to the ancient
+warehouse where harvesting deposits fruit. Detached policy tests permit all 16
+registered warehouse sources and keep seed output in its separate destination.
+The existing profile remains unchanged. An empty import enable list changes no
+switches, but importing the ancient field would make it eligible under the user's
+already-enabled HARVEST switch; import must therefore be coordinated with runtime
+activation.
+
+A separate private stair experiment was not merged into movement code. Its mock
+ground-first/counterpulse results do not prove the actual client's late movement
+state, friction or auto-jump behavior, and do not establish the requested twofold
+native descent improvement. Native stair timing, new-routine execution, logging
+recovery and continuous multi-cycle acceptance still require the coordinated game
+restart and in-game tests described above.
