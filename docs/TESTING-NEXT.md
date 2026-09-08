@@ -1258,3 +1258,14 @@ not native clipping equivalence, live travel-distance or elapsed-time savings.
 Java 17 / Gradle 8.8 integrated
 `test build`: 75 suites, 951 tests, zero failures, errors or skips. Deployment
 and supervised route retesting follow separately.
+
+Before that route deployment, the previous manual-crafting build also completed
+a supervised continuous farming cycle through crop harvest, disposal, tomato
+storage, tar delivery, all registered wine and preserves machines, wine storage,
+preserves delivery and actual sleep/day transition. All 1,467 final action
+receipts in the audited eleven-minute window succeeded, with no missing IDs,
+unresolved actions, unexpected OFF state or failure fence. Tracked products
+were absent from the final player inventory and the next wine batch was six
+game days later. Shipping confirms inputs, not money payout. A deliberate pause
+in the subsequent idle state allowed normal same-instance route deployment;
+neither this short cycle nor the restart is multi-hour uninterrupted acceptance.
