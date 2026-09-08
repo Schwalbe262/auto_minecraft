@@ -95,4 +95,61 @@ class NativeChoppedLogHitTest {
         assertTrue(before.stream().anyMatch(p -> p.x<.875));
         assertTrue(after.stream().allMatch(p -> p.x>.875 && p.z>.875));
     }
+    @Test void farTargetsSpendNoNativeRaysForEitherQueryAndRespectActualReach() {
+        var boxes=List.of(new AABB(0,0,0,1,1,1));int[] calls={0};
+        Function<Vec3,BlockHitResult> never=end->{calls[0]++;throw new AssertionError("far broadphase must reject before clipping");};
+        for(Vec3 eye:List.of(new Vec3(-4.01,64.5,.5),new Vec3(.5,69.01,.5),new Vec3(.5,64.5,5.01),
+                new Vec3(-3,64.5,-3),new Vec3(1.0e100,64.5,.5))) {
+            assertNull(NativeChoppedLogHit.nearest(TARGET,eye,boxes,100,never));
+            assertFalse(NativeChoppedLogHit.visible(TARGET,eye,boxes,100,never));
+        }
+        assertNull(NativeChoppedLogHit.nearest(TARGET,new Vec3(-1.51,64.5,.5),boxes,1.5,never));
+        assertFalse(NativeChoppedLogHit.visible(TARGET,new Vec3(-1.51,64.5,.5),boxes,1.5,never));
+        assertEquals(0,calls[0]);
+    }
+    @Test void visibleStopsAtFirstVerifiedHitWhileNearestStillFindsTheClosest() {
+        var boxes=List.of(new AABB(0,0,0,1,1,1));Vec3 eye=new Vec3(-1,64.5,.5);int[] visibleCalls={0},nearestCalls={0};
+        Function<Vec3,BlockHitResult> visibleClip=end->{visibleCalls[0]++;return new BlockHitResult(new Vec3(.75,64.5,.5),Direction.WEST,TARGET,false);};
+        assertTrue(NativeChoppedLogHit.visible(TARGET,eye,boxes,4,visibleClip));assertEquals(1,visibleCalls[0]);
+        Function<Vec3,BlockHitResult> nearestClip=end->{nearestCalls[0]++;return new BlockHitResult(new Vec3(nearestCalls[0]==1?.75:0,64.5,.5),Direction.WEST,TARGET,false);};
+        BlockHitResult nearest=NativeChoppedLogHit.nearest(TARGET,eye,boxes,4,nearestClip);
+        assertNotNull(nearest);assertEquals(1,eye.distanceTo(nearest.getLocation()),1.0e-9);
+        assertEquals(NativeChoppedLogHit.candidates(TARGET,eye,boxes).size(),nearestCalls[0]);
+    }
+    @Test void visibleContinuesPastOccludedFacesAndRetainsAllNativeHitChecks() {
+        Vec3 eye=new Vec3(-1,64.5,.9375);var boxes=List.of(CORNER);int[] calls={0};
+        Function<Vec3,BlockHitResult> clip=end->{
+            if(++calls[0]==1)return new BlockHitResult(new Vec3(-.5,64.5,.9375),Direction.WEST,TARGET.offset(-1,0,0),false);
+            return AABB.clip(boxes,eye,end,TARGET);
+        };
+        assertTrue(NativeChoppedLogHit.visible(TARGET,eye,boxes,4,clip));assertEquals(2,calls[0]);
+        for(BlockHitResult invalid:List.of(BlockHitResult.miss(new Vec3(.875,64.5,.9375),Direction.WEST,TARGET),
+                new BlockHitResult(new Vec3(.875,64.5,.9375),Direction.WEST,TARGET,true),
+                new BlockHitResult(new Vec3(.5,64.5,.5),Direction.WEST,TARGET,false)))
+            assertFalse(NativeChoppedLogHit.visible(TARGET,eye,boxes,4,end->invalid));
+    }
+    @Test void unitCubeInteriorAndBoundaryFacesAreNotRejectedByEndpointDistance() {
+        var boxes=List.of(CORNER);Vec3 interior=new Vec3(.5,64.5,.9375);
+        assertTrue(NativeChoppedLogHit.visible(TARGET,interior,boxes,4,unobstructed(interior,boxes)));
+        // The far box's endpoints exceed reach, but the actual first face is exactly four blocks away.
+        Vec3 edge=new Vec3(-3.125,64.5,.9375);
+        assertTrue(NativeChoppedLogHit.candidates(TARGET,edge,boxes).stream().allMatch(p->edge.distanceTo(p)>4));
+        assertTrue(NativeChoppedLogHit.visible(TARGET,edge,boxes,4,unobstructed(edge,boxes)));
+        assertEquals(4,edge.distanceTo(hit(edge,boxes,4).getLocation()),1.0e-9);
+    }
+    @Test void invalidVisibilityInputsNeverReachNativeClip() {
+        Vec3 eye=new Vec3(-1,64.5,.9375);var boxes=List.of(CORNER);int[] calls={0};
+        Function<Vec3,BlockHitResult> never=end->{calls[0]++;throw new AssertionError("invalid input must not clip");};
+        assertFalse(NativeChoppedLogHit.visible(null,eye,boxes,4,never));
+        assertFalse(NativeChoppedLogHit.visible(TARGET,new Vec3(0,Double.NaN,0),boxes,4,never));
+        assertFalse(NativeChoppedLogHit.visible(TARGET,new Vec3(Double.POSITIVE_INFINITY,64,0),boxes,4,never));
+        for(double reach:new double[]{0,-1,Double.NaN,Double.POSITIVE_INFINITY})
+            assertFalse(NativeChoppedLogHit.visible(TARGET,eye,boxes,reach,never));
+        for(List<AABB> invalid:Arrays.<List<AABB>>asList(null,List.of(),Arrays.asList((AABB)null),
+                List.of(new AABB(-.1,0,0,1,1,1)),Collections.nCopies(NativeChoppedLogHit.MAX_BOXES+1,CORNER))) {
+            assertFalse(NativeChoppedLogHit.visible(TARGET,eye,invalid,4,never));
+            assertNull(NativeChoppedLogHit.nearest(TARGET,eye,invalid,4,never));
+        }
+        assertFalse(NativeChoppedLogHit.visible(TARGET,eye,boxes,4,null));assertEquals(0,calls[0]);
+    }
 }

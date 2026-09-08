@@ -27,18 +27,18 @@ class LoggingApproachSearchTest {
         LoggingApproachSearch search=world.search();
         assertEquals(LoggingApproachSearch.Status.NO_VISIBLE_STANCE,finish(search,world));
         assertEquals(search.candidateCount(),search.checkedStances());
-        assertTrue(search.checkedRays()<=4*search.candidateCount());
+        assertTrue(search.checkedQueries()<=4*search.candidateCount());
         assertNull(search.target()); assertNull(search.stance());
     }
     @Test void repeatedSameTickPollingCannotRefuelStanceOrRayBudgets() {
         World world=new World(); world.allStanding=true;
         LoggingApproachSearch search=world.search();
         search.advance(world,64,3,Long.MAX_VALUE);
-        assertEquals(3,search.checkedRays()); int stances=search.checkedStances();
+        assertEquals(3,search.checkedQueries()); int stances=search.checkedStances();
         for(int i=0;i<100;i++) search.advance(world,64,3,Long.MAX_VALUE);
-        assertEquals(3,search.checkedRays()); assertEquals(stances,search.checkedStances());
+        assertEquals(3,search.checkedQueries()); assertEquals(stances,search.checkedStances());
         world.tick++;
-        search.advance(world,64,3,Long.MAX_VALUE); assertEquals(6,search.checkedRays());
+        search.advance(world,64,3,Long.MAX_VALUE); assertEquals(6,search.checkedQueries());
     }
     @Test void unsupportedCellsSpendOnlyTheBoundedStanceBudgetAndNeverRaycast() {
         World world=new World(); LoggingApproachSearch search=world.search();

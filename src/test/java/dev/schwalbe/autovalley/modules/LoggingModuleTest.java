@@ -60,6 +60,23 @@ class LoggingModuleTest {
         assertTrue(f.profile.loggingRunActive); assertEquals(List.of(bases.get(0)),f.profile.loggingRemainingPlots);
     }
 
+    @Test void searchingDoesNotRepeatActualEyeQueriesOutsideThePreflightSlice() {
+        Fixture f=visibilityFixture();
+        f.until(() -> f.chopRays>0);
+        assertEquals(4,f.actualChopQueries);
+        int initial=f.chopRays;
+        for(int i=0;i<12;i++) {
+            f.advance();
+            assertEquals(WorkResult.State.BUSY,f.step().state());
+        }
+        assertTrue(f.chopRays>initial,"The bounded candidate search still progresses");
+        assertEquals(4,f.actualChopQueries,"A stopped SEARCHING phase does not repeat four extra eye probes every tick");
+        assertEquals(0,f.moves); assertTrue(f.actions.isEmpty());
+        f.restart();
+        f.until(() -> f.actualChopQueries>4);
+        assertEquals(8,f.actualChopQueries,"A genuine restart must check the actual eye afresh");
+    }
+
     @Test void anOpenMenuDuringVisibilityPreflightStopsWithoutNavigationOrInventoryActions() {
         Fixture f=new Fixture(1); f.occludedChopping.addAll(f.profile.loggingPlots.get(0).plantingPositions());
         f.blockAllChopRays=true; f.step(); f.step(); f.step();
@@ -975,7 +992,7 @@ class LoggingModuleTest {
         final List<List<Pos>> plantingApproaches=new ArrayList<>();
         final Set<Pos> occludedPlanting=new HashSet<>();
         final Set<Pos> occludedChopping=new HashSet<>();
-        boolean blockAllChopRays,movementExposesChop; int chopRays;
+        boolean blockAllChopRays,movementExposesChop; int chopRays,actualChopQueries;
         Pos chopGoalTarget,chopGoalFeet; String treeRejection;
         boolean grounded=true,forcedNativeBusy; String nativeFence; ItemData cursor=ItemData.EMPTY;
         final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
@@ -1105,7 +1122,10 @@ class LoggingModuleTest {
         public boolean loaded(Pos pos) { return !unloaded.contains(pos); }
         public boolean canStand(Pos pos) { return true; }
         public boolean canTraverse(Pos a,Pos b) { return true; }
-        public boolean canInteract(Pos pos,double reach) { return loaded(pos) && !occludedChopping.contains(pos); }
+        public boolean canInteract(Pos pos,double reach) {
+            if (LoggingRules.stump(block(pos))) actualChopQueries++;
+            return loaded(pos) && !occludedChopping.contains(pos);
+        }
         public boolean canInteractFrom(Pos feet,Pos target,double reach) {
             chopRays++;
             return Objects.equals(feet,chopGoalFeet) && Objects.equals(target,chopGoalTarget)

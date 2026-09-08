@@ -320,7 +320,10 @@ public final class LoggingModule implements AutomationModule {
         }
         // Existing actual-eye visibility is sufficient to choose another base of
         // this SAME plot. The dispatch still requires native whole-tree proof.
-        if (choppingApproach==null || choppingApproach.status()==LoggingApproachSearch.Status.SEARCHING)
+        // The preflight stops movement. Do not repeat four actual-eye queries
+        // outside its slice on every SEARCHING tick; retry/reset starts a fresh
+        // check, and dispatch still validates the current eye before any chop.
+        if (choppingApproach==null)
             for (Pos stump:stumps) if (c.world().canInteract(stump,4)) { choppingApproach=null; return stump; }
         if (choppingApproach==null) choppingApproach=new LoggingApproachSearch(c.world(),plot,stumps);
         if (choppingApproach.status()==LoggingApproachSearch.Status.FOUND) {

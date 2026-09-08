@@ -5,14 +5,16 @@ import java.util.*;
 
 /** Bounded native-visibility preflight for the existing bases of one registered 2x2 tree. */
 public final class LoggingApproachSearch {
-    public static final int STANCES_PER_TICK=64, RAYS_PER_TICK=16;
+    // Each visibility query may test several outline samples. This is a query
+    // limit, not a count of native clip calls; the time slice is intentionally soft.
+    public static final int STANCES_PER_TICK=64, QUERIES_PER_TICK=16;
     public static final long SLICE_NANOS=2_000_000L;
     private static final double REACH=4, GOAL_RADIUS=REACH+2.5;
     public enum Status { SEARCHING, FOUND, NO_VISIBLE_STANCE, UNLOADED, CHANGED }
     private final WorldAccess source;
     private final List<Pos> targets,stances,plotCells;
     private final List<BlockData> plotStates;
-    private int nextStance,nextTarget,checkedStances,checkedRays;
+    private int nextStance,nextTarget,checkedStances,checkedQueries;
     private Pos current,chosenTarget,chosenStance,missing;
     private long budgetTick=Long.MIN_VALUE;
     private Status status=Status.SEARCHING;
@@ -53,7 +55,7 @@ public final class LoggingApproachSearch {
     public Pos missing() { return missing; }
     public int candidateCount() { return stances.size(); }
     public int checkedStances() { return checkedStances; }
-    public int checkedRays() { return checkedRays; }
+    public int checkedQueries() { return checkedQueries; }
     public boolean matches(WorldAccess world,List<Pos> currentTargets) {
         return source==world && targets.equals(currentTargets)
             && plotCells.stream().allMatch(world::loaded)
@@ -66,16 +68,16 @@ public final class LoggingApproachSearch {
             && world.canInteractFrom(chosenStance,chosenTarget,REACH);
     }
     public Status advance(WorldAccess world) {
-        return advance(world,STANCES_PER_TICK,RAYS_PER_TICK,SLICE_NANOS);
+        return advance(world,STANCES_PER_TICK,QUERIES_PER_TICK,SLICE_NANOS);
     }
     /** A repeated poll in one world tick cannot refuel either native-query budget. */
-    Status advance(WorldAccess world,int stanceBudget,int rayBudget,long nanosBudget) {
-        if (status!=Status.SEARCHING || stanceBudget<=0 || rayBudget<=0 || nanosBudget<=0) return status;
+    Status advance(WorldAccess world,int stanceBudget,int queryBudget,long nanosBudget) {
+        if (status!=Status.SEARCHING || stanceBudget<=0 || queryBudget<=0 || nanosBudget<=0) return status;
         if (!matches(world,targets)) return status=Status.CHANGED;
         if (budgetTick==world.tick()) return status;
         if (budgetTick>world.tick()) return status=Status.CHANGED;
         budgetTick=world.tick();
-        int positions=0,rays=0; long began=System.nanoTime(); boolean worked=false;
+        int positions=0,queries=0; long began=System.nanoTime(); boolean worked=false;
         while (status==Status.SEARCHING && (!worked || System.nanoTime()-began<nanosBudget)) {
             if (current==null) {
                 if (nextStance>=stances.size()) return status=missing==null ? Status.NO_VISIBLE_STANCE : Status.UNLOADED;
@@ -87,10 +89,10 @@ public final class LoggingApproachSearch {
             if (nextTarget>=targets.size()) { current=null; continue; }
             Pos target=targets.get(nextTarget);
             if (current.distanceSquared(target)>GOAL_RADIUS*GOAL_RADIUS) { nextTarget++; continue; }
-            if (rays>=rayBudget) break;
+            if (queries>=queryBudget) break;
             nextTarget++; worked=true;
             if (!loadedRayBounds(world,current,target)) { rememberMissing(current); continue; }
-            rays++; checkedRays++;
+            queries++; checkedQueries++;
             if (world.canInteractFrom(current,target,REACH)) {
                 chosenTarget=target; chosenStance=current; return status=Status.FOUND;
             }

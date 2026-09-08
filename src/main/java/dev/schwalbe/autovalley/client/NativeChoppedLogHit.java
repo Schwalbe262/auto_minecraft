@@ -21,23 +21,45 @@ final class NativeChoppedLogHit {
 
     static BlockHitResult nearest(BlockPos target,Vec3 eye,List<AABB> boxes,double reach,
             Function<Vec3,BlockHitResult> clip) {
-        if (target==null || !finite(eye) || clip==null || !Double.isFinite(reach) || reach<=0) return null;
+        return find(target,eye,boxes,reach,clip,false);
+    }
+
+    /** Visibility needs any verified first-world hit, not the nearest of every candidate. */
+    static boolean visible(BlockPos target,Vec3 eye,List<AABB> boxes,double reach,
+            Function<Vec3,BlockHitResult> clip) {
+        return find(target,eye,boxes,reach,clip,true)!=null;
+    }
+
+    private static BlockHitResult find(BlockPos target,Vec3 eye,List<AABB> boxes,double reach,
+            Function<Vec3,BlockHitResult> clip,boolean firstValid) {
+        if (target==null || !finite(eye) || clip==null || !Double.isFinite(reach) || reach<=0
+                || !validBoxes(boxes)) return null;
+        double limit=Math.min(4,reach);
+        // All accepted outline boxes are inside this unit cube. Its closest
+        // point is a lower distance bound, unlike a candidate endpoint: a far
+        // endpoint can still reveal a near, reachable first intersection.
+        double dx=eye.x-clamp(eye.x,target.getX(),target.getX()+1.0);
+        double dy=eye.y-clamp(eye.y,target.getY(),target.getY()+1.0);
+        double dz=eye.z-clamp(eye.z,target.getZ(),target.getZ()+1.0);
+        if (dx*dx+dy*dy+dz*dz>(limit+EPS)*(limit+EPS)) return null;
         List<Vec3> candidates=candidates(target,eye,boxes);
-        double limit=Math.min(4,reach),bestDistance=Double.POSITIVE_INFINITY;
+        double bestDistance=Double.POSITIVE_INFINITY;
         BlockHitResult best=null;
         for (Vec3 end:candidates) {
             BlockHitResult hit=clip.apply(end);
             if (hit==null || hit.getType()!=HitResult.Type.BLOCK || !target.equals(hit.getBlockPos())
                     || hit.isInside() || !finite(hit.getLocation()) || !onShape(target,boxes,hit.getLocation())) continue;
             double distance=eye.distanceTo(hit.getLocation());
-            if (distance<=limit && distance<bestDistance) { best=hit; bestDistance=distance; }
+            if (distance<=limit && distance<bestDistance) {
+                if (firstValid) return hit;
+                best=hit; bestDistance=distance;
+            }
         }
         return best;
     }
 
     static List<Vec3> candidates(BlockPos target,Vec3 eye,List<AABB> boxes) {
-        if (target==null || !finite(eye) || boxes==null || boxes.isEmpty() || boxes.size()>MAX_BOXES
-                || boxes.stream().anyMatch(box -> !valid(box))) return List.of();
+        if (target==null || !finite(eye) || !validBoxes(boxes)) return List.of();
         LinkedHashSet<Vec3> points=new LinkedHashSet<>();
         Vec3 localEye=eye.subtract(target.getX(),target.getY(),target.getZ());
         for (AABB box:boxes) {
@@ -57,6 +79,9 @@ final class NativeChoppedLogHit {
     }
     private static Vec3 world(BlockPos pos,Vec3 local) { return local.add(pos.getX(),pos.getY(),pos.getZ()); }
     private static double clamp(double value,double min,double max) { return Math.max(min,Math.min(max,value)); }
+    private static boolean validBoxes(List<AABB> boxes) {
+        return boxes!=null && !boxes.isEmpty() && boxes.size()<=MAX_BOXES && boxes.stream().allMatch(NativeChoppedLogHit::valid);
+    }
     private static boolean valid(AABB box) {
         return box!=null && finite(new Vec3(box.minX,box.minY,box.minZ)) && finite(new Vec3(box.maxX,box.maxY,box.maxZ))
             && box.minX>=0 && box.minY>=0 && box.minZ>=0 && box.maxX<=1 && box.maxY<=1 && box.maxZ<=1

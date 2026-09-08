@@ -264,11 +264,11 @@ public final class MinecraftWorld implements WorldAccess {
         return slot.mayPlace(stack);
     }
     public BlockHitResult hit(Pos target, Vec3 eye) {
-        if (mc.level==null || mc.player==null) return null;
+        if (mc.level==null || mc.player==null || mc.gameMode==null || target==null || !loaded(target)
+            || eye==null || !Double.isFinite(eye.x) || !Double.isFinite(eye.y) || !Double.isFinite(eye.z)) return null;
         BlockPos bp=nativePos(target);
         BlockState state=mc.level.getBlockState(bp);
-        if (LoggingRules.CHOPPED_LOG.equals(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString())) {
-            if (mc.gameMode==null) return null;
+        if (loggingBase(state)) {
             return NativeChoppedLogHit.nearest(bp,eye,state.getShape(mc.level,bp,CollisionContext.of(mc.player)).toAabbs(),
                 Math.min(4,mc.gameMode.getPickRange()),end -> mc.level.clip(
                     new ClipContext(eye,end,ClipContext.Block.OUTLINE,ClipContext.Fluid.NONE,mc.player)));
@@ -284,18 +284,34 @@ public final class MinecraftWorld implements WorldAccess {
         return null;
     }
     public boolean canInteract(Pos target,double reach) {
-        if (mc.player==null || !loaded(target)) return false;
+        if (mc.player==null || mc.gameMode==null || target==null || !loaded(target)) return false;
         if (reach<=1.25) return player().distance(target)<=reach;
+        if (loggingBase(mc.level.getBlockState(nativePos(target))))
+            return loggingVisible(target,mc.player.getEyePosition(),reach);
         BlockHitResult hit=hit(target,mc.player.getEyePosition());
         return hit!=null && hit.getLocation().distanceTo(mc.player.getEyePosition())<=Math.min(reach,mc.gameMode.getPickRange());
     }
     public boolean canInteractFrom(Pos feet,Pos target,double reach) {
-        if (!loaded(target)) return false;
+        if (mc.player==null || mc.gameMode==null || feet==null || target==null || !loaded(feet) || !loaded(target)) return false;
         double surface=standingY(feet);
         if (!Double.isFinite(surface)) return false;
         if (reach<=1.25) return WalkingSurfaceRules.positionalDistance(feet,surface,target)<=reach;
         Vec3 eye=new Vec3(feet.x()+0.5,surface+mc.player.getEyeHeight(),feet.z()+0.5);
+        if (loggingBase(mc.level.getBlockState(nativePos(target)))) return loggingVisible(target,eye,reach);
         BlockHitResult hit=hit(target,eye);
         return hit!=null && hit.getLocation().distanceTo(eye)<=Math.min(4,reach);
+    }
+    private static boolean loggingBase(BlockState state) {
+        return state.is(Blocks.SPRUCE_LOG)
+            || LoggingRules.CHOPPED_LOG.equals(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
+    }
+    private boolean loggingVisible(Pos target,Vec3 eye,double reach) {
+        BlockPos bp=nativePos(target);
+        var shape=mc.level.getBlockState(bp).getShape(mc.level,bp,CollisionContext.of(mc.player));
+        // A visibility query needs one real first hit, not the nearest of every
+        // outline sample. The native helper rejects distant bases before any ray;
+        // passable body collision never waives the OUTLINE hit or reach checks.
+        return NativeChoppedLogHit.visible(bp,eye,shape.toAabbs(),Math.min(reach,mc.gameMode.getPickRange()),
+            end -> mc.level.clip(new ClipContext(eye,end,ClipContext.Block.OUTLINE,ClipContext.Fluid.NONE,mc.player)));
     }
 }
