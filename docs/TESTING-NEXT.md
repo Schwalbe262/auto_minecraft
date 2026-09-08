@@ -1280,3 +1280,25 @@ The preserves cycle retained its ordinary three-day deadline. Wine correctly
 remained pending until its six-day common batch deadline; this interval does
 not yet establish live wine routing on the changed build. No restart or manual
 control occurred within this window. Multi-hour acceptance remains open.
+
+The same process then passed an initial one-hour observation through the next
+full wine batch and a second preserves batch, followed by actual sleep into the
+next day. All 2,308 observed final receipts succeeded with contiguous IDs.
+The 3,605 one-second samples had no OFF, disconnect, navigation failure, failure
+fence or trace-write failure; their largest interval was 1.045 seconds. Six bed
+receipts corresponded to thirty sleeping samples. The window included 3,349
+samples with the game window inactive. Final work products were absent, the
+cursor/menu were normal and health/food remained full. Wine's next common batch
+deadline was exactly six game days after the completed batch.
+
+A non-controlled comparison of two complete wine batches found 384 successful
+machine interactions and working machines in each. The earlier build's first-to-
+last interaction receipt interval was 229.156 seconds; this build's was 242.154
+seconds. Corresponding navigation movement was about 66.16 versus 58.45 metres
+using nearest one-second boundaries. Both runs surveyed all 32 source barrels
+once and made two withdrawal visits, with no source revisit after servicing
+started. Different input grades, starting poses and observation boundaries mean
+this is not a causal speedup or regression result: the shorter observed movement
+does not establish a shorter overall production time. Multi-hour acceptance
+remains in progress, and no additional route or timing changes were deployed
+during this observation.
