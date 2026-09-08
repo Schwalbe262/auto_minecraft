@@ -976,3 +976,34 @@ delete logging products, and logging disposal cannot delete wood, berries,
 tools or unrelated items. A valuable recovery-buffer item still blocks the
 operation. This compatibility change does not prove the contents of a past
 failed live buffer that was not captured.
+
+### Logging-only verified one-block ascent: not yet live-accepted
+
+The development navigation change after the logging baseline above adds an
+explicit logging-only path API. A candidate edge must move one cardinal cell
+and exactly one integer Y cell upward, with native proof that the actual
+support-height difference is also exactly one block. Registered bounds, loaded
+supports and the body-clearance envelope remain mandatory; this is not a general
+jump, diagonal ascent, farmland shortcut or block-removal permission. Ordinary
+navigation and tomato harvesting retain their no-jump behavior.
+
+`findLogging` is a read-only geometry query and may be used while automation is
+OFF. Actual movement separately requires an active durable logging run and a
+session that permits `LOGGING`; an enabled feature flag alone is insufficient.
+The controller aligns on the source, issues one launch pulse, then steers without
+sprinting. Interaction proximity cannot complete an airborne move. Landing
+requires the verified height and centered position on two distinct grounded
+ticks; the remaining approach is replanned from that landing, not by relaunching
+the completed edge. Cancellation, timeout or changed proof stops the move.
+Attempted interrupted edges remain non-replayable across navigator resets in
+that navigator instance; pressing F8 is not permission to retry an uncertain jump.
+
+The focused regressions cover the opt-in boundary, missing native/support proof,
+single launch, airborne early-arrival rejection, landing and centering, and
+timeout/cancellation without another launch. They do not establish real-player
+physics or successful outward/return logging routes on the server. Live ascent,
+landing and complete-routine acceptance are still pending. Java 17 / Gradle 8.8
+`test build` passed after integration: 69 suites, 861 tests, zero failures,
+errors or skips. This includes the native timing arithmetic regression and
+settled-source, final-landing replan and interrupted-airborne guards; it is not
+live-server acceptance.
