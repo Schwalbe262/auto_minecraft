@@ -1679,3 +1679,12 @@ Private ticket-specific restoration preflights sent no inventory action: first
 the scratch slot had collected more items, then the user opened a menu and changed
 the inventory while playing. The changed manual layout is preserved rather than
 forcing the earlier layout back. No attempt marker or restoration click was sent.
+
+The candidate above was installed after the requested normal restart. The complete
+profile remained byte-identical to the pre-restart backup, including 188 remaining
+wine machines and logging OFF. Initial automatic join failed with Unknown Host.
+A normal same-client retry then resolved the configured hostname and reached its
+TCP endpoint, but the server rejected login with an invalid-session message.
+No wine start/once request was sent while disconnected. Launcher session renewal
+and an authenticated connection are required before native wine acceptance can
+continue; installation must not be reported as successful production execution.
