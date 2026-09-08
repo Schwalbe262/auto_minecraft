@@ -104,6 +104,7 @@ class DescentControlTest {
         public boolean canStand(Pos p){return p.equals(TOP)||p.equals(LOW);}
         public double standingY(Pos p){return knownHeight && canStand(p)?p.y():Double.NaN;}
         public boolean canTraverse(Pos a,Pos b){return !blocked && canStand(a)&&canStand(b) && Math.abs(a.x()-b.x())==1;}
+        public boolean standardDescentPhysics(){return true;}
         public BlockData block(Pos p){return new BlockData(p,"minecraft:air",Map.of());}
         public List<BlockData> scan(Pos p,int h,int v){return List.of();}
         public List<ItemSlot> inventory(){return List.of();}

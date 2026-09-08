@@ -38,6 +38,12 @@ public final class MinecraftWorld implements WorldAccess {
         return NativeLoggingActions.canPlantFrom(mc,target,eye,reach);
     }
     public boolean canLoggingJump(LoggingJumpEdge edge,Profile profile) { return NativeLoggingJump.mayTraverse(mc,this,edge,profile); }
+    @Override public boolean standardDescentPhysics() {
+        // Reuse the read-only native physics gate, not its jump permission:
+        // normal gravity/dimensions and no flight, fluids or fall-altering effects.
+        try { return mc.level!=null && NativeLoggingJump.normalPhysics(mc); }
+        catch (RuntimeException unsupported) { return false; }
+    }
     @Override public boolean canStepUp(LoggingJumpEdge edge,Profile profile) { return NativeLoggingJump.mayStepUp(mc,this,edge,profile); }
     public boolean loggingAxe(int inventoryIndex) {
         return mc.player!=null && inventoryIndex>=0 && inventoryIndex<9

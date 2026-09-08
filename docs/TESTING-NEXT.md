@@ -1369,3 +1369,39 @@ A separate continuous observation began at 13:24:14 UTC and was still in progres
 at this retest checkpoint. It has not passed the three-hour acceptance criterion.
 Coordinate-UI acceptance also remains open; the supervised trips do not close
 either requirement.
+
+### Shallow-dip slowdown correction — 2026-09-08
+
+The operator reported crawling during apparently level crop work. A two-minute
+native posture observation found no crouch/Shift intent or crouching pose in
+599 samples. Actual support-height changes of 0.375 blocks were using the same
+fixed 0.08 descent input as full-block stairs. Fifteen shallow descents averaged
+2.82 seconds each in the 200 ms observation; these are sampled timings, not
+complete event tracing or a controlled harvest throughput benchmark.
+
+Terrain A* now gives bounded extra cost to actual support-height transitions,
+including dips hidden by equal integer feet Y. It prefers short level detours
+but keeps a required descent and does not force an excessively long detour.
+Ordinary farmland lips, legacy waypoint cost and native collision/permission
+checks are unchanged. The weights are a route preference, not measured travel
+time or a guarantee of the fastest path.
+
+Descent steering now uses observed ground damping and available landing distance
+instead of fixed crawl input over the whole cell. The shorter fall-time bound
+requires the existing native normal-physics gate; unknown gravity uses a complete
+passive horizontal-coast bound. Airborne input remains zero. A changed native
+physics condition, unsupported slippery damping or changed geometry can still
+stop the move; the controller does not assign position/velocity or recover an
+overshoot by widening the corridor. Simulated normal shallow/full descents took
+39/43 ticks versus the previous 51/52; these are fixture results, not live speedups.
+
+Java 17 / Gradle `test build` passed **1,049 tests across 84 suites**, without
+failures, errors or skips. The new candidate SHA-256 is
+`0571C60E4EB7BCF19A1479DD1675CC0F4733DECE5A8400BF83FE75E4F5EBECCD`.
+Installation and matched real-client movement tests are still pending here.
+
+The preceding continuous run had a manual interruption and later stopped on an
+unconfirmed preserves pickup, so it is not uninterrupted multi-hour acceptance.
+The existing live ledger subsequently reconciled the pickup without a manual
+loss acknowledgement. The private trace stopped appending after a write error;
+fresh latest snapshots continued, but missing history is not reconstructed.
