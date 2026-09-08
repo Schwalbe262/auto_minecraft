@@ -580,3 +580,27 @@ restoration. Cancellation sends no cleanup input. Do not claim that arbitrary
 mid-transaction handoff is fully supported, or silently replay/clear an uncertain
 operation. Safe pause/resume restoration still needs implementation and dedicated
 verification. No new inventory interruption was induced in the running soak test.
+
+### First complete wine cycle in the user-started observation window
+
+- On game day 358, one 32-container survey and two source visits acquired
+  exactly 1,152 grade-2 tomatoes. All 384 mature kegs were processed without
+  another stock survey. All ingredients were consumed, so no leftover-material
+  return was needed.
+- The wine workflow's 897 consecutive actions all succeeded, including 384
+  production interactions and 394 inventory consolidations. All 384 bottles
+  were observed as raw production cohort 10 before storage; confirmed transfers
+  of **five times 64, then 63 and 1** stored them all.
+- First wine activity through post-storage waiting took **256.133 seconds**.
+  All 384 registered kegs were working, none mature; the common batch became
+  inactive with no remaining members and next due day 364, six days after the
+  final feed. No tracked ingredients/products remained in player inventory.
+- All 376 state samples in the scoped **00:51–00:57:16 UTC** interval remained
+  ON/connected, without a native failure/late-reply flag, navigation error or
+  trace-write failure. Briefly unknown wine metadata resolved before storage.
+  Quantity conservation and full-rack changes corroborate the generic receipts;
+  they do not independently identify every physical target or the final barrel.
+- This is not raw-packet proof that the prior rare full-menu race recurred, nor
+  a test of the unresolved mid-transaction handoff limitation. The existing
+  three-hour window remains incomplete, with earliest qualifying end still
+  **2026-09-08 02:54:25 UTC**; this successful cycle does not reset that clock.
