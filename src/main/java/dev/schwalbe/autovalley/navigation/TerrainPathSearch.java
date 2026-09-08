@@ -106,8 +106,9 @@ public final class TerrainPathSearch {
             boolean jump=false;
             if (!traversable && !diagonal && allowStepUp) {
                 LoggingJumpEdge edge=new LoggingJumpEdge(current.pos(),next);
-                jump=logging ? LoggingJumpRules.verifiedSupports(edge,world,profile) && world.canLoggingJump(edge,profile)
-                    : domain.terrain() && StepUpRules.verifiedSupports(edge,world,profile) && world.canStepUp(edge,profile);
+                jump=logging && LoggingJumpRules.verifiedSupports(edge,world,profile) && world.canLoggingJump(edge,profile);
+                if (!jump && domain.terrain())
+                    jump=StepUpRules.verifiedSupports(edge,world,profile) && world.canStepUp(edge,profile);
             }
             if (!traversable && !jump) continue;
             double cost=current.cost()+(jump ? 3 : diagonal ? Math.sqrt(2) : offset[1]==0 ? 1 : 1.5);
@@ -138,13 +139,22 @@ public final class TerrainPathSearch {
     }
     private void considerFrontier(Node node,Pos crossing,boolean domainEdge) {
         if (!frontiers) return;
+        // Recentring the finite window is useful only for a goal outside it.
+        // In particular, a nearby inaccessible surface goal must never send the
+        // player to a mine shaft at the lower Y boundary just to exhaust a search.
+        if (domainEdge && (domain.contains(target)
+            || TravelDomain.distanceSquared(crossing,target)>=TravelDomain.distanceSquared(node.pos(),target)
+            || TravelDomain.distanceSquared(node.pos(),target)>=TravelDomain.distanceSquared(domain.origin(),target)
+            || TravelDomain.distanceSquared(crossing,target)>=TravelDomain.distanceSquared(domain.origin(),target))) return;
         Frontier candidate=new Frontier(node.pos(),crossing,domainEdge);
         if (rejected.contains(candidate)) return;
         double score=node.cost()+heuristic(crossing,target,reach);
         if (score<frontierScore) { frontier=candidate;frontierScore=score; }
     }
     private void finishBoundary(Status otherwise) {
-        if (frontiers && frontier!=null) { status=Status.FRONTIER;path=unwind(frontier.standing(),parent); }
+        // Budget exhaustion is not evidence that a recorded boundary is the
+        // next useful route. Preserve the limit instead of issuing that walk.
+        if (otherwise!=Status.SEARCH_LIMIT && frontiers && frontier!=null) { status=Status.FRONTIER;path=unwind(frontier.standing(),parent); }
         else status=otherwise;
     }
     static boolean loadedStance(WorldAccess world,Pos feet) { return missingStance(world,feet)==null; }

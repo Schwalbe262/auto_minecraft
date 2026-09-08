@@ -226,9 +226,14 @@ public final class LocalNavigator implements Navigation {
             if (!world.canTraverse(edge.from(),edge.to()) && LoggingJumpRules.validShape(edge)) {
                 if (interruptedJumps.contains(edge) || interruptedJumps.size()>=256)
                     return blocked(actions,"이전 벌목 오르기가 중단되어 같은 점프를 자동 재시도하지 않습니다.");
-                if (!(logging ? LoggingJumpRules.permitted(edge,context) : StepUpRules.permitted(edge,context)))
+                boolean useLogging=logging && LoggingJumpRules.permitted(edge,context);
+                boolean useGeneral=!useLogging && domain.terrain() && StepUpRules.permitted(edge,context);
+                if (!useLogging && !useGeneral)
                     return replan(context,Failure.OBSTACLE,"한 칸 오르기 경로의 네이티브 안전 확인이 실패했습니다.");
-                loggingJump=logging ? new LoggingJumpController(edge) : new StepUpController(edge);
+                // Keep the selected authority for this entire edge. A logging
+                // approach may use independently verified terrain transit, but
+                // an in-flight controller never switches its permission model.
+                loggingJump=useLogging ? new LoggingJumpController(edge) : new StepUpController(edge);
                 return continueLoggingJump(context);
             }
         }
@@ -509,6 +514,7 @@ public final class LocalNavigator implements Navigation {
         if (result==Result.BLOCKED) return blocked(context.actions(),Failure.JUMP_UNCERTAIN,loggingJump.failureReason());
         if (result==Result.ARRIVED) {
             loggingJump=null;
+            if (settledAtFrontier(context)) return arriveFrontier(context,frontier.standing());
             // The final approach may require a center tighter than the landing
             // margin. Replan FROM the actual landing, never redispatch this edge.
             path=List.of(); nextIndex=0;
@@ -530,10 +536,20 @@ public final class LocalNavigator implements Navigation {
         }
         if (result==Result.BLOCKED) return blocked(context.actions(),descent.failureReason());
         if (result==Result.ARRIVED) {
-            descent=null;path=List.of();search=null;nextIndex=0;lastDistance=Double.POSITIVE_INFINITY;
+            descent=null;
+            if (settledAtFrontier(context)) return arriveFrontier(context,frontier.standing());
+            path=List.of();search=null;nextIndex=0;lastDistance=Double.POSITIVE_INFINITY;
             progressTick=context.world().tick();previousMoving=false;
         }
         return Result.MOVING;
+    }
+    /** Called only after a controller observed its completed, quiet landing. */
+    private boolean settledAtFrontier(Context context) {
+        if (frontier==null || path.isEmpty() || nextIndex!=path.size()-1
+            || !path.get(nextIndex).equals(frontier.standing())) return false;
+        WorldAccess world=context.world();Pos feet=NavigationFeet.resolve(world,world.player());
+        return feet.equals(frontier.standing()) && TerrainPathSearch.loadedStance(world,feet)
+            && world.canStand(feet) && standingNear(world,world.player(),feet,.15);
     }
     private List<Pos> descentPreview(Context context) {
         if (!requestInteractions || domain==null || nextIndex<=0 || nextIndex>=path.size()) return List.of();

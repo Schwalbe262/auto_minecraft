@@ -68,7 +68,7 @@ public final class LocalPathfinder {
                         LoggingJumpEdge edge=new LoggingJumpEdge(node.pos(),next);
                         jump=LoggingJumpRules.verifiedSupports(edge,world,profile) && world.canLoggingJump(edge,profile);
                     }
-                    if (!traversable && !logging && !diagonal && bounds.terrain()) {
+                    if (!traversable && !jump && !diagonal && bounds.terrain()) {
                         LoggingJumpEdge edge=new LoggingJumpEdge(node.pos(),next);
                         jump=StepUpRules.verifiedSupports(edge,world,profile) && world.canStepUp(edge,profile);
                     }

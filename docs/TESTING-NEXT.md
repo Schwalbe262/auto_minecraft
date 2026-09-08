@@ -1547,3 +1547,34 @@ At this checkpoint the player is manually controlling the existing client, which
 still runs the preceding rolling-stair artifact. Restart coordination, native
 queued-replant acceptance and a matched new stair timing remain pending. Manual
 movement and inventory changes during development are not automation results.
+
+### Live-discovered logging transit boundary failure — 2026-09-09 KST
+
+The preceding queued-replant candidate was installed in the same Society client
+after a normal shutdown and recoverable JAR backup. Registrations, schedules and
+unfinished work were preserved. Initial hostname resolution failed; verified DNS
+and TCP followed by a normal reconnect in the same client restored the session.
+
+Continuous mode resumed, validated one manually repaired planting as complete,
+then failed while approaching the next tree. It selected an 82-node route to an
+irrelevant lower terrain-domain boundary before exhausting its cumulative search
+budget. No chopping, planting, inventory actions or receipts occurred. Health,
+inventory and the five remaining plots were preserved. This run did not reach
+the queued-sapling behavior and is not a successful logging acceptance test.
+
+The terrain search now permits domain-boundary travel only for a destination
+outside that domain, with both the actual boundary stance and crossing making
+verified geometric progress. Budget exhaustion no longer promotes a recorded
+frontier into movement. Missing-chunk boundaries retain their separate behavior.
+Logging transit may fall back to the existing independently verified general
+one-block ascent outside legacy waypoint bounds. The planner and controller use
+matching checks; neither protected planting nor an in-flight authority change
+is allowed. A final ascent/descent frontier reanchors only after its actual quiet
+landing instead of discarding the boundary and searching the old window again.
+
+Java 17 / Gradle `test build` passed **1,113 tests across 88 suites**, zero
+failures, errors or skips. The isolated navigation suite passed 210 tests,
+including 17 new frontier, logging-approach and final-landing regressions.
+Candidate SHA-256:
+`0DFD52E2DCED6122B3E23C2B3D2829A14D12A2C839ED0F5CD6E5953077990EDE`.
+Native recovery and repeat logging/stair acceptance are pending for this artifact.

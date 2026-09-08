@@ -112,6 +112,50 @@ class TerrainNavigationTest {
         assertTrue((int)f.navigation.diagnostics().get("sliceNodes")<=128);
         assertTrue((int)f.navigation.diagnostics().get("sliceLos")<=32);
     }
+    @Test void aFinalFrontierDescentReanchorsOnlyAfterItsObservedQuietLanding() {
+        assertControlledFrontierReanchors(false);
+    }
+    @Test void aFinalFrontierAscentReanchorsOnlyAfterItsObservedQuietLanding() {
+        assertControlledFrontierReanchors(true);
+    }
+    private static void assertControlledFrontierReanchors(boolean ascending) {
+        Fixture f=new Fixture(255);int landingY=ascending ? 65 : 63;
+        for(int x=256;x<=300;x++) f.standing.add(new Pos(x,landingY,0));
+        f.nativeStepUp=ascending;f.allowStairs=!ascending;
+        Pos target=new Pos(300,landingY,0),landing=new Pos(256,landingY,0);
+        boolean controlled=false,reanchored=false;int poseStage=0,quietGrounded=0;
+        for(int i=0;i<2000;i++) {
+            assertEquals(Navigation.Result.MOVING,f.navigation.moveToPosition(target,.2,f.context),f.navigation.failureReason());
+            if(f.navigation.permitsTransit(target,f.context)) {
+                reanchored=true;assertTrue(controlled);assertTrue(quietGrounded>=2);
+                assertTrue(f.grounded);assertEquals(landingY,f.y);assertEquals(256.5,f.x);
+                assertFalse(f.navigation.permitsTransit(START.offset(-256,0,0),f.context));
+                assertNull(f.movement);break;
+            }
+            String state=f.navigation.diagnosticStatus();
+            if(!controlled && (state.equals("STEP_UP") || state.startsWith("DESCENT_"))) {
+                controlled=true;f.x=255.5;f.y=64;f.z=.5;f.grounded=true;
+            }
+            if(!controlled) { f.advance();continue; }
+            // Script observed, distinct native poses, not predicted controller
+            // completion. Search/domain permission must remain unchanged through
+            // flight and the first grounded landing observation.
+            if(poseStage==0 && (ascending ? f.launches>0 : state.equals("DESCENT_DESCEND"))) {
+                f.x=ascending ? 255.5 : 256.2;f.y=ascending ? 64.42 : 63.6;f.grounded=false;poseStage=1;
+            } else if(poseStage==1) {
+                assertFalse(f.navigation.permitsTransit(target,f.context));
+                f.x=256.5;f.y=landingY;f.grounded=true;poseStage=2;
+            } else if(poseStage==2) {
+                quietGrounded++;
+                if(quietGrounded==1) assertFalse(f.navigation.permitsTransit(target,f.context));
+            }
+            f.now++;
+        }
+        assertTrue(reanchored,"A settled controlled edge must not discard its terminal frontier before reanchoring");
+        assertEquals(0,f.submissions);assertEquals(ascending ? 1 : 0,f.launches);
+        assertEquals(0,f.loggingLaunches);assertFalse(f.navigation.retryableFailure());
+        assertTrue(f.navigation.permitsTransit(landing,f.context));
+    }
     @Test void searchExpandsItsBudgetWithoutRestartingAndStopsAt65536() {
         Fixture f=new Fixture(0);f.largeFloor=true;
         var s=f.search(new Pos(1000,64,1000),TerrainPathSearch.Goal.POSITION,false);
