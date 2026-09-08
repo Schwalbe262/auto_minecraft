@@ -806,3 +806,22 @@ verification. No new inventory interruption was induced in the running soak test
   against arbitrary network delays. Deployment and a new actual dawn run must
   be checked separately. Earlier observation windows cannot establish endurance
   for the changed build.
+
+### Safe restart with the dawn batching fix
+
+- The previous optimized build ended by an intentional idle-state pause after
+  **48 minutes 20.518 seconds** of observed ON operation: 2,900 connected/running
+  samples, **2,284 consecutive successful actions**, no missing or unresolved
+  action, no observed failure fence, and five actual sleep/day transitions.
+  Its final due-day harvest stored 1,600 tomatoes, deleted 76 rotten tomatoes
+  and shipped 30 pine tar before reaching a clean inventory and closed menu.
+  This interval is not a three-hour endurance pass.
+- The existing Society client was normally closed and restarted with the
+  723-test dawn-fix artifact; no second client was launched. The installed JAR
+  hash matched the tested build. Fresh in-world diagnostics confirmed all
+  registrations, the two-day harvest setting, six-day wine and three-day
+  preserves schedules, an empty cursor, and no pending production obligation.
+- Continuous automation resumed through the normal F8 start path at
+  **2026-09-08 04:18:16 UTC**. The first observed ON sample is at
+  **04:18:16.904 UTC**. Post-restart cycles and uninterrupted endurance must be
+  assessed from this new window, not concatenated with the prior run.
