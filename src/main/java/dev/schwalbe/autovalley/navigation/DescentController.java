@@ -91,8 +91,10 @@ final class DescentController {
         // extending: newly safe cells cannot excuse lost borrowed clearance.
         if (flowing() && !world.canFlowDescent(flowProof,c.profile()))
             return fail("연속 계단의 검증된 제동 공간이 바뀌어 이동을 멈춥니다.");
-        if (continuation && world.canFlowDescent(preview,c.profile())
-                && (flowing() || phase==Phase.PREPARE)) flowProof=List.copyOf(preview);
+        if (flowing() || phase==Phase.PREPARE) {
+            List<Pos> prefix=verifiedFlowPrefix(c,preview,continuation);
+            if (!prefix.isEmpty()) flowProof=prefix;
+        }
         if (flowing() && (!world.standardDescentPhysics() || !flowProof.contains(from) || !flowProof.contains(to)))
             return fail("연속 계단의 발판 또는 낙하 조건을 확인할 수 없습니다.");
         if (Math.sqrt(Math.pow(p.x()-progressSample.x(),2)+Math.pow(p.y()-progressSample.y(),2)+Math.pow(p.z()-progressSample.z(),2))>.08) {
@@ -131,10 +133,19 @@ final class DescentController {
             int start=flowProof.indexOf(from),landed=observedFlowLanding(world,p,start);
             if (landed>start) {
                 Pos landing=flowProof.get(landed);
+                int normalNext=landed==flowProof.size()-1 && continuation && measured
+                    ? normalExitIndex(world,p,preview,landing,vx,vz) : -1;
                 if (landed+1<flowProof.size() && measured && canFlowHandOff(world,p,landing,vx,vz)) {
                     from=landing;fromHeight=world.standingY(from);to=flowProof.get(landed+1);toHeight=world.standingY(to);
                     completedEdges+=landed-start;quietSamples=0;firstTick=now;progressTick=now;progressSample=p;
                     continuation=landed+2<flowProof.size();
+                } else if (normalNext>=0) {
+                    // The borrowed corridor has ended on an actually observed
+                    // full tread. Only the existing conservative single-edge
+                    // handoff may enter its separately proven ordinary suffix.
+                    from=landing;fromHeight=world.standingY(from);to=preview.get(normalNext);toHeight=world.standingY(to);
+                    completedEdges+=landed-start;quietSamples=0;firstTick=now;progressTick=now;progressSample=p;
+                    flowProof=List.of();continuation=normalNext+1<preview.size();
                 } else {
                     // The final observed landing still needs the normal quiet
                     // stop. Report only cells preceding that terminal target.
@@ -218,16 +229,35 @@ final class DescentController {
         }
         return c.world().canChainDescent(preview,c.profile());
     }
+    /** The navigator supplies at most three edges. A later ordinary platform or
+     * unproven edge must not hide an independently proven two-edge stair prefix.
+     * The omitted suffix contributes neither clearance nor landing permission. */
+    private List<Pos> verifiedFlowPrefix(Context c,List<Pos> preview,boolean fullContinuation) {
+        if (preview==null || preview.size()<3 || preview.size()>4) return List.of();
+        for (int size=preview.size();size>=3;size--) {
+            List<Pos> prefix=preview.subList(0,size);
+            boolean continuation=size==preview.size() ? fullContinuation : verifiedContinuation(c,prefix);
+            if (continuation && c.world().canFlowDescent(prefix,c.profile())) return List.copyOf(prefix);
+        }
+        return List.of();
+    }
     static double passiveMomentumDrag(boolean verifiedHalfTread,boolean consecutiveSameGround,double observedDrag) {
         return verifiedHalfTread && consecutiveSameGround && Double.isFinite(observedDrag) && observedDrag>=0
             ? Math.max(.65,observedDrag) : .91;
     }
     private boolean canHandOff(WorldAccess world,PlayerState p,Pos next,double vx,double vz) {
+        return canHandOff(world,p,to,next,vx,vz);
+    }
+    private int normalExitIndex(WorldAccess world,PlayerState p,List<Pos> preview,Pos landing,double vx,double vz) {
+        int index=preview.indexOf(landing);
+        return index>=1 && index+1<preview.size() && canHandOff(world,p,landing,preview.get(index+1),vx,vz) ? index+1 : -1;
+    }
+    private boolean canHandOff(WorldAccess world,PlayerState p,Pos landing,Pos next,double vx,double vz) {
         int dx=to.x()-from.x(),dz=to.z()-from.z();
-        double lateral=Math.abs((p.x()-to.x()-.5)*dz-(p.z()-to.z()-.5)*dx);
+        double lateral=Math.abs((p.x()-landing.x()-.5)*dz-(p.z()-landing.z()-.5)*dx);
         double nextHeight=world.standingY(next);
         double safeSpeed=Math.min(.12,Math.max(0,horizontal(p,next)-CENTER)/fallCoastFactor(p.y()-nextHeight,true));
-        return to.equals(NavigationFeet.resolve(world,p)) && horizontal(p,to)<=.45 && lateral<=.10
+        return landing.equals(NavigationFeet.resolve(world,p)) && horizontal(p,landing)<=.45 && lateral<=.10
             && vx*dx+vz*dz>=-.002 && Math.abs(vx*dz-vz*dx)<=.01
             && Math.hypot(vx,vz)<=safeSpeed && Double.isFinite(observedDrag) && observedDrag<=.80
             && Double.isFinite(observedAcceleration);

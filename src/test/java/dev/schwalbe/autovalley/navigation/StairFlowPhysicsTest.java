@@ -47,6 +47,27 @@ class StairFlowPhysicsTest {
         assertTrue(flow.x>=.4 && flow.x<=.6);
     }
 
+    @Test void anOrdinaryFinalPlatformKeepsTheLongestProvenStairPrefixWithoutAnExtraFullStop() {
+        for(int height:new int[]{3,6,8,12}) {
+            Fixture baseline=new Fixture(height,1,0,false,false),flow=new Fixture(height,1,0,true,false);
+            baseline.run();flow.run();assertSafeArrival(baseline);assertSafeArrival(flow);
+            assertFalse(flow.acceptedPreviews.isEmpty(),"An ordinary last platform must not hide the preceding stair prefix");
+            assertTrue(flow.acceptedPreviews.stream().noneMatch(preview->preview.contains(flow.goal)),
+                "The ordinary platform never acquires native stair-flow permission");
+            assertTrue(flow.descentTicks()<=baseline.descentTicks(),"A shorter prefix must not introduce a stop/recalibration regression");
+            assertEquals(height==3?3:4,flow.acceptedPreviews.get(0).size(),"Use the longest independently verified prefix");
+            for(int tick=0;tick<30;tick++){flow.physics();assertTrue(flow.ground);assertEquals(0,flow.y,1e-8);}
+            assertTrue(flow.x>=.4&&flow.x<=.6,"Ordinary final landing retains its original finite-platform margin");
+        }
+    }
+
+    @Test void oneProvenStairEdgeBeforeAnOrdinaryPlatformKeepsTheExistingFallback() {
+        Fixture baseline=new Fixture(2,1,0,false,false),flow=new Fixture(2,1,0,true,false);
+        baseline.run();flow.run();assertSafeArrival(baseline);assertSafeArrival(flow);
+        assertTrue(flow.acceptedPreviews.isEmpty(),"Flow still requires at least two proven descending edges");
+        assertEquals(baseline.descentTicks(),flow.descentTicks());
+    }
+
     @Test void finalNativeStairStopsBeforeItsLastLowerHalfTread() {
         Fixture flow=new Fixture(8,1,0,true,true);flow.run();assertSafeArrival(flow);
         assertTrue(flow.acceptedPreviews.stream().anyMatch(preview->preview.contains(flow.goal)),

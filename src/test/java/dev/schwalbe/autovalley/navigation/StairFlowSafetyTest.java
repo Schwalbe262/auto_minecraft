@@ -54,6 +54,60 @@ class StairFlowSafetyTest {
         assertNull(f.movement);assertEquals(0,f.airInputs);
     }
 
+    @Test void leavingFlowForAnOrdinaryEdgeReusesOnlyTheSlowActuallyGroundedHandoff() {
+        for(int[] axis:new int[][]{{1,0},{-1,0},{0,1},{0,-1}})for(double acceleration:new double[]{.06,.13,.30}) {
+            var f=new StairFlowPhysicsTest.Fixture(3,axis[0],axis[1],true,false);f.acceleration=acceleration;
+            double previousX=f.x,previousZ=f.z;boolean handedOff=false;
+            while(f.result==Navigation.Result.MOVING && f.now<1000) {
+                boolean wasFlow=Boolean.TRUE.equals(f.nav.diagnostics().get("descentFlow"));
+                double measuredSpeed=Math.hypot(f.x-previousX,f.z-previousZ);
+                f.control();
+                if(wasFlow && !Boolean.TRUE.equals(f.nav.diagnostics().get("descentFlow")) && f.y==1) {
+                    handedOff=true;assertTrue(f.ground);assertEquals(f.path.get(2),NavigationFeet.resolve(f,f.player()));
+                    assertTrue(measuredSpeed<=.12,"The larger flow speed is never lent to an ordinary edge");
+                    assertEquals(2,((Number)f.nav.diagnostics().get("descentHandoffs")).intValue());
+                    assertEquals(3,index(f));assertEquals("DESCENT_DESCEND",f.nav.diagnosticStatus());
+                }
+                previousX=f.x;previousZ=f.z;
+                if(f.result==Navigation.Result.MOVING)f.physics();
+            }
+            assertTrue(handedOff,"The bounded ordinary exit must actually be exercised");
+            assertEquals(Navigation.Result.ARRIVED,f.result,f.debug());assertEquals(0,f.airInputs);assertEquals(0,f.submissions);
+            assertTrue(f.ground);assertTrue(Math.hypot(f.vx,f.vz)<=.002);assertNull(f.movement);
+        }
+    }
+
+    @Test void theUnprovenOrdinarySuffixStillRequiresTheFullCurrentLanding() {
+        var f=new StairFlowPhysicsTest.Fixture(3,1,0,true,false) {
+            @Override public boolean canChainDescent(List<Pos> preview,Profile profile) {
+                return !preview.contains(goal) && super.canChainDescent(preview,profile);
+            }
+        };
+        boolean fullStopBeforeSuffix=false;
+        while(f.result==Navigation.Result.MOVING && f.now<1000) {
+            f.control();
+            if(f.y==1 && f.nav.diagnosticStatus().equals("DESCENT_LAND")) {
+                fullStopBeforeSuffix=true;assertTrue(f.ground);assertTrue(index(f)<3);
+            }
+            if(f.result==Navigation.Result.MOVING)f.physics();
+        }
+        assertTrue(fullStopBeforeSuffix);assertEquals(Navigation.Result.ARRIVED,f.result,f.debug());
+        assertTrue(f.acceptedPreviews.stream().noneMatch(preview->preview.contains(f.goal)));
+        assertEquals(0,f.airInputs);assertEquals(0,f.submissions);
+    }
+
+    @Test void anUnmeasuredFlowExitCannotBorrowTheOrdinaryHandoff() {
+        var f=new StairFlowPhysicsTest.Fixture(3,1,0,true,false);
+        while(!(f.ground && f.y==1) && f.result==Navigation.Result.MOVING && f.now<200) {
+            f.control();if(f.result==Navigation.Result.MOVING)f.physics();
+        }
+        assertTrue(f.ground);assertEquals(1,f.y);assertTrue(Boolean.TRUE.equals(f.nav.diagnostics().get("descentFlow")));
+        int before=index(f);f.now++;f.control();
+        assertEquals(Navigation.Result.MOVING,f.result);assertEquals(before,index(f));assertNull(f.movement);
+        f.physics();f.control();assertEquals("DESCENT_LAND",f.nav.diagnosticStatus());
+        assertEquals(0,f.airInputs);assertEquals(0,f.submissions);
+    }
+
     private static int index(StairFlowPhysicsTest.Fixture f) {
         return ((Number)f.nav.diagnostics().get("nextIndex")).intValue();
     }
