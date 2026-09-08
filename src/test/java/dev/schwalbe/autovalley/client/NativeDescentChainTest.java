@@ -154,4 +154,95 @@ class NativeDescentChainTest {
             assertFalse(NativeDescentChain.halfStepGeometry(feet,List.of(72d,71d),.6,1.8,p -> cells.getOrDefault(p,AIR),p -> true));
         }
     }
+    private static Map<Pos,NativeLoggingJump.Cell> flowStairs() {
+        var cells=stairs();
+        for (Pos p:FEET) cells.put(p.offset(0,-1,0),cell(true,false,true,stairBoxes(1,0)));
+        return cells;
+    }
+    private static boolean inspectFlow(Map<Pos,NativeLoggingJump.Cell> cells) {
+        return NativeDescentChain.flowGeometry(FEET,HEIGHTS,.6,1.8,p -> cells.getOrDefault(p,AIR),p -> true);
+    }
+    @Test void continuousFlowAcceptsOnlyTwoOrThreeFullyProvenStraightStairEdges() {
+        var cells=flowStairs();
+        assertTrue(inspectFlow(cells));
+        assertTrue(NativeDescentChain.flowGeometry(FEET.subList(0,3),HEIGHTS.subList(0,3),.6,1.8,
+            p -> cells.getOrDefault(p,AIR),p -> true));
+        assertFalse(NativeDescentChain.flowShape(FEET.subList(0,2)));
+        var tooLong=new ArrayList<>(FEET);tooLong.add(new Pos(4,68,0));
+        assertFalse(NativeDescentChain.flowShape(tooLong));
+    }
+    @Test void continuousFlowRetainsExactStairShapeAndUpstreamDirectionInEveryHeading() {
+        for (int[] d:List.of(new int[]{1,0},new int[]{-1,0},new int[]{0,1},new int[]{0,-1})) {
+            var feet=new ArrayList<Pos>();var cells=new HashMap<Pos,NativeLoggingJump.Cell>();
+            for (int i=0;i<4;i++) {
+                Pos p=new Pos(i*d[0],72-i,i*d[1]);feet.add(p);
+                cells.put(p.offset(0,-1,0),cell(true,false,true,stairBoxes(d[0],d[1])));
+            }
+            assertTrue(NativeDescentChain.flowGeometry(feet,HEIGHTS,.6,1.8,p -> cells.getOrDefault(p,AIR),p -> true));
+            cells.put(feet.get(2).offset(0,-1,0),cell(true,false,true,stairBoxes(-d[0],-d[1])));
+            assertFalse(NativeDescentChain.flowGeometry(feet,HEIGHTS,.6,1.8,p -> cells.getOrDefault(p,AIR),p -> true));
+        }
+    }
+    @Test void flowDoesNotInheritFullBlockSlabOrMerelyStairShapedModdedSupportPermission() {
+        for (Pos p:FEET) {
+            Pos floor=p.offset(0,-1,0);var cells=flowStairs();
+            cells.put(floor,cell(true,false,true,List.of(CUBE)));assertFalse(inspectFlow(cells));
+            cells.put(floor,cell(true,false,true,List.of(new AABB(0,0,0,1,.5,1))));assertFalse(inspectFlow(cells));
+            var actual=flowStairs();
+            assertFalse(NativeDescentChain.flowGeometry(FEET,HEIGHTS,.6,1.8,p2 -> actual.getOrDefault(p2,AIR),p2 -> !p2.equals(floor)));
+        }
+    }
+    @Test void flowChecksHighBodyClearanceOverLaterStepsEvenWhenEachEdgeAloneIsClear() {
+        for (Pos high:List.of(new Pos(2,73,0),new Pos(3,72,0))) {
+            var cells=flowStairs();cells.put(high,cell(true,false,true,List.of(CUBE)));
+            assertTrue(NativeDescentChain.geometry(FEET,HEIGHTS,.6,1.8,p -> cells.getOrDefault(p,AIR),p -> true),
+                "the old settled-edge proof deliberately does not authorize the larger flight envelope");
+            assertFalse(inspectFlow(cells));
+        }
+    }
+    @Test void flowAllowsSolidStructureBelowEachVerifiedStairWithoutExcusingAnyBodyObstacle() {
+        var cells=flowStairs();
+        for (Pos p:FEET) for (int y=68;y<p.y()-1;y++)
+            cells.put(new Pos(p.x(),y,p.z()),cell(true,false,true,List.of(CUBE)));
+        assertTrue(inspectFlow(cells),"only the edge-local lower floor bounds the occupied envelope");
+        cells.put(FEET.get(2),cell(true,false,true,List.of(CUBE)));
+        assertFalse(inspectFlow(cells),"a wall above that same structure remains a real obstacle");
+    }
+    @Test void flowChecksLoadingAndPermissionThroughoutTheLargerFlightEnvelope() {
+        for (Pos p:List.of(new Pos(3,72,0),FEET.get(1),FEET.get(2).offset(0,-1,0))) {
+            var cells=flowStairs();var boxes=cells.getOrDefault(p,AIR).boxes();
+            cells.put(p,cell(false,false,true,boxes));assertFalse(inspectFlow(cells));
+            cells.put(p,new NativeLoggingJump.Cell(true,false,false,true,boxes));assertFalse(inspectFlow(cells));
+            cells.put(p,cell(true,true,true,boxes));assertFalse(inspectFlow(cells));
+        }
+    }
+    @Test void everyFlowSupportRequiresNormalSurfaceAndCannotHideAChangedShape() {
+        for (Pos p:FEET) {
+            var cells=flowStairs();Pos floor=p.offset(0,-1,0);
+            cells.put(floor,cell(true,false,false,stairBoxes(1,0)));assertFalse(inspectFlow(cells));
+            cells.put(floor,cell(true,false,true,List.of(new AABB(0,0,0,1,.5,1),new AABB(0,.5,0,.5,1,.5))));
+            assertFalse(inspectFlow(cells));
+        }
+    }
+    @Test void flowRejectsLevelTransitionsGapsTurnsAndCoordinateWraparound() {
+        for (Pos to:List.of(new Pos(2,71,0),new Pos(2,69,0),new Pos(1,70,1),new Pos(3,70,0)))
+            assertFalse(NativeDescentChain.flowShape(List.of(FEET.get(0),FEET.get(1),to)));
+        assertFalse(NativeDescentChain.flowShape(List.of(new Pos(Integer.MAX_VALUE,72,0),new Pos(Integer.MIN_VALUE,71,0),new Pos(Integer.MIN_VALUE+1,70,0))));
+        assertFalse(NativeDescentChain.flowShape(List.of(new Pos(0,Integer.MIN_VALUE,0),new Pos(1,Integer.MAX_VALUE,0),new Pos(2,Integer.MAX_VALUE-1,0))));
+        assertFalse(NativeDescentChain.flowShape(null));
+        assertFalse(NativeDescentChain.flowShape(Arrays.asList(FEET.get(0),FEET.get(1),null)));
+    }
+    @Test void flowRejectsUnknownDimensionsHeightsAndMalformedCollisionBoxes() {
+        var cells=flowStairs();
+        for (List<Double> heights:List.of(List.of(72d,71d,Double.NaN,69d),List.of(72d,71d,70d,68.5d)))
+            assertFalse(NativeDescentChain.flowGeometry(FEET,heights,.6,1.8,p -> cells.getOrDefault(p,AIR),p -> true));
+        assertFalse(NativeDescentChain.flowGeometry(FEET,HEIGHTS,.6,1.5,p -> cells.getOrDefault(p,AIR),p -> true));
+        assertFalse(NativeDescentChain.flowGeometry(FEET,HEIGHTS,Double.NaN,1.8,p -> cells.getOrDefault(p,AIR),p -> true));
+        cells.put(new Pos(3,72,0),cell(true,false,true,List.of(new AABB(0,0,0,1,2,1))));
+        assertFalse(inspectFlow(cells));
+    }
+    @Test void flowKeepsTheCompleteMarginAndCannotTreatAWallAsVerifiedSupport() {
+        var cells=flowStairs();cells.put(FEET.get(2),cell(true,false,true,List.of(new AABB(.85,0,0,1,1,1))));
+        assertFalse(inspectFlow(cells),"the .10 lane margin is clearance, not extra collision permission");
+    }
 }

@@ -18,6 +18,8 @@ public interface WorldAccess {
     default boolean standardDescentPhysics() { return false; }
     /** Read-only proof for at most three straight descending edges; unknown adapters settle each step. */
     default boolean canChainDescent(List<Pos> feet,Profile profile) { return false; }
+    /** Opt-in full flight-envelope proof for 2-3 native straight stair edges; not movement authority. */
+    default boolean canFlowDescent(List<Pos> feet,Profile profile) { return false; }
     /** Exact native bottom/straight stair treads on both supports; unknown fall geometry stays conservative. */
     default boolean straightDescentStair(Pos from,Pos to,Profile profile) { return false; }
     /** Opt-in native collision proof for a single flat diagonal; unknown adapters remain cardinal-only. */

@@ -1,6 +1,7 @@
 package dev.schwalbe.autovalley.client;
 
 import dev.schwalbe.autovalley.core.*;
+import dev.schwalbe.autovalley.navigation.ProfileBounds;
 import java.util.*;
 import java.util.function.Predicate;
 import net.minecraft.client.Minecraft;
@@ -18,19 +19,25 @@ final class NativeDescentChain {
     private NativeDescentChain() { }
 
     static boolean mayChain(Minecraft mc,MinecraftWorld world,List<Pos> feet,Profile profile) {
-        return inspect(mc,world,feet,profile,false);
+        return inspect(mc,world,feet,profile,false,false);
     }
     static boolean mayUseHalfSteps(Minecraft mc,MinecraftWorld world,Pos from,Pos to,Profile profile) {
-        return from!=null && to!=null && inspect(mc,world,List.of(from,to),profile,true);
+        return from!=null && to!=null && inspect(mc,world,List.of(from,to),profile,true,false);
     }
-    private static boolean inspect(Minecraft mc,MinecraftWorld world,List<Pos> feet,Profile profile,boolean halfSteps) {
+    static boolean mayFlow(Minecraft mc,MinecraftWorld world,List<Pos> feet,Profile profile) {
+        return inspect(mc,world,feet,profile,false,true);
+    }
+    private static boolean inspect(Minecraft mc,MinecraftWorld world,List<Pos> feet,Profile profile,boolean halfSteps,boolean flow) {
         try {
-            if (mc==null || mc.level==null || profile==null || !NativeLoggingJump.normalPhysics(mc)
-                    || !shape(feet,halfSteps ? 2 : 3) || halfSteps && feet.size()!=2) return false;
+            if (mc==null || mc.level==null || world==null || profile==null || !NativeLoggingJump.normalPhysics(mc)
+                    || !shape(feet,halfSteps ? 2 : 3) || halfSteps && feet.size()!=2
+                    || flow && (profile.navigationMode==null || !flowShape(feet))) return false;
+            ProfileBounds bounds=flow && profile.navigationMode==NavigationMode.WAYPOINTS ? new ProfileBounds(profile) : null;
             List<Double> heights=new ArrayList<>();
             for (int i=0;i<feet.size();i++) {
                 Pos p=feet.get(i);
-                if (!world.canStand(p) || (i>0 && !world.canTraverse(feet.get(i-1),p))) return false;
+                if (bounds!=null && !bounds.contains(p) || !world.canStand(p)
+                        || (i>0 && !world.canTraverse(feet.get(i-1),p))) return false;
                 heights.add(world.standingY(p));
             }
             NativeLoggingJump.Cells cells=p -> {
@@ -38,7 +45,7 @@ final class NativeDescentChain {
                 BlockPos bp=MinecraftWorld.nativePos(p);
                 var state=mc.level.getBlockState(bp);
                 var block=state.getBlock();
-                return new NativeLoggingJump.Cell(true,true,
+                return new NativeLoggingJump.Cell(true,bounds==null || bounds.contains(p),
                     NativeLoggingJump.forbiddenBlock(state) || state.is(BlockTags.CLIMBABLE)
                         || NativeLoggingJump.protectedPlanting(profile,p),
                     NativeLoggingJump.normalSurface(block.getJumpFactor(),block.getSpeedFactor(),state.getFriction(mc.level,bp,mc.player)),
@@ -53,6 +60,12 @@ final class NativeDescentChain {
                 var facing=state.getValue(StairBlock.FACING);
                 return facing.getStepX()==-dx && facing.getStepZ()==-dz;
             };
+            if (flow) {
+                if (!flowGeometry(feet,heights,width,height,cells,ordinaryStair)) return false;
+                for (AABB body:flowSweeps(feet,heights,width,height))
+                    if (!world.insideBorder(body) || !mc.level.getEntityCollisions(mc.player,body).isEmpty()) return false;
+                return true;
+            }
             if (!geometry(feet,heights,width,height,cells,ordinaryStair,halfSteps)) return false;
             for (int i=1;i<feet.size();i++) {
                 AABB sweep=sweep(feet.get(i-1),feet.get(i),heights.get(i-1),heights.get(i),width,height);
@@ -60,6 +73,64 @@ final class NativeDescentChain {
             }
             return true;
         } catch (RuntimeException unavailable) { return false; }
+    }
+
+    /** Only ordinary one-block-down stair supports, with no wraparound, turns or gaps. */
+    static boolean flowShape(List<Pos> feet) {
+        if (feet==null || feet.size()<3 || feet.size()>4 || feet.stream().anyMatch(Objects::isNull)) return false;
+        // Leave room for support offsets and the bounded integer clearance loops.
+        for (Pos p:feet) for (int value:new int[]{p.x(),p.y(),p.z()})
+            if ((long)value<Integer.MIN_VALUE+4L || (long)value>Integer.MAX_VALUE-4L) return false;
+        long dx=(long)feet.get(1).x()-feet.get(0).x(),dz=(long)feet.get(1).z()-feet.get(0).z();
+        if (Math.abs(dx)+Math.abs(dz)!=1) return false;
+        for (int i=1;i<feet.size();i++) {
+            Pos from=feet.get(i-1),to=feet.get(i);
+            if ((long)to.x()-from.x()!=dx || (long)to.z()-from.z()!=dz || (long)from.y()-to.y()!=1) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Stronger than the per-edge chain proof: the body may still be high while
+     * advancing into later cells, so the whole conservative envelope must be clear.
+     * Only the exact, already-verified stair support cells are collision exceptions.
+     * The controller still owns current-request permission, velocity and final stopping.
+     */
+    static boolean flowGeometry(List<Pos> feet,List<Double> heights,double width,double height,
+                                NativeLoggingJump.Cells cells,Predicate<Pos> ordinaryStair) {
+        if (!flowShape(feet) || !geometry(feet,heights,width,height,cells,ordinaryStair)) return false;
+        int dx=feet.get(1).x()-feet.get(0).x(),dz=feet.get(1).z()-feet.get(0).z();
+        Set<Pos> supports=new HashSet<>();
+        for (int i=0;i<feet.size();i++) {
+            Pos floor=feet.get(i).offset(0,-1,0); var cell=cells.at(floor);
+            if (!ordinaryStair.test(floor) || !safe(cell) || !cell.normalSurface()
+                    || !straightStairShape(cell.boxes(),dx,dz) || Math.abs(heights.get(i)-feet.get(i).y())>EPS) return false;
+            supports.add(floor);
+        }
+        for (AABB body:flowSweeps(feet,heights,width,height)) {
+            for (int x=(int)Math.floor(body.minX);x<=(int)Math.floor(body.maxX);x++)
+                for (int z=(int)Math.floor(body.minZ);z<=(int)Math.floor(body.maxZ);z++)
+                    for (int y=(int)Math.floor(body.minY);y<=(int)Math.floor(body.maxY);y++) {
+                        Pos p=new Pos(x,y,z); var cell=cells.at(p);
+                        if (!safe(cell)) return false;
+                        for (AABB box:cell.boxes()) {
+                            if (!validBox(box)) return false;
+                            if (body.intersects(box.move(x,y,z)) && !supports.contains(p)) return false;
+                        }
+                    }
+        }
+        return true;
+    }
+
+    private static List<AABB> flowSweeps(List<Pos> feet,List<Double> heights,double width,double height) {
+        List<AABB> result=new ArrayList<>();
+        for (int i=1;i<feet.size();i++) {
+            // Preserve each edge's proven lower floor, but retain the first edge's
+            // maximum body height across the whole flight. Solid structure beneath
+            // an earlier stair cannot be occupied and is not an obstacle exception.
+            result.add(sweep(feet.get(i-1),feet.get(i),heights.get(0),heights.get(i),width,height));
+        }
+        return List.copyOf(result);
     }
 
     static boolean shape(List<Pos> feet) {

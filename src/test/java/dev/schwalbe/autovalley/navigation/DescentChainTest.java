@@ -174,10 +174,11 @@ class DescentChainTest {
         assertEquals(0,controller.completedEdges());assertNull(f.movement);assertEquals(0,f.submissions);
     }
 
-    @Test void anUnverifiedLargeInputResponseCannotLoosenTheFinalLandingGuard() {
+    @Test void aLargeInputResponseStillRequiresTheOriginalQuietFinalLanding() {
         Fixture f=new Fixture(6);f.halfTreads=true;f.acceleration=.60;f.run();
-        assertEquals(Navigation.Result.BLOCKED,f.result,"The unchanged unknown-geometry path must not fake a quiet landing");
+        assertEquals(Navigation.Result.ARRIVED,f.result,f.debug());
         assertTrue(f.ground);assertEquals(0,f.y);assertTrue(f.x>=.5 && f.x<=.60001);
+        assertTrue(Math.abs(f.vx)<=.002,"Correct ground-drag learning must still stop the actual body");
         assertNull(f.movement);assertEquals(0,f.airInputs);assertEquals(0,f.submissions);
     }
 

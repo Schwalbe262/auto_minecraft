@@ -3,10 +3,11 @@ package dev.schwalbe.autovalley.navigation;
 import dev.schwalbe.autovalley.core.*;
 import java.util.List;
 
-/** A pre-braked, walking-only descent on one already validated cardinal edge. */
+/** Walking-only descent, with a bounded corridor opt-in for native straight stairs. */
 final class DescentController {
     enum Phase { PREPARE, DESCEND, LAND, COMPLETE, FAILED }
     private static final double HEIGHT_TOLERANCE=.10001, CENTER=.10;
+    private static final double FLOW_SPEED=.34;
     private Pos from,to;
     private double fromHeight,toHeight;
     private Phase phase=Phase.PREPARE;
@@ -19,9 +20,11 @@ final class DescentController {
     private float lastInput;
     private double lastSpeed,observedDrag=Double.NaN;
     private double observedAcceleration=Double.NaN;
+    private boolean previousSameGround;
     private boolean usedStandardFallBound;
     private boolean usedStairFallBound;
     private int completedEdges;
+    private List<Pos> flowProof=List.of();
 
     DescentController(Pos from,Pos to,WorldAccess world) {
         this.from=from;this.to=to;fromHeight=world.standingY(from);toHeight=world.standingY(to);
@@ -30,6 +33,7 @@ final class DescentController {
     String failureReason() { return failure; }
     boolean airborne() { return airborne; }
     int completedEdges() { return completedEdges; }
+    boolean flowing() { return !flowProof.isEmpty(); }
     static boolean descending(Pos from,Pos to,WorldAccess world) {
         double a=world.standingY(from),b=world.standingY(to);
         return Math.abs(to.x()-from.x())+Math.abs(to.z()-from.z())==1 && to.y()<=from.y()
@@ -38,8 +42,9 @@ final class DescentController {
     Navigation.Result tick(Context c) {
         return tick(c,List.of(from,to));
     }
-    /** A preview never expands the active airborne edge: a grounded landing is
-     * required before exactly one of its at most two following edges is used. */
+    /** Native flow may borrow braking distance, never a landing observation.
+     * A later observed full tread may retire intervening path cells, but an
+     * airborne or half-tread sample never advances the finite path. */
     Navigation.Result tick(Context c,List<Pos> preview) {
         actions=c.actions();WorldAccess world=c.world();PlayerState p=world.player();long now=world.tick();
         airborne=p!=null && !p.onGround();
@@ -52,6 +57,11 @@ final class DescentController {
         if (lastTick!=Long.MIN_VALUE && now<lastTick) return fail("내려가는 동안 시간이 되돌아갔습니다.");
         boolean measured=sample!=null && now-lastTick==1;
         boolean sameGround=measured && sample.onGround() && p.onGround() && Math.abs(p.y()-sample.y())<.00001;
+        // Displacement ratios lag native friction by one observation. The first
+        // grounded pair after a fall can still contain AIR drag (.91); learning
+        // it as floor friction made terminal braking look almost like ice.
+        boolean stableGround=sameGround && previousSameGround;
+        previousSameGround=sameGround;
         double vx=measured ? p.x()-sample.x() : 0,vz=measured ? p.z()-sample.z() : 0;
         double speed=Math.hypot(vx,vz);
         if(measured && lastInput>0 && lastSpeed<=.002 && sample.onGround() && p.onGround() && Math.abs(p.y()-sample.y())<.00001) {
@@ -62,7 +72,7 @@ final class DescentController {
             if(Double.isFinite(response) && response>.01)
                 observedAcceleration=Math.max(Double.isFinite(observedAcceleration)?observedAcceleration:0,Math.max(.06,response));
         }
-        if(measured && lastInput==0 && sample.onGround() && p.onGround() && Math.abs(p.y()-sample.y())<.00001 && lastSpeed>.004) {
+        if(stableGround && lastInput==0 && lastSpeed>.004) {
             double drag=speed/lastSpeed;
             if(Double.isFinite(drag) && drag>=0 && drag<1)
                 observedDrag=Math.max(Double.isFinite(observedDrag)?observedDrag:.65,Math.min(.95,drag+.05));
@@ -77,6 +87,14 @@ final class DescentController {
             return fail("내려갈 경로의 실제 발판 또는 통행 조건이 바뀌었습니다.");
         if (closedDoor(world,from) || closedDoor(world,to)) return fail("계단 통로의 문이 닫혀 내려가는 이동을 멈춥니다.");
         boolean continuation=verifiedContinuation(c,preview);
+        // Retain the last full proof on the final edge. Revalidate it before
+        // extending: newly safe cells cannot excuse lost borrowed clearance.
+        if (flowing() && !world.canFlowDescent(flowProof,c.profile()))
+            return fail("연속 계단의 검증된 제동 공간이 바뀌어 이동을 멈춥니다.");
+        if (continuation && world.canFlowDescent(preview,c.profile())
+                && (flowing() || phase==Phase.PREPARE)) flowProof=List.copyOf(preview);
+        if (flowing() && (!world.standardDescentPhysics() || !flowProof.contains(from) || !flowProof.contains(to)))
+            return fail("연속 계단의 발판 또는 낙하 조건을 확인할 수 없습니다.");
         if (Math.sqrt(Math.pow(p.x()-progressSample.x(),2)+Math.pow(p.y()-progressSample.y(),2)+Math.pow(p.z()-progressSample.z(),2))>.08) {
             progressSample=p;progressTick=now;
         }
@@ -89,14 +107,19 @@ final class DescentController {
             } else align(p,from,measured,vx,vz);
             return Navigation.Result.MOVING;
         }
-        // This is the existing one-edge descending corridor, not a permission
-        // to recover side falls or extend a landing beyond its planned center.
+        // Flow owns only the already verified corridor. Natural falling may
+        // pass an intermediate full tread, but the path cannot advance until
+        // an exact full-height support in that same proof is observed grounded.
         int dx=to.x()-from.x(),dz=to.z()-from.z();
         double rx=p.x()-from.x()-.5,rz=p.z()-from.z()-.5;
         double along=rx*dx+rz*dz,lateral=Math.abs(rx*dz-rz*dx);
         boolean onUpper=p.onGround() && Math.abs(p.y()-fromHeight)<=HEIGHT_TOLERANCE
             && from.equals(NavigationFeet.resolve(world,p)) && world.canStand(from) && horizontal(p,from)<=.45;
-        if (along<0 && !onUpper || along>1.00001 || lateral>.38 || p.y()<toHeight-HEIGHT_TOLERANCE || p.y()>fromHeight+HEIGHT_TOLERANCE)
+        Pos corridorEnd=flowing() ? flowProof.get(flowProof.size()-1) : to;
+        double alongLimit=flowing() ? Math.abs(corridorEnd.x()-from.x())+Math.abs(corridorEnd.z()-from.z()) : 1.00001;
+        double lowerHeight=flowing() ? world.standingY(corridorEnd) : toHeight;
+        if (along<0 && !onUpper || along>alongLimit || lateral>(flowing() ? .10 : .38)
+                || p.y()<lowerHeight-HEIGHT_TOLERANCE || p.y()>fromHeight+HEIGHT_TOLERANCE)
             return fail("내려가는 동안 검증된 한 구간을 벗어났습니다.");
         if (phase==Phase.LAND) {
             if (!p.onGround() || Math.abs(p.y()-toHeight)>HEIGHT_TOLERANCE)
@@ -104,7 +127,23 @@ final class DescentController {
             if (settled(p,to,measured,vx,vz)) { phase=Phase.COMPLETE;stop();return Navigation.Result.ARRIVED; }
             align(p,to,measured,vx,vz);return Navigation.Result.MOVING;
         }
-        if (p.onGround() && Math.abs(p.y()-toHeight)<=HEIGHT_TOLERANCE) {
+        if (flowing() && p.onGround()) {
+            int start=flowProof.indexOf(from),landed=observedFlowLanding(world,p,start);
+            if (landed>start) {
+                Pos landing=flowProof.get(landed);
+                if (landed+1<flowProof.size() && measured && canFlowHandOff(world,p,landing,vx,vz)) {
+                    from=landing;fromHeight=world.standingY(from);to=flowProof.get(landed+1);toHeight=world.standingY(to);
+                    completedEdges+=landed-start;quietSamples=0;firstTick=now;progressTick=now;progressSample=p;
+                    continuation=landed+2<flowProof.size();
+                } else {
+                    // The final observed landing still needs the normal quiet
+                    // stop. Report only cells preceding that terminal target.
+                    from=flowProof.get(landed-1);fromHeight=world.standingY(from);
+                    to=landing;toHeight=world.standingY(to);completedEdges+=landed-start-1;
+                    phase=Phase.LAND;quietSamples=0;progressTick=now;stop();return Navigation.Result.MOVING;
+                }
+            }
+        } else if (p.onGround() && Math.abs(p.y()-toHeight)<=HEIGHT_TOLERANCE) {
             if (continuation && measured && canHandOff(world,p,preview.get(2),vx,vz)) {
                 // Transfer only after native onGround at this exact lower support.
                 // Calibration and observed motion belong to this uninterrupted
@@ -140,16 +179,19 @@ final class DescentController {
         // determines a conservative no-input fall horizon; reserve the final
         // center margin for grounded braking. This only chooses input strength:
         // observed support, corridor and landing checks remain authoritative.
-        // A proven onward tread does not require a full stop .10m before this
-        // center. Still bound the complete passive coast BEFORE the same center;
-        // no airborne position beyond the active one-edge corridor is allowed.
-        double reserve=continuation ? 0 : CENTER;
+        // Ordinary descent still bounds passive coast at this one cell. Flow
+        // may instead coast within its fully revalidated, at-most-three-edge
+        // corridor; its final center always retains the same stopping margin.
+        double reserve=continuation && !flowing() ? 0 : CENTER;
         // Only a native-verified bottom/straight stair has this intervening
         // half-tread. The real grounded Y must agree with one of its two tops;
         // generic drops, shallow farm holes and unknown shapes keep the full bound.
-        boolean halfFall=stairProof && (Math.abs(p.y()-fromHeight)<.00001 || Math.abs(p.y()-(fromHeight-.5))<.00001);
-        double fallHeight=halfFall ? .5 : p.y()-toHeight;
-        double speedLimit=Math.min(.18,Math.max(0,horizontal(p,to)-reserve)/fallCoastFactor(fallHeight,standardPhysics));
+        boolean halfFall=stairProof && (flowing() ? Math.abs((fromHeight-p.y())*2-Math.rint((fromHeight-p.y())*2))<.00001
+            : Math.abs(p.y()-fromHeight)<.00001 || Math.abs(p.y()-(fromHeight-.5))<.00001);
+        Pos brakeGoal=flowing() ? flowProof.get(flowProof.size()-1) : to;
+        double fallHeight=flowing() ? p.y()-world.standingY(brakeGoal) : halfFall ? .5 : p.y()-toHeight;
+        double remaining=flowing() ? (brakeGoal.x()+.5-p.x())*dx+(brakeGoal.z()+.5-p.z())*dz : horizontal(p,to);
+        double speedLimit=Math.min(flowing() ? FLOW_SPEED : .18,Math.max(0,remaining-reserve)/fallCoastFactor(fallHeight,standardPhysics));
         // A consecutive grounded observation on the same proven normal tread
         // has already applied ground friction to the preceding displacement.
         // Newly landed, airborne, missing or unknown samples retain the air bound.
@@ -159,7 +201,7 @@ final class DescentController {
         else {
             usedStandardFallBound=standardPhysics;
             usedStairFallBound=halfFall;
-            steer(p,to,(float)Math.min(.45,accelerationRoom/accelerationAllowance()));
+            steer(p,flowing() ? brakeGoal : to,(float)Math.min(flowing() ? 1 : .45,accelerationRoom/accelerationAllowance()));
         }
         return Navigation.Result.MOVING;
     }
@@ -189,6 +231,23 @@ final class DescentController {
             && vx*dx+vz*dz>=-.002 && Math.abs(vx*dz-vz*dx)<=.01
             && Math.hypot(vx,vz)<=safeSpeed && Double.isFinite(observedDrag) && observedDrag<=.80
             && Double.isFinite(observedAcceleration);
+    }
+    private int observedFlowLanding(WorldAccess world,PlayerState p,int start) {
+        Pos feet=NavigationFeet.resolve(world,p);
+        for(int i=start+1;i<flowProof.size();i++) {
+            Pos landing=flowProof.get(i);
+            if (landing.equals(feet) && Math.abs(p.y()-world.standingY(landing))<.00001) return i;
+        }
+        return -1;
+    }
+    private boolean canFlowHandOff(WorldAccess world,PlayerState p,Pos landing,double vx,double vz) {
+        int dx=to.x()-from.x(),dz=to.z()-from.z();
+        double along=(p.x()-landing.x()-.5)*dx+(p.z()-landing.z()-.5)*dz;
+        double lateral=Math.abs((p.x()-landing.x()-.5)*dz-(p.z()-landing.z()-.5)*dx);
+        return landing.equals(NavigationFeet.resolve(world,p))
+            && along>=-.45 && along<=.40 && lateral<=.10
+            && vx*dx+vz*dz>=-.002 && Math.abs(vx*dz-vz*dx)<=.01 && Math.hypot(vx,vz)<=FLOW_SPEED
+            && Double.isFinite(observedDrag) && observedDrag<=.80 && Double.isFinite(observedAcceleration);
     }
     private boolean settled(PlayerState p,Pos goal,boolean measured,double vx,double vz) {
         if (measured && horizontal(p,goal)<=CENTER && Math.hypot(vx,vz)<=.002) return ++quietSamples>=2;

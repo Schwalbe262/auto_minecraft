@@ -72,6 +72,7 @@ public final class LocalNavigator implements Navigation {
         report.put("requestExpanded",requestNodes);report.put("replans",replans);report.put("frontierAttempts",frontierAttempts);
         report.put("pathLength",path.size());report.put("nextIndex",nextIndex);
         report.put("descentHandoffs",descent==null ? 0 : descent.completedEdges());
+        report.put("descentFlow",descent!=null && descent.flowing());
         report.put("searchLimit",search==null ? 0 : search.nodeLimit());
         report.put("lastFailure",lastFailure);return java.util.Collections.unmodifiableMap(report);
     }
@@ -532,7 +533,7 @@ public final class LocalNavigator implements Navigation {
         if (descent.completedEdges()!=completed) {
             // Only the controller's actually grounded landing advances this
             // finite path. A preview, camera turn or airborne proximity cannot.
-            nextIndex++;lastDistance=Double.POSITIVE_INFINITY;progressTick=context.world().tick();
+            nextIndex+=descent.completedEdges()-completed;lastDistance=Double.POSITIVE_INFINITY;progressTick=context.world().tick();
         }
         if (result==Result.BLOCKED) return blocked(context.actions(),descent.failureReason());
         if (result==Result.ARRIVED) {
