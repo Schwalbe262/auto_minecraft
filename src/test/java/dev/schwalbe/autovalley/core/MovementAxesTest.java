@@ -31,4 +31,21 @@ class MovementAxesTest {
         assertEquals(MovementAxes.STOPPED,MovementAxes.from(walking(Float.NaN),0));
         assertEquals(MovementAxes.STOPPED,MovementAxes.from(walking(0),Float.POSITIVE_INFINITY));
     }
+    @Test void slowInputPreservesHeadingAndNeverExceedsItsRequestedStrength() {
+        assertEquals(1f,walking(0).inputScale());
+        for (int heading=-360;heading<=360;heading+=17) for (int view=-180;view<=180;view+=29) {
+            MovementAxes axes=MovementAxes.from(new Movement(heading,0,true,false,false,false,.2f),view);
+            double radians=Math.toRadians(view);
+            double x=axes.left()*Math.cos(radians)-axes.forward()*Math.sin(radians);
+            double z=axes.forward()*Math.cos(radians)+axes.left()*Math.sin(radians);
+            assertEquals(-Math.sin(Math.toRadians(heading))*.2,x,1e-6);
+            assertEquals(Math.cos(Math.toRadians(heading))*.2,z,1e-6);
+            assertEquals(.2,Math.hypot(axes.forward(),axes.left()),1e-6);
+        }
+        assertEquals(MovementAxes.STOPPED,MovementAxes.from(new Movement(90,0,true,false,false,false,0),-45));
+    }
+    @Test void inputStrengthCannotInjectNonFiniteOrAmplifiedMovement() {
+        for (float scale:new float[]{-.01f,1.01f,Float.NaN,Float.NEGATIVE_INFINITY,Float.POSITIVE_INFINITY})
+            assertThrows(IllegalArgumentException.class,()->new Movement(0,0,true,false,false,false,scale));
+    }
 }

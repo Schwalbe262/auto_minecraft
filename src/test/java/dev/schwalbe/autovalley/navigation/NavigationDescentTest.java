@@ -10,12 +10,14 @@ class NavigationDescentTest {
 
     @Test void bodyStillSupportedByPreviousStepMayCrossTheVerifiedDescendingEdge() {
         Fixture f=new Fixture();
-        assertEquals(Navigation.Result.MOVING,f.tick());
+        f.beginDescent();
         // The center has crossed the block boundary, but the 0.6-wide body
         // still overlaps the higher floor. This is a normal grounded descent.
         f.pose(1.05,2,.5,true);
         assertFalse(f.world.canStand(f.world.player().feet()));
         assertEquals(Navigation.Result.MOVING,f.tick());
+        assertNull(f.actions.movement,"A sudden high-speed sample is stopped before continuing the same edge");
+        f.world.now++;assertEquals(Navigation.Result.MOVING,f.tick());
         assertNotNull(f.actions.movement);
         assertEquals(-90,f.actions.movement.yaw(),.01);
         assertFalse(f.actions.movement.jump());
@@ -23,37 +25,36 @@ class NavigationDescentTest {
 
     @Test void fallingAtStepCenterWaitsForLandingBeforeTurningToTheNextStep() {
         Fixture f=new Fixture();
-        f.tick();
+        f.beginDescent();
         f.pose(1.35,1.9,.5,false);
         assertEquals(Navigation.Result.MOVING,f.tick());
         assertNull(f.actions.movement,"Do not turn north while still falling onto the eastward step");
         f.pose(1.35,1,.5,true);
         assertEquals(Navigation.Result.MOVING,f.tick());
-        assertNotNull(f.actions.movement);
-        assertTrue(Math.abs(f.actions.movement.yaw())>150,"The next, northward step is selected only after landing");
-        assertFalse(f.actions.movement.jump());
+        assertNull(f.actions.movement,"Ground contact alone does not authorize the next turn");
+        f.finishLanding(1);
     }
 
     @Test void aLandingThatNeverArrivesTimesOutWithoutAJumpOrInteraction() {
         Fixture f=new Fixture();
-        f.tick();
+        f.beginDescent();
         f.pose(1.35,1.9,.5,false);
         assertEquals(Navigation.Result.MOVING,f.tick());
         f.world.now+=61;
         assertEquals(Navigation.Result.BLOCKED,f.tick());
         assertNull(f.actions.movement);
-        assertTrue(f.navigation.failureReason().contains("3초"));
+        assertTrue(f.navigation.failureReason().contains("시간"));
         assertEquals(0,f.actions.submissions);
     }
 
     @Test void unplannedFallAndChangedDescendingEdgeRemainBlocked() {
         Fixture f=new Fixture();
-        f.tick();
+        f.beginDescent();
         f.pose(1.05,2,1.15,false);
         assertEquals(Navigation.Result.BLOCKED,f.tick());
         assertNull(f.actions.movement);
         Fixture changed=new Fixture();
-        changed.tick();
+        changed.beginDescent();
         changed.pose(1.05,2,.5,true);
         changed.world.blocked=true;
         assertEquals(Navigation.Result.BLOCKED,changed.tick());
@@ -62,7 +63,7 @@ class NavigationDescentTest {
 
     @Test void unknownSupportHeightCannotAuthorizeDescendingBoundaryMovement() {
         Fixture f=new Fixture();
-        f.tick();
+        f.beginDescent();
         f.pose(1.05,2,.5,true);
         f.world.knownHeight=false;
         assertEquals(Navigation.Result.BLOCKED,f.tick());
@@ -74,14 +75,25 @@ class NavigationDescentTest {
         f.world.heights.put(TOP,1.5);
         f.world.heights.put(STEP,.5);
         f.pose(.5,1.5,.5,true);
-        assertEquals(Navigation.Result.MOVING,f.tick());
+        f.beginDescent();
         f.pose(1.35,.9,.5,false);
         assertEquals(Navigation.Result.MOVING,f.tick());
         assertNull(f.actions.movement);
         f.pose(1.35,.5,.5,true);
         assertEquals(Navigation.Result.MOVING,f.tick());
-        assertTrue(Math.abs(f.actions.movement.yaw())>150);
-        assertFalse(f.actions.movement.jump());
+        assertNull(f.actions.movement);
+        f.finishLanding(.5);
+    }
+    @Test void aDoorAtTheLandingIsAcknowledgedBeforeDescentAndClosingItStopsTheActiveController() {
+        Fixture f=new Fixture();f.world.door=STEP;f.actions.allowDoor=true;
+        assertEquals(Navigation.Result.MOVING,f.tick());assertEquals(1,f.actions.submissions);assertNull(f.actions.movement);
+        for(int i=0;i<3;i++) { f.world.now++;assertEquals(Navigation.Result.MOVING,f.tick());assertNull(f.actions.movement); }
+        assertEquals(1,f.actions.submissions);
+        f.world.doorOpen=true;f.actions.doorAcknowledged=true;f.world.now++;
+        assertEquals(Navigation.Result.MOVING,f.tick());assertEquals("DESCENT_PREPARE",f.navigation.diagnosticStatus());
+        f.world.doorOpen=false;f.world.now++;
+        assertEquals(Navigation.Result.BLOCKED,f.tick());assertNull(f.actions.movement);
+        assertEquals(1,f.actions.submissions,"An active descent does not dispatch another door interaction");
     }
 
     private static final class Fixture {
@@ -97,11 +109,24 @@ class NavigationDescentTest {
         }
         void pose(double x,double y,double z,boolean onGround) { world.x=x; world.y=y; world.z=z; world.onGround=onGround; world.now++; }
         Navigation.Result tick() { return navigation.moveTo(END,.15,context); }
+        void beginDescent() { for(int i=0;i<4;i++) { assertEquals(Navigation.Result.MOVING,tick());world.now++; } }
+        void finishLanding(double height) {
+            pose(1.45,height,.5,true);assertEquals(Navigation.Result.MOVING,tick());
+            for(int i=0;i<2;i++) { world.now++;assertEquals(Navigation.Result.MOVING,tick()); }
+            assertNull(actions.movement,"Landing confirmation remains stopped");
+            // The following lower step also has its own pre-braking phase.
+            for(int i=0;i<6 && (actions.movement==null || Math.abs(actions.movement.yaw())<150);i++) {
+                world.now++;assertEquals(Navigation.Result.MOVING,tick());
+            }
+            assertNotNull(actions.movement);assertTrue(Math.abs(actions.movement.yaw())>150);
+            assertFalse(actions.movement.jump());assertFalse(actions.movement.sprint());
+        }
     }
 
     private static final class TestWorld implements WorldAccess {
         long now; double x=.5,y=2,z=.5;
         boolean onGround=true,blocked,knownHeight=true;
+        Pos door;boolean doorOpen;
         final List<Pos> cells=List.of(TOP,STEP,LOWER,END);
         final Map<Pos,Double> heights=new HashMap<>();
         public long tick() { return now; }
@@ -114,7 +139,7 @@ class NavigationDescentTest {
             return !blocked && canStand(from) && canStand(to)
                 && Math.abs(from.x()-to.x())+Math.abs(from.z()-to.z())==1 && Math.abs(from.y()-to.y())<=1;
         }
-        public BlockData block(Pos p) { return new BlockData(p,"minecraft:air",Map.of()); }
+        public BlockData block(Pos p) { return p.equals(door) ? new BlockData(p,"minecraft:oak_door",Map.of("open",Boolean.toString(doorOpen))) : new BlockData(p,"minecraft:air",Map.of()); }
         public List<BlockData> scan(Pos p,int h,int v) { return List.of(); }
         public List<ItemSlot> inventory() { return List.of(); }
         public MenuData menu() { return new MenuData(0,0,List.of(),ItemData.EMPTY,false); }
@@ -123,8 +148,9 @@ class NavigationDescentTest {
 
     private static final class TestActions implements ActionPort {
         Movement movement; int submissions;
-        public long submit(Action action) { submissions++; throw new AssertionError("Descent must not interact"); }
-        public ActionOutcome outcome(long ticket) { throw new AssertionError(); }
+        boolean allowDoor,doorAcknowledged;
+        public long submit(Action action) { if(allowDoor) { assertEquals(new Action.UseBlock(STEP,Action.Use.DOOR),action);return ++submissions; } submissions++;throw new AssertionError("Descent must not interact"); }
+        public ActionOutcome outcome(long ticket) { if(allowDoor) return new ActionOutcome(doorAcknowledged ? ActionOutcome.State.SUCCEEDED : ActionOutcome.State.PENDING,"Door proof");throw new AssertionError(); }
         public void move(Movement movement) { this.movement=movement; }
         public void stopMovement() { movement=null; }
         public boolean busy() { return false; }

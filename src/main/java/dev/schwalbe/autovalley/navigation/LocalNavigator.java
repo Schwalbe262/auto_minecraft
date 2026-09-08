@@ -50,6 +50,10 @@ public final class LocalNavigator implements Navigation {
     private Failure failureKind=Failure.NONE;
     private String diagnostic="IDLE";
     private ActionPort lastActions;
+    private WorldAccess lastWorld;
+    private DescentController descent;
+    private boolean interruptedDescent;
+    private java.util.Map<String,Object> lastFailure=java.util.Map.of();
 
     public void setSprint(boolean sprint) { this.sprint = sprint; }
     public String failureReason() { return failure; }
@@ -67,7 +71,8 @@ public final class LocalNavigator implements Navigation {
         report.put("sliceNodes",sliceNodes);report.put("sliceLos",sliceLos);report.put("sliceElapsedNanos",sliceNanos);
         report.put("requestExpanded",requestNodes);report.put("replans",replans);report.put("frontierAttempts",frontierAttempts);
         report.put("pathLength",path.size());report.put("nextIndex",nextIndex);
-        report.put("searchLimit",search==null ? 0 : search.nodeLimit());return java.util.Collections.unmodifiableMap(report);
+        report.put("searchLimit",search==null ? 0 : search.nodeLimit());
+        report.put("lastFailure",lastFailure);return java.util.Collections.unmodifiableMap(report);
     }
     @Override public boolean permitsTransit(Pos feet,Context c) {
         return domain!=null && destination!=null && c.profile()==requestProfile && c.session()==requestSession
@@ -120,6 +125,7 @@ public final class LocalNavigator implements Navigation {
     }
     private Result moveTo(Pos target,double reach,Context context,boolean allowDoors,boolean logging,List<Pos> planting,TerrainPathSearch.Goal requestedGoal) {
         WorldAccess world = context.world();
+        lastWorld=world;
         ActionPort actions = context.actions();
         if (lastActions!=null && lastActions!=actions) lastActions.stopMovement();
         lastActions=actions;
@@ -151,10 +157,18 @@ public final class LocalNavigator implements Navigation {
                 return blocked(actions,"중단된 벌목 오르기 뒤 실제 지면을 확인할 수 없습니다.");
             interruptedLanding=false;
         }
+        if (interruptedDescent) {
+            Pos landed=NavigationFeet.resolve(world,player);
+            if (!player.onGround() || !world.canStand(landed) || !Double.isFinite(world.standingY(landed))
+                || Math.abs(player.y()-world.standingY(landed))>.10001)
+                return blocked(actions,"중단된 하강의 안전한 착지가 아직 확인되지 않았습니다.");
+            interruptedDescent=false;
+        }
         // In flight, raw feet can occupy an unsupported cell. Only this controller
         // may steer, and neither interaction proximity nor normal waypoint skipping
         // may finish the move before two grounded landing observations.
         if (loggingJump!=null) { diagnostic="STEP_UP";return continueLoggingJump(context); }
+        if (descent!=null) return continueDescent(context);
         Pos walkingFeet = NavigationFeet.resolve(world,player);
         if (!domain.contains(walkingFeet)) return blocked(actions,Failure.INVALID_START,"현재 이동 요청의 안전 탐색 영역 밖입니다.");
         if (!world.loaded(target) && !domain.terrain()) return blocked(actions,Failure.UNLOADED,"목표 청크가 로드되지 않았습니다.");
@@ -201,6 +215,11 @@ public final class LocalNavigator implements Navigation {
         Pos next = path.get(nextIndex);
         if (frontier!=null && nextIndex==path.size()-1 && standingNear(world,player,next,.15)) return arriveFrontier(context,walkingFeet);
         if (!world.loaded(next) || !world.canStand(next)) return replan(context,Failure.OBSTACLE,"이동 경로가 바뀌었습니다.");
+        if (nextIndex>0 && DescentController.descending(path.get(nextIndex-1),next,world) && closedDoor(world,next)==null) {
+            if (!requestInteractions) return blocked(actions,"수확을 이어가는 이동에서는 계단 하강을 시작하지 않습니다.");
+            descent=new DescentController(path.get(nextIndex-1),next,world);
+            return continueDescent(context);
+        }
         if (requestInteractions && (logging || domain.terrain()) && nextIndex>0) {
             LoggingJumpEdge edge=new LoggingJumpEdge(path.get(nextIndex-1),next);
             if (!world.canTraverse(edge.from(),edge.to()) && LoggingJumpRules.validShape(edge)) {
@@ -442,6 +461,17 @@ public final class LocalNavigator implements Navigation {
         return blocked(actions,Failure.SAFETY,reason);
     }
     private Result blocked(ActionPort actions,Failure kind,String reason) {
+        java.util.Map<String,Object> evidence=new java.util.LinkedHashMap<>();
+        evidence.put("failure",kind.name());evidence.put("reason",reason);evidence.put("destination",destination);
+        evidence.put("nextIndex",nextIndex);
+        int start=Math.max(0,nextIndex-2),end=Math.min(path.size(),start+5);
+        evidence.put("nearbyPath",start<=end ? List.copyOf(path.subList(start,end)) : List.of());
+        if (lastWorld!=null) {
+            evidence.put("tick",lastWorld.tick());PlayerState p=lastWorld.player();
+            if (p!=null) evidence.put("player",java.util.Map.of("x",p.x(),"y",p.y(),"z",p.z(),"onGround",p.onGround()));
+        }
+        lastFailure=java.util.Collections.unmodifiableMap(evidence);
+        cancelDescent();
         cancelLoggingJump();
         actions.stopMovement();
         previousMoving = false;
@@ -453,6 +483,7 @@ public final class LocalNavigator implements Navigation {
     }
 
     @Override public void reset() {
+        cancelDescent();
         cancelLoggingJump();
         if (lastActions!=null) lastActions.stopMovement();
         path = List.of();
@@ -485,6 +516,22 @@ public final class LocalNavigator implements Navigation {
         }
         // Landing only completes this edge, not an interaction in the same tick.
         return Result.MOVING;
+    }
+
+    private Result continueDescent(Context context) {
+        diagnostic="DESCENT_"+descent.phase().name();
+        Result result=descent.tick(context);previousMoving=result==Result.MOVING;previousSprint=false;
+        if (result==Result.BLOCKED) return blocked(context.actions(),descent.failureReason());
+        if (result==Result.ARRIVED) {
+            descent=null;path=List.of();search=null;nextIndex=0;lastDistance=Double.POSITIVE_INFINITY;
+            progressTick=context.world().tick();previousMoving=false;
+        }
+        return Result.MOVING;
+    }
+    private void cancelDescent() {
+        if (descent==null) return;
+        if (descent.airborne()) interruptedDescent=true;
+        descent.cancel();descent=null;
     }
 
     private void cancelLoggingJump() {

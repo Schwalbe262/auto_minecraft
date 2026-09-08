@@ -442,7 +442,7 @@ public final class MinecraftActions implements ActionPort {
         Pos feet=NavigationFeet.resolve(world,world.player());
         if (!context.navigation().permitsTransit(feet,context) || intent.jump()) { stopMovement(); return; }
         if (!Float.isFinite(mc.player.getYRot()) || !Float.isFinite(mc.player.getXRot())) { stopMovement(); return; }
-        movement=new Movement(intent.yaw(),intent.pitch(),intent.forward(),intent.sprint(),false,intent.sneak());
+        movement=new Movement(intent.yaw(),intent.pitch(),intent.forward(),intent.sprint(),false,intent.sneak(),intent.inputScale());
         movementAt=world.tick();
         if (!harvesting && movementLookAt!=world.tick()) {
             // Easing affects the view only. MovementAxes preserves the intended

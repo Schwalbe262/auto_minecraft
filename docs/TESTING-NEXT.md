@@ -1302,3 +1302,44 @@ this is not a causal speedup or regression result: the shorter observed movement
 does not establish a shorter overall production time. Multi-hour acceptance
 remains in progress, and no additional route or timing changes were deployed
 during this observation.
+
+## Waypoint-free terrain navigation — 2026-09-08
+
+The initial terrain candidate passed Java 17 `test build`: 1,023 tests, no
+failures, errors or skips. Coverage includes schema-4 migration, separate
+unverified coordinate drafts, incremental search limits, a 300-block route that
+reanchors its finite travel domain, unloaded-frontier waits, door replies,
+harvest lookahead's no-jump restriction, and deferred work without advancing
+completion dates. These are fixture results, not live acceptance.
+
+The same existing Society instance was normally restarted with the candidate.
+Its installed SHA-256 was
+`4B158DD1469C37DDB8F29486EA4CF8AC19BCD224C6CE7DFCC0F1DD8AF5CAEC34`.
+The original server connection and registered workplaces were retained.
+Waypoint hints were explicitly disabled without deleting saved waypoints or
+changing work schedules. No alternate Minecraft instance was left running.
+
+A controlled coordinate-only trip moved toward the cellar but stopped during
+a one-block descent. It submitted no inventory or block-interaction actions
+and returned to OFF. The stopped pose and a subsequent detached, read-only
+geometry check identified a landing overshoot; a safe resting pose does not
+prove the preceding in-flight pose was valid. The regression model reproduces
+overshoot when input is merely released after a high-speed fall begins.
+
+The correction adds pre-descent braking, bounded reduced input on the same
+verified edge, no airborne acceleration, and a settled landing before the next
+turn. Input strength affects native walking inputs only: position and velocity
+are never assigned. An invalid or overshot corridor still fails closed. A
+bounded last-failure snapshot survives navigator reset as diagnostic evidence,
+not as a movement permission.
+
+The corrected source passed Java 17 `test build`: **1,035 tests across 82
+suites, zero failures, errors or skips**. The prepared, not-yet-installed JAR
+has SHA-256
+`6CEC3E5D806C12E71E8AA07EA33243FB7B24FFBCDDB7765444D7017CDB97C171`.
+
+The operator resumed manual play, so the correction is not yet installed or
+live-retested. New-build stair, coordinate-UI and at-least-three-hour continuous
+acceptance remain open. Earlier old-build observations, operator-controlled
+F8 sessions and simulated gravity/drag tests must not be reported as that
+acceptance window.
