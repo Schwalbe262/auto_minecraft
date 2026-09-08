@@ -9,6 +9,179 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class LoggingModuleTest {
+    @Test void anOccludedFirstBaseDoesNotHideAnotherVisibleBaseOfTheSameRegisteredTree() {
+        Fixture f=new Fixture(1); List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
+        f.occludedChopping.add(bases.get(0));
+        f.until(() -> f.pending instanceof Action.ChopTree);
+        assertEquals(bases.get(1),((Action.ChopTree)f.pending).pos());
+        assertFalse(f.loggingTargets.contains(bases.get(0)));
+    }
+
+    @Test void fullyOccludedTreeWaitsWithoutLaunchingWorldWideTerrainSearchOrDiscardingPlots() {
+        Fixture f=new Fixture(2); List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
+        f.occludedChopping.addAll(bases); f.blockAllChopRays=true;
+        WorkResult result=f.finish();
+        assertEquals(WorkResult.State.RESOURCE_WAIT,result.state()); assertTrue(result.message().contains("시야") || result.message().contains("볼 수"));
+        assertEquals(0,f.moves); assertTrue(f.actions.isEmpty()); assertTrue(f.chopRays>0); assertTrue(f.chopRays<8000);
+        assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.loggingRunActive);
+        assertTrue(f.profile.loggingReplantingPlots.isEmpty()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void nativeVisibleApproachCanChooseAnotherBaseButStillRequiresWholeTreeSafetyProof() {
+        Fixture f=new Fixture(1); List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
+        f.occludedChopping.addAll(bases); f.blockAllChopRays=true;
+        f.chopGoalTarget=bases.get(3); f.chopGoalFeet=new Pos(3,63,0); f.movementExposesChop=true;
+        f.treeRejection="test connected structure outside registered tree";
+        assertEquals(WorkResult.State.BLOCKED,f.finish().state());
+        assertTrue(f.loggingTargets.contains(bases.get(3))); assertFalse(f.loggingTargets.contains(bases.get(0)));
+        assertFalse(f.actions.stream().anyMatch(a -> a instanceof Action.ChopTree));
+        assertEquals(List.of(bases.get(0)),f.profile.loggingRemainingPlots);
+    }
+
+    @Test void sameTickPreflightPollsCannotLaunchNavigationAndResetRechecksChangedVisibility() {
+        Fixture f=new Fixture(1); List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
+        f.occludedChopping.addAll(bases); f.blockAllChopRays=true;
+        f.step(); f.step(); f.step(); int rays=f.chopRays;
+        for(int i=0;i<200;i++) assertEquals(WorkResult.State.BUSY,f.step().state());
+        assertEquals(rays,f.chopRays); assertEquals(0,f.moves);
+        f.restart(); f.occludedChopping.remove(bases.get(2));
+        f.until(() -> f.pending instanceof Action.ChopTree);
+        assertEquals(bases.get(2),((Action.ChopTree)f.pending).pos());
+    }
+
+    @Test void aGoalLosingItsOutlineAfterAxeSelectionCannotSubmitAChop() {
+        Fixture f=new Fixture(1); List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
+        f.occludedChopping.addAll(bases); f.blockAllChopRays=true;
+        f.chopGoalTarget=bases.get(3); f.chopGoalFeet=new Pos(3,63,0); f.movementExposesChop=true;
+        f.until(() -> f.pending instanceof Action.SelectHotbar);
+        f.advance(); f.occludedChopping.addAll(bases); f.chopGoalTarget=null; f.movementExposesChop=false;
+        assertEquals(WorkResult.State.DEFERRED,f.step().state());
+        assertFalse(f.actions.stream().anyMatch(a -> a instanceof Action.ChopTree));
+        assertTrue(f.profile.loggingRunActive); assertEquals(List.of(bases.get(0)),f.profile.loggingRemainingPlots);
+    }
+
+    @Test void anOpenMenuDuringVisibilityPreflightStopsWithoutNavigationOrInventoryActions() {
+        Fixture f=new Fixture(1); f.occludedChopping.addAll(f.profile.loggingPlots.get(0).plantingPositions());
+        f.blockAllChopRays=true; f.step(); f.step(); f.step();
+        f.opened=f.woodPos; f.containerId=10;
+        assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertEquals(0,f.moves); assertTrue(f.actions.isEmpty()); assertTrue(f.profile.loggingRunActive);
+    }
+
+    @Test void actualVisibilityWaitLetsOtherWorkAndSleepRunWithBothCutAndPlantingObligationsPreserved() {
+        Fixture f=visibilityFixture(); int[] consumers={0},sleeps={0};
+        f.profile.enabled.put(Feature.SHIPPING,true); f.profile.enabled.put(Feature.SLEEP,true);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.SHIPPING,40,c -> { consumers[0]++; return WorkResult.idle(); }),
+            resourceNeighbour(Feature.SLEEP,100,c -> { sleeps[0]++; return WorkResult.idle(); })));
+        List<Pos> remaining=List.copyOf(f.profile.loggingRemainingPlots),replanting=List.copyOf(f.profile.loggingReplantingPlots);
+        engine.start(f.context); engineUntil(f,engine,() -> sleeps[0]>0);
+        assertTrue(engine.running(),engine.status()); assertEquals(AutomationEngine.State.WAITING,engine.state());
+        assertTrue(engine.status().contains("시야 대기")); assertTrue(consumers[0]>0); assertTrue(f.actions.isEmpty());
+        int rays=f.chopRays;
+        for(int i=0;i<10;i++) { f.ticks+=20; engine.tick(f.context); }
+        assertTrue(engine.running(),engine.status()); assertTrue(sleeps[0]>1); assertEquals(rays,f.chopRays);
+        assertEquals(remaining,f.profile.loggingRemainingPlots); assertEquals(replanting,f.profile.loggingReplantingPlots);
+        assertTrue(f.profile.loggingRunActive); assertTrue(f.profile.nextEligibleDay.isEmpty()); assertTrue(f.actions.isEmpty());
+    }
+
+    @Test void visibilityWaitRetriesFreshNativeGeometryAfter1200TicksInsteadOfReusingNoVisibleCache() {
+        Fixture f=visibilityFixture(); int[] consumers={0}; f.profile.enabled.put(Feature.SHIPPING,true);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.SHIPPING,40,c -> { consumers[0]++; return WorkResult.idle(); })));
+        engine.start(f.context); engineUntil(f,engine,() -> consumers[0]>0);
+        long granted=f.ticks-1; int rays=f.chopRays;
+        f.ticks=granted+1180; engine.tick(f.context); assertEquals(rays,f.chopRays);
+        f.chopGoalTarget=f.profile.loggingPlots.get(0).corner().offset(1,0,1);
+        f.chopGoalFeet=new Pos(3,63,0); f.movementExposesChop=true;
+        f.ticks=granted+1200;
+        engineUntil(f,engine,() -> f.pending instanceof Action.ChopTree || f.chops>0);
+        assertTrue(engine.running(),engine.status()); assertTrue(f.chopRays>rays);
+        assertTrue(f.actions.stream().filter(a -> a instanceof Action.ChopTree)
+            .allMatch(a -> ((Action.ChopTree)a).pos().equals(f.chopGoalTarget)));
+    }
+
+    @Test void aRepeatedOccludedRetryYieldsAgainWithoutTurningContinuousAutomationOff() {
+        Fixture f=visibilityFixture(); int[] sleeps={0}; f.profile.enabled.put(Feature.SLEEP,true);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.SLEEP,100,c -> { sleeps[0]++; return WorkResult.idle(); })));
+        engine.start(f.context); engineUntil(f,engine,() -> sleeps[0]>0);
+        int rays=f.chopRays,previous=sleeps[0]; f.ticks+=1200;
+        engineUntil(f,engine,() -> sleeps[0]>previous);
+        assertTrue(engine.running(),engine.status()); assertTrue(f.chopRays>rays); assertTrue(f.actions.isEmpty());
+        assertEquals(2,f.profile.loggingRemainingPlots.size()); assertEquals(1,f.profile.loggingReplantingPlots.size());
+    }
+
+    @Test void aVisibilityRetryCannotPreemptAnotherConsumersUnconfirmedNativeAction() {
+        Fixture f=visibilityFixture(); boolean[] sent={false}; f.profile.enabled.put(Feature.SHIPPING,true);
+        AutomationModule consumer=resourceNeighbour(Feature.SHIPPING,40,c -> {
+            if (!sent[0]) { sent[0]=true; c.actions().submit(new Action.SelectHotbar(4)); }
+            return c.actions().busy() ? WorkResult.busy("owned acknowledgement") : WorkResult.idle();
+        });
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,consumer)); engine.start(f.context);
+        for(int i=0;i<1000 && !sent[0];i++) { engine.tick(f.context); if(!sent[0]) f.advance(); }
+        assertTrue(sent[0]); assertNotNull(f.pending); int rays=f.chopRays,actions=f.actions.size(); f.ticks+=1300;
+        for(int i=0;i<5;i++) { engine.tick(f.context); f.ticks++; }
+        assertTrue(engine.running(),engine.status()); assertEquals(rays,f.chopRays); assertEquals(actions,f.actions.size());
+        f.advance(); engine.tick(f.context); engine.tick(f.context);
+        assertTrue(engine.running(),engine.status());
+    }
+
+    @Test void visibilityOneShotWaitsWithoutRunningNeighboursOrClaimingCompletion() {
+        Fixture f=visibilityFixture(); int[] consumers={0}; f.profile.enabled.put(Feature.SHIPPING,true);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.SHIPPING,40,c -> { consumers[0]++; return WorkResult.idle(); })));
+        engine.startOnce(f.context,Feature.LOGGING); engineUntil(f,engine,() -> engine.state()==AutomationEngine.State.WAITING);
+        assertTrue(engine.running(),engine.status()); assertEquals(0,consumers[0]); assertTrue(f.profile.loggingRunActive);
+        assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.actions.isEmpty());
+    }
+
+    @Test void visibilityWaitReadinessRejectsUncertaintyOrChangedBaseBeforeAnotherConsumerRuns() {
+        for(String unsafe:List.of("busy","lease","cursor","airborne","native fence","changed plot","unloaded plot")) {
+            Fixture f=visibilityFixture(); assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+            switch(unsafe) {
+                case "busy" -> f.forcedNativeBusy=true;
+                case "lease" -> f.profile.loggingHotbarLease=new LoggingHotbarLease(9,0,item("minecraft:torch",5),"a".repeat(64),LoggingHotbarLease.Stage.PARKED);
+                case "cursor" -> f.cursor=item(LoggingRules.SAPLING,1);
+                case "airborne" -> f.grounded=false;
+                case "native fence" -> f.nativeFence="unconfirmed action";
+                case "changed plot" -> f.blocks.put(f.profile.loggingPlots.get(0).corner(),LoggingRules.CHOPPED_LOG);
+                case "unloaded plot" -> f.unloaded.add(f.profile.loggingPlots.get(0).corner());
+                default -> throw new AssertionError(unsafe);
+            }
+            assertEquals(AutomationModule.ResourceReadiness.UNSAFE,f.module.resourceReadiness(f.context),unsafe);
+            assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.actions.isEmpty());
+        }
+    }
+
+    @Test void aChangedWaitingBaseRevokesTheEngineGrantBeforeOtherWorkResumes() {
+        Fixture f=visibilityFixture(); int[] consumers={0}; f.profile.enabled.put(Feature.SHIPPING,true);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.SHIPPING,40,c -> { consumers[0]++; return WorkResult.idle(); })));
+        engine.start(f.context); engineUntil(f,engine,() -> consumers[0]>0); int before=consumers[0];
+        f.blocks.put(f.profile.loggingPlots.get(0).corner(),LoggingRules.CHOPPED_LOG); f.ticks+=20;
+        engine.tick(f.context); assertEquals(AutomationEngine.State.PAUSED,engine.state());
+        assertEquals(before,consumers[0]); assertTrue(f.profile.loggingRunActive); assertEquals(2,f.profile.loggingRemainingPlots.size());
+    }
+
+    @Test void unloadedPreflightGeometryCannotGrantVisibilityResourceWaitToOtherModules() {
+        Fixture f=visibilityFixture(); int[] consumers={0}; f.profile.enabled.put(Feature.SHIPPING,true);
+        f.unloaded.add(new Pos(-2,64,-2));
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.SHIPPING,40,c -> { consumers[0]++; return WorkResult.idle(); })));
+        engine.start(f.context); engineUntil(f,engine,() -> !engine.running());
+        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(0,consumers[0]);
+        assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.actions.isEmpty());
+    }
+
+    private static Fixture visibilityFixture() {
+        Fixture f=new Fixture(2); f.continuous(); f.profile.loggingRunActive=true;
+        f.profile.loggingRemainingPlots.addAll(f.profile.loggingPlots.stream().map(LoggingPlot::corner).toList());
+        f.setPlot(1,"minecraft:air"); f.profile.loggingReplantingPlots.add(f.profile.loggingPlots.get(1).corner());
+        f.occludedChopping.addAll(f.profile.loggingPlots.get(0).plantingPositions()); f.blockAllChopRays=true;
+        return f;
+    }
+
     @Test void loggingOptsIntoItsOwnNavigationForTreesPlantingCraftWoodAndShipping() {
         Fixture f=new Fixture(1);
         assertEquals(WorkResult.State.IDLE,f.finish().state());
@@ -801,6 +974,10 @@ class LoggingModuleTest {
         final List<Double> plantingReaches=new ArrayList<>();
         final List<List<Pos>> plantingApproaches=new ArrayList<>();
         final Set<Pos> occludedPlanting=new HashSet<>();
+        final Set<Pos> occludedChopping=new HashSet<>();
+        boolean blockAllChopRays,movementExposesChop; int chopRays;
+        Pos chopGoalTarget,chopGoalFeet; String treeRejection;
+        boolean grounded=true,forcedNativeBusy; String nativeFence; ItemData cursor=ItemData.EMPTY;
         final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
         final Map<Pos,Integer> nativeChops=new HashMap<>(); int strokesPerTree=2;
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
@@ -923,14 +1100,19 @@ class LoggingModuleTest {
         }
         public long tick() { return ticks; }
         public long dayTime() { return day*24000+1000; }
-        public PlayerState player() { return new PlayerState(playerX,64,.5,0,0,true,false,20,20,selected,true,true); }
+        public PlayerState player() { return new PlayerState(playerX,64,.5,0,0,grounded,false,20,20,selected,true,true); }
         public BlockData block(Pos pos) { return new BlockData(pos,id(pos),Map.of()); }
         public boolean loaded(Pos pos) { return !unloaded.contains(pos); }
         public boolean canStand(Pos pos) { return true; }
         public boolean canTraverse(Pos a,Pos b) { return true; }
-        public boolean canInteract(Pos pos,double reach) { return loaded(pos); }
+        public boolean canInteract(Pos pos,double reach) { return loaded(pos) && !occludedChopping.contains(pos); }
+        public boolean canInteractFrom(Pos feet,Pos target,double reach) {
+            chopRays++;
+            return Objects.equals(feet,chopGoalFeet) && Objects.equals(target,chopGoalTarget)
+                || !blockAllChopRays && WorldAccess.super.canInteractFrom(feet,target,reach);
+        }
         public List<BlockData> scan(Pos pos,int h,int v) { return List.of(); }
-        public String loggingTreeRejection(Pos pos,List<LoggingPlot> plots) { return null; }
+        public String loggingTreeRejection(Pos pos,List<LoggingPlot> plots) { return treeRejection; }
         public boolean canPlantLoggingSapling(Pos pos) { return id(pos).equals("minecraft:air") && loaded(pos); }
         public boolean canPlantLoggingSapling(Pos pos,double reach) {
             assertEquals(3.25,reach);
@@ -953,10 +1135,11 @@ class LoggingModuleTest {
             List<ItemSlot> slots=new ArrayList<>(); int size=opened==null ? 0 : Objects.equals(opened,tablePos) ? 10 : chests.get(opened).length;
             for(int i=0;i<size;i++) slots.add(new ItemSlot(i,-1,false,Objects.equals(opened,tablePos) ? ItemData.EMPTY : chests.get(opened)[i]));
             for(int i=0;i<36;i++) slots.add(new ItemSlot(size+i,i,true,inventory[i]));
-            return new MenuData(containerId,0,slots,ItemData.EMPTY,opened!=null);
+            return new MenuData(containerId,0,slots,cursor,opened!=null);
         }
         public boolean mayPlace(int index,ItemData item) { return opened!=null && !opened.equals(tablePos) && index<chests.get(opened).length; }
-        public boolean busy() { return pending!=null; }
+        public boolean busy() { return pending!=null || forcedNativeBusy; }
+        public String pauseReason() { return nativeFence; }
         public boolean supportsInventoryTrash() { return true; }
         public long submit(Action action) { assertNull(pending); actions.add(action); pending=action; outcome=new ActionOutcome(ActionOutcome.State.PENDING,""); return ++sequence; }
         public ActionOutcome outcome(long ticket) { return outcome; }
@@ -970,6 +1153,7 @@ class LoggingModuleTest {
         }
         public Result moveToLogging(Pos pos,double reach,Context c) {
             assertTrue(profile.loggingRunActive); assertTrue(session.allows(profile,Feature.LOGGING));
+            if (movementExposesChop) occludedChopping.remove(pos);
             loggingMoves++; loggingTargets.add(pos); return moveTo(pos,reach,c);
         }
         public Result moveToObserve(Pos pos,double reach,Context c) {
