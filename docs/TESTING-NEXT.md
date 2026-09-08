@@ -859,3 +859,33 @@ verification. No new inventory interruption was induced in the running soak test
   full-cycle operation on the new build, but the new dawn snapshot wait still
   requires a live due morning without those preceding jobs. Its unit regressions
   and that future in-game verification are separate evidence.
+
+### Repeated harvest and direct-dawn preserves verification
+
+- The next two-day harvest stored **1,600 tomatoes**, deleted 74 rotten tomatoes
+  and shipped 34 pine tar. All 263 consecutive actions including the preceding
+  bed entry succeeded. No tracked ingredient or product remained when waiting
+  resumed. The 203.102-second HARVEST-to-storage interval is approximately the
+  same as the preceding 204.104-second, 1,600-tomato comparison at one-Hz sample
+  resolution: this proves repetition, not an additional speed improvement.
+- On the subsequent preserves-only due morning, no harvest or wine job delayed
+  startup. Eleven samples spanning day ticks **23..224** showed the new START
+  guard: no movement, inventory change, action or target-list construction.
+  The observed mature-jar count rose from **1 to all 144** during that interval.
+  At tick **243**, the first post-threshold sample showed one 144-target batch.
+  There was no early four-jar batch or later 140-jar remainder.
+- That batch surveyed all **32 tomato containers once**, acquired exactly
+  **720 tomatoes**, and successfully collected/refilled all **144 jars** without
+  another survey during production. The engine shipped all 144 preserves in
+  transfers of **64 + 64 + 16**, closed the shipping container and returned to
+  waiting with no tracked products/ingredients or pending production obligation.
+  Every jar's persisted next date advanced by three days.
+- From the preceding bed entry through the final shipping close, **264
+  consecutive actions succeeded**, with no missing or unresolved action. The
+  fixed **2026-09-08 05:05:19.380..05:08:30 UTC** observation window contains
+  191 ON/connected samples, no native failure/late reply, navigation failure
+  or trace loss. First WAITING was observed at **05:08:25.488 UTC**.
+- This closes the previously pending direct-dawn **continuous-mode** test.
+  It does not establish arbitrary-lag behavior, live one-shot acceptance,
+  independently attributed currency payouts or three-hour uninterrupted
+  endurance. Those scopes must not be inferred from one completed batch.
