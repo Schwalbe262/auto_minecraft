@@ -16,6 +16,8 @@ public interface WorldAccess {
     default boolean canStepUp(LoggingJumpEdge edge,Profile profile) { return false; }
     /** Read-only opt-in for current native gravity/effects; unknown descent uses no finite fall-time assumption. */
     default boolean standardDescentPhysics() { return false; }
+    /** Read-only proof for at most three straight descending edges; unknown adapters settle each step. */
+    default boolean canChainDescent(List<Pos> feet,Profile profile) { return false; }
     /** Opt-in native collision proof for a single flat diagonal; unknown adapters remain cardinal-only. */
     default boolean canTraverseDiagonal(Pos from, Pos to) { return false; }
     List<BlockData> scan(Pos center, int horizontalRadius, int verticalRadius);

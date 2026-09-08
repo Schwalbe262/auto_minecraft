@@ -88,7 +88,7 @@ final class NativeLoggingJump {
             if (plot.containsTrunk(pos) || plot.containsTrunk(pos.offset(0,1,0))) return true;
         return false;
     }
-    private static boolean forbiddenBlock(BlockState s) {
+    static boolean forbiddenBlock(BlockState s) {
         Block b=s.getBlock();
         String id=BuiltInRegistries.BLOCK.getKey(b).toString();
         return !s.getFluidState().isEmpty() || b instanceof DoorBlock || b instanceof TrapDoorBlock || b instanceof FenceGateBlock
