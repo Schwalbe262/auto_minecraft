@@ -10,6 +10,7 @@ public final class HarvestModule implements AutomationModule {
     private enum Stage { PREPARE, APPROACH, USING, PICKUP }
     private Stage stage = Stage.PREPARE;
     private final Deque<Pos> pending = new ArrayDeque<>();
+    private final Map<Pos,Integer> primaryLanes = new HashMap<>();
     private final Set<String> harvestedThisPass = new HashSet<>();
     private Pos target;
     private Pos continuation;
@@ -207,22 +208,19 @@ public final class HarvestModule implements AutomationModule {
             stopContinuation(context);
             return;
         }
-        if (continuation != null && !isMature(world,continuation)) continuation = null;
-        if (continuation == null) {
-            double maximumDistance = harvestRadius*2+2;
-            for (Pos next:pending) {
-                if (!world.loaded(next) || !isMature(world,next)
-                    || HarvestRoutePlanner.withinFootprint(target,next,harvestRadius)
-                    || Math.abs((long)next.y()-target.y())>1
-                    || Math.hypot((long)next.x()-target.x(),(long)next.z()-target.z())>maximumDistance) continue;
-                continuation = next;
-                break;
-            }
-        }
-        if (continuation == null) {
+        // Only observations may discard covered neighbours. Never search past a
+        // still-mature next target for a closer later row, sector or cleanup pass.
+        while (!pending.isEmpty() && world.loaded(pending.getFirst()) && !isMature(world,pending.getFirst())) pending.removeFirst();
+        Pos next=pending.peekFirst();
+        Integer lane=primaryLanes.get(target);
+        boolean sameLane=lane!=null && next!=null && lane.equals(primaryLanes.get(next));
+        if (next==null || !sameLane || !world.loaded(next)
+                || HarvestRoutePlanner.withinFootprint(target,next,harvestRadius)
+                || Math.hypot((long)next.x()-target.x(),(long)next.z()-target.z())>harvestRadius*2+2) {
             stopContinuation(context);
             return;
         }
+        continuation=next;
         Navigation.Result result = context.navigation().moveToWithoutInteraction(continuation,2.15,context);
         continuationMoving = result == Navigation.Result.MOVING;
         if (result != Navigation.Result.MOVING) stopContinuation(context);
@@ -267,14 +265,35 @@ public final class HarvestModule implements AutomationModule {
     private void orderPending(Context context) {
         // Calibration compares the existing short approaches, not two different
         // coverage routes; normal harvest uses the now-selected native hoe hint.
+        primaryLanes.clear();
         if (calibration || pending.isEmpty()) return;
         HarvestFootprint footprint = context.world().harvestFootprint(pending.getFirst());
         if (footprint == null || !footprint.known() || footprint.radius() <= 0) return;
         LinkedHashSet<Pos> remaining = new LinkedHashSet<>(pending);
         pending.clear();
+        int nextLane=0;
         for (Farm farm:context.profile().farms) {
             List<Pos> sector = remaining.stream().filter(farm::contains).toList();
-            pending.addAll(HarvestRoutePlanner.order(sector,footprint.radius()));
+            if (sector.isEmpty()) continue;
+            List<Pos> layout=new ArrayList<>();
+            for (int x=Math.min(farm.first().x(),farm.second().x());x<=Math.max(farm.first().x(),farm.second().x());x++)
+                for (int y=Math.min(farm.first().y(),farm.second().y());y<=Math.max(farm.first().y(),farm.second().y());y++)
+                    for (int z=Math.min(farm.first().z(),farm.second().z());z<=Math.max(farm.first().z(),farm.second().z());z++) {
+                        Pos position=new Pos(x,y,z);
+                        if (!context.world().loaded(position)) continue;
+                        BlockData block=context.world().block(position);
+                        if (block!=null && block.tomato()) layout.add(position);
+                    }
+            HarvestRoutePlanner.Route route=HarvestRoutePlanner.plan(sector,layout,footprint.radius());
+            Map<String,Integer> lanes=new HashMap<>();
+            for (Pos position:route.primary()) {
+                String row=position.y()+":"+(route.alongX() ? position.z() : position.x());
+                Integer lane=lanes.get(row);
+                if (lane==null) { lane=nextLane++; lanes.put(row,lane); }
+                primaryLanes.put(position,lane);
+            }
+            pending.addAll(route.primary());
+            pending.addAll(route.cleanup());
             remaining.removeAll(sector);
         }
         pending.addAll(remaining);
@@ -368,6 +387,7 @@ public final class HarvestModule implements AutomationModule {
         active = false;
         routeOrdered = false;
         pending.clear();
+        primaryLanes.clear();
         harvestedThisPass.clear();
         target = null;
         continuation = null;

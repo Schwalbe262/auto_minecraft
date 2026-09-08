@@ -306,6 +306,87 @@ class NavigationHarvestTest {
         assertTrue(context.profile().nextEligibleDay.isEmpty());
     }
 
+    @Test void tractorContinuationKeepsOnlyTheImmediateSameRowCenterAndStopsAtTheTurn() {
+        FakeWorld world=areaWorld(6,6);
+        FakeActions actions=new FakeActions(); actions.movingHarvest=true;
+        SteeringNavigation navigation=new SteeringNavigation();
+        HarvestModule module=new HarvestModule();
+        Context context=new Context(world,actions,navigation,farmProfile(new Pos(5,0,5)));
+        module.tick(context);
+        assertEquals(List.of(new Pos(4,0,1)),navigation.steered);
+        assertEquals(1,actions.submitted.size());
+        // The first area ACK changes only its observed footprint.
+        for (Pos crop:List.copyOf(world.blocks.keySet()))
+            if (HarvestRoutePlanner.withinFootprint(new Pos(1,0,1),crop,1)) world.tomato(crop,0);
+        actions.complete(true);
+        for (int i=0;i<10 && actions.submitted.size()<2;i++) { world.now++; module.tick(context); }
+        assertEquals(new Action.UseBlock(new Pos(4,0,1),Action.Use.HARVEST),actions.submitted.get(1));
+        assertFalse(navigation.steered.isEmpty());
+        assertTrue(navigation.steered.stream().allMatch(new Pos(4,0,1)::equals),
+            "The next row must wait for the current native ACK; no diagonal turn during use");
+        assertTrue(actions.busy());
+    }
+
+    @Test void distantImmediateCenterCannotBeOvertakenByNearbyCleanupTargets() {
+        FakeWorld world=areaWorld(12,3);
+        for (Pos crop:List.copyOf(world.blocks.keySet())) world.tomato(crop,0);
+        for (Pos crop:List.of(new Pos(1,0,1),new Pos(10,0,1),new Pos(3,0,0))) world.tomato(crop,3);
+        FakeActions actions=new FakeActions(); actions.movingHarvest=true;
+        SteeringNavigation navigation=new SteeringNavigation();
+        HarvestModule module=new HarvestModule();
+        Context context=new Context(world,actions,navigation,farmProfile(new Pos(11,0,2)));
+        module.tick(context);
+        assertEquals(new Action.UseBlock(new Pos(1,0,1),Action.Use.HARVEST),actions.submitted.get(0));
+        for (int i=0;i<5;i++) { world.now++; module.tick(context); }
+        assertTrue(navigation.steered.isEmpty(),"Do not scan past the distant next center for an off-row crop");
+        assertEquals(1,actions.submitted.size(),"No repeated or overlapping right-click while waiting");
+    }
+
+    @Test void separateFarmEvenOnTheSameGeometricRowCannotBecomePendingUseContinuation() {
+        FakeWorld world=areaWorld(6,3);
+        FakeActions actions=new FakeActions(); actions.movingHarvest=true;
+        SteeringNavigation navigation=new SteeringNavigation();
+        Profile profile=farmProfile(new Pos(2,0,2));
+        profile.farms.add(new Farm("second",new Pos(3,0,0),new Pos(5,0,2)));
+        HarvestModule module=new HarvestModule();
+        Context context=new Context(world,actions,navigation,profile);
+        module.tick(context);
+        assertTrue(navigation.steered.isEmpty());
+        assertEquals(1,actions.submitted.size());
+    }
+
+    @Test void fixedStripAndCleanupPassStillHarvestEveryUnchangedUpperVineOnlyAfterItsOwnAck() {
+        FakeWorld world=areaWorld(6,3);
+        for (int z=0;z<3;z++) for (int x=0;x<6;x++) {
+            Pos upper=new Pos(x,1,z);
+            world.blocks.put(upper,new BlockData(upper,"farmersdelight:tomatoes_on_rope",Map.of("age","3")));
+        }
+        FakeActions actions=new FakeActions(); actions.movingHarvest=true;
+        SteeringNavigation navigation=new SteeringNavigation();
+        HarvestModule module=new HarvestModule();
+        Context context=new Context(world,actions,navigation,farmProfile(new Pos(5,1,2)));
+        WorkResult result=null;
+        for (int i=0;i<300;i++) {
+            result=module.tick(context);
+            assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());
+            if (actions.busy()) {
+                Action.UseBlock use=(Action.UseBlock)actions.submitted.get(actions.submitted.size()-1);
+                assertEquals(Action.Use.HARVEST,use.purpose());
+                assertTrue(world.block(use.pos()).matureTomato());
+                world.tomato(use.pos(),0); // Deliberately no adjacent or upper-vine effect.
+                actions.complete(true);
+            }
+            world.now++;
+            if (result.state()==WorkResult.State.IDLE) break;
+        }
+        assertEquals(WorkResult.State.IDLE,result.state());
+        assertEquals(36,actions.submitted.size());
+        assertEquals(36,actions.submitted.stream().map(a -> ((Action.UseBlock)a).pos()).distinct().count());
+        assertEquals(List.of(new Pos(1,0,1),new Pos(4,0,1)),
+            actions.submitted.subList(0,2).stream().map(a -> ((Action.UseBlock)a).pos()).toList());
+        assertTrue(navigation.steered.stream().allMatch(new Pos(4,0,1)::equals),"Cleanup cannot borrow primary-row lookahead");
+    }
+
     @Test void movingHarvestOptInAndOverflowAreBothRequired() {
         for (boolean overflow:List.of(false,true)) {
             FakeWorld world = areaWorld(6,3);
@@ -712,6 +793,15 @@ class NavigationHarvestTest {
     private static final class RecordingNavigation implements Navigation {
         final List<Double> reaches = new ArrayList<>();
         public Result moveTo(Pos target,double reach,Context context) { reaches.add(reach); return Result.ARRIVED; }
+        public void reset() { }
+    }
+
+    private static final class SteeringNavigation implements Navigation {
+        final List<Pos> steered=new ArrayList<>();
+        public Result moveTo(Pos target,double reach,Context context) { return Result.ARRIVED; }
+        public Result moveToWithoutInteraction(Pos target,double reach,Context context) {
+            steered.add(target); return Result.MOVING;
+        }
         public void reset() { }
     }
 
