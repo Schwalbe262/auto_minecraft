@@ -201,8 +201,17 @@ public final class HarvestModule implements AutomationModule {
         if (stage == Stage.PICKUP) {
             // Output pickup is the player's concern. The successful native
             // action and mature-to-harvested transition above are the completion evidence.
-            if (profile.continueHarvestWhenFull) continueHarvestMovement(context);
+            Pos repair = localRepair(context);
+            // A successful use confirms the clicked crop, not every neighbour or
+            // the conditional upper-vine fallback. Do not walk away from observed
+            // leftovers while the existing short block-update settle completes.
+            if (repair != null) stopContinuation(context);
+            else if (profile.continueHarvestWhenFull) continueHarvestMovement(context);
             if (world.tick() - pickupStarted < 2) return WorkResult.busy("확인된 수확 동작을 마무리합니다.");
+            if (repair != null) {
+                pending.remove(repair);
+                pending.addFirst(repair);
+            }
             recordSample(context, false);
             markCompletedFarm(context,target);
             if (!continuationMoving) {
@@ -216,6 +225,33 @@ public final class HarvestModule implements AutomationModule {
         return WorkResult.busy("수확 준비 중입니다.");
     }
 
+    /** Observe nearby misses before leaving this footprint, without predicting completion. */
+    private Pos localRepair(Context context) {
+        if (calibration || harvestRadius <= 0 || target == null) return null;
+        WorldAccess world = context.world();
+        List<Pos> nearby = pending.stream()
+            .filter(p -> HarvestRoutePlanner.withinFootprint(target,p,harvestRadius))
+            .filter(world::loaded).filter(p -> isMature(world,p)).toList();
+        Pos best = null;
+        int bestCoverage = 0;
+        double bestDistance = Double.POSITIVE_INFINITY;
+        // Prefer one nearby center covering many leftovers, rather than walking
+        // through each crop. In particular an unchanged upper layer gets its own
+        // area click before traversing the rest of the field.
+        for (Pos candidate : nearby) {
+            int coverage = 0;
+            for (Pos crop : nearby)
+                if (HarvestRoutePlanner.withinFootprint(candidate,crop,harvestRadius)) coverage++;
+            double distance = world.player().distance(candidate);
+            if (coverage > bestCoverage || coverage == bestCoverage && distance < bestDistance) {
+                best = candidate;
+                bestCoverage = coverage;
+                bestDistance = distance;
+            }
+        }
+        return best;
+    }
+
     private void continueHarvestMovement(Context context) {
         WorldAccess world = context.world();
         if (calibration || !context.profile().continueHarvestWhenFull || !context.actions().supportsMovingHarvest()
@@ -223,10 +259,13 @@ public final class HarvestModule implements AutomationModule {
             stopContinuation(context);
             return;
         }
-        // Only observations may discard covered neighbours. Never search past a
-        // still-mature next target for a closer later row, sector or cleanup pass.
-        while (!pending.isEmpty() && world.loaded(pending.getFirst()) && !isMature(world,pending.getFirst())) pending.removeFirst();
-        Pos next=pending.peekFirst();
+        // Client-side crop prediction may precede the server reply. Look past
+        // currently changed cells for steering only; never remove them here.
+        // APPROACH rechecks after the current use has actually been confirmed.
+        Pos next=null;
+        for (Pos candidate:pending) {
+            if (!world.loaded(candidate) || isMature(world,candidate)) { next=candidate; break; }
+        }
         Integer lane=primaryLanes.get(target);
         boolean sameLane=lane!=null && next!=null && lane.equals(primaryLanes.get(next));
         if (next==null || !sameLane || !world.loaded(next)
@@ -330,8 +369,7 @@ public final class HarvestModule implements AutomationModule {
                 if (lane==null) { lane=nextLane++; lanes.put(row,lane); }
                 primaryLanes.put(position,lane);
             }
-            pending.addAll(route.primary());
-            pending.addAll(route.cleanup());
+            pending.addAll(route.ordered());
             remaining.removeAll(sector);
         }
         pending.addAll(remaining);

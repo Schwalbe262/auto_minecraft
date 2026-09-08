@@ -357,7 +357,7 @@ class NavigationHarvestTest {
         assertEquals(1,actions.submitted.size());
     }
 
-    @Test void fixedStripAndCleanupPassStillHarvestEveryUnchangedUpperVineOnlyAfterItsOwnAck() {
+    @Test void localRepairStillHarvestsEveryUnchangedUpperVineOnlyAfterItsOwnAck() {
         FakeWorld world=areaWorld(6,3);
         for (int z=0;z<3;z++) for (int x=0;x<6;x++) {
             Pos upper=new Pos(x,1,z);
@@ -384,9 +384,97 @@ class NavigationHarvestTest {
         assertEquals(WorkResult.State.IDLE,result.state());
         assertEquals(36,actions.submitted.size());
         assertEquals(36,actions.submitted.stream().map(a -> ((Action.UseBlock)a).pos()).distinct().count());
-        assertEquals(List.of(new Pos(1,0,1),new Pos(4,0,1)),
-            actions.submitted.subList(0,2).stream().map(a -> ((Action.UseBlock)a).pos()).toList());
-        assertTrue(navigation.steered.stream().allMatch(new Pos(4,0,1)::equals),"Cleanup cannot borrow primary-row lookahead");
+        assertEquals(new Pos(1,0,1),((Action.UseBlock)actions.submitted.get(0)).pos());
+        assertTrue(HarvestRoutePlanner.withinFootprint(new Pos(1,0,1),
+            ((Action.UseBlock)actions.submitted.get(1)).pos(),1),"Observed nearby misses precede a distant primary center");
+    }
+
+    @Test void conditionalUpperFallbackIsRepairedLocallyBeforeMovingToNextTile() {
+        FakeWorld world=areaWorld(12,3);
+        for (int x=0;x<12;x++) for (int z=0;z<3;z++) world.tomato(new Pos(x,1,z),3);
+        FakeActions actions=new FakeActions(); actions.movingHarvest=true;
+        Context context=new Context(world,actions,new SteeringNavigation(),farmProfile(new Pos(11,1,2)));
+        HarvestModule module=new HarvestModule(); WorkResult result=null;
+        for (int tick=0;tick<200;tick++) {
+            result=module.tick(context);
+            assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());
+            if (actions.busy()) {
+                Pos clicked=((Action.UseBlock)actions.submitted.get(actions.submitted.size()-1)).pos();
+                // Quark uses upper fallback only where the lower crop did not act.
+                for (int dx=-1;dx<=1;dx++) for (int dz=-1;dz<=1;dz++) {
+                    Pos lower=clicked.offset(dx,0,dz),upper=lower.offset(0,1,0);
+                    if (world.block(lower).matureTomato()) world.tomato(lower,0);
+                    else if (world.block(upper).matureTomato()) world.tomato(upper,0);
+                }
+                actions.complete(true);
+            }
+            world.now++;
+            if (result.state()==WorkResult.State.IDLE) break;
+        }
+        assertEquals(WorkResult.State.IDLE,result.state());
+        assertEquals(List.of(new Pos(1,0,1),new Pos(1,1,1),new Pos(4,0,1),new Pos(4,1,1),
+            new Pos(7,0,1),new Pos(7,1,1),new Pos(10,0,1),new Pos(10,1,1)),
+            actions.submitted.stream().map(a -> ((Action.UseBlock)a).pos()).toList());
+        assertTrue(world.blocks.values().stream().noneMatch(BlockData::matureTomato));
+        assertEquals(1L,context.profile().nextEligibleDay.get("harvest:first"));
+    }
+
+    @Test void partialAreaMissIsClickedBeforeTheNextLaneCenter() {
+        FakeWorld world=areaWorld(12,3); Pos miss=new Pos(0,0,0);
+        FakeActions actions=new FakeActions();
+        Context context=new Context(world,actions,new ArrivedNavigation(),farmProfile(new Pos(11,0,2)));
+        HarvestModule module=new HarvestModule(); WorkResult result=null;
+        for (int tick=0;tick<150;tick++) {
+            result=module.tick(context);
+            assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());
+            if (actions.busy()) {
+                Pos clicked=((Action.UseBlock)actions.submitted.get(actions.submitted.size()-1)).pos();
+                for (Pos crop:List.copyOf(world.blocks.keySet()))
+                    if (HarvestRoutePlanner.withinFootprint(clicked,crop,1)
+                            && (actions.submitted.size()!=1 || !crop.equals(miss))) world.tomato(crop,0);
+                actions.complete(true);
+            }
+            world.now++;
+            if (result.state()==WorkResult.State.IDLE) break;
+        }
+        assertEquals(WorkResult.State.IDLE,result.state());
+        assertEquals(List.of(new Pos(1,0,1),miss,new Pos(4,0,1),new Pos(7,0,1),new Pos(10,0,1)),
+            actions.submitted.stream().map(a -> ((Action.UseBlock)a).pos()).toList());
+    }
+
+    @Test void delayedNeighbourUpdatesDuringSettleAvoidUnnecessaryRepairClick() {
+        FakeWorld world=areaWorld(6,3);
+        FakeActions actions=new FakeActions(); actions.movingHarvest=true;
+        Context context=new Context(world,actions,new SteeringNavigation(),farmProfile(new Pos(5,0,2)));
+        HarvestModule module=new HarvestModule(); module.tick(context);
+        Pos first=((Action.UseBlock)actions.submitted.get(0)).pos();
+        world.tomato(first,0); actions.complete(true);
+        world.now++; module.tick(context);
+        assertEquals(1,actions.submitted.size(),"A partial block-update batch is not another click");
+        world.now++;
+        for (Pos crop:List.copyOf(world.blocks.keySet()))
+            if (HarvestRoutePlanner.withinFootprint(first,crop,1)) world.tomato(crop,0);
+        for (int tick=0;tick<5 && actions.submitted.size()<2;tick++) { world.now++; module.tick(context); }
+        assertEquals(new Pos(4,0,1),((Action.UseBlock)actions.submitted.get(1)).pos());
+        assertEquals(2,actions.submitted.size());
+    }
+
+    @Test void unacknowledgedClientPredictionCannotDiscardTheNextLaneCenter() {
+        FakeWorld world=areaWorld(9,3);
+        FakeActions actions=new FakeActions(); actions.movingHarvest=true;
+        Context context=new Context(world,actions,new SteeringNavigation(),farmProfile(new Pos(8,0,2)));
+        HarvestModule module=new HarvestModule(); module.tick(context);
+        Pos next=new Pos(4,0,1);
+        world.tomato(next,0); // Temporary client prediction while the first use is unconfirmed.
+        world.now++; module.tick(context);
+        assertEquals(1,actions.submitted.size());
+        world.tomato(next,3); // Server correction restores the maturity.
+        for (Pos crop:List.copyOf(world.blocks.keySet()))
+            if (HarvestRoutePlanner.withinFootprint(new Pos(1,0,1),crop,1)) world.tomato(crop,0);
+        actions.complete(true);
+        for (int tick=0;tick<6 && actions.submitted.size()<2;tick++) { world.now++; module.tick(context); }
+        assertEquals(next,((Action.UseBlock)actions.submitted.get(1)).pos(),
+            "A predicted age change cannot send this target to the final rescan");
     }
 
     @Test void movingHarvestOptInAndOverflowAreBothRequired() {

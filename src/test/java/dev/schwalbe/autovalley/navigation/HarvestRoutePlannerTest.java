@@ -66,7 +66,7 @@ final class HarvestRoutePlannerTest {
         var route=HarvestRoutePlanner.plan(mature,layout,1);
         assertEquals(List.of(new Pos(1,0,1),new Pos(5,0,1)),route.primary());
         assertEquals(new HashSet<>(mature),new HashSet<>(route.ordered()));
-        assertEquals(3,route.cleanup().size(),"Off-row ripe crops are deferred, never omitted");
+        assertEquals(3,route.cleanup().size(),"Covered crops remain available for observed fallback");
     }
 
     @Test void removedMatureBorderDoesNotReanchorRowsOrChangeTheLayoutAxis() {
@@ -103,6 +103,7 @@ final class HarvestRoutePlannerTest {
             assertTrue(uncovered.isEmpty(),"Coverage is a routing hint; the module must still observe every change");
             assertThrows(UnsupportedOperationException.class,() -> route.primary().clear());
             assertThrows(UnsupportedOperationException.class,() -> route.cleanup().clear());
+            assertThrows(UnsupportedOperationException.class,() -> route.sweep().clear());
         }
     }
 
@@ -111,13 +112,92 @@ final class HarvestRoutePlannerTest {
         var expected=HarvestRoutePlanner.plan(original,original,1);
         List<Pos> shuffled=new ArrayList<>(original); java.util.Collections.reverse(shuffled);
         assertEquals(expected,HarvestRoutePlanner.plan(shuffled,original,1));
-        assertTrue(java.util.Collections.disjoint(expected.primary(),expected.cleanup()));
-        assertEquals(original.size(),expected.primary().size()+expected.cleanup().size());
+        assertTrue(java.util.Collections.disjoint(expected.sweep(),expected.cleanup()));
+        assertEquals(original.size(),expected.sweep().size()+expected.cleanup().size());
+    }
+
+    @Test void missingMatureLaneCentersAreRepairedBeforeTheDistantNextCenter() {
+        List<Pos> layout=rectangle(12,3);
+        List<Pos> mature=List.of(new Pos(1,0,1),new Pos(4,0,0),new Pos(4,0,2),new Pos(10,0,1));
+        var route=HarvestRoutePlanner.plan(mature,layout,1);
+        assertEquals(List.of(new Pos(1,0,1),new Pos(10,0,1)),route.primary());
+        assertEquals(mature,route.sweep(),"Off-row gaps are completed in their local tile");
+        assertTrue(route.cleanup().isEmpty(),"Every remaining fallback would otherwise require a return trip");
+        assertCoverageAndRetention(mature,route,1);
+    }
+
+    @Test void shiftedLaneCenterRepairsBothUncoveredEdgesBeforeLeavingItsTile() {
+        List<Pos> layout=rectangle(9,3);
+        List<Pos> mature=layout.stream().filter(p -> !p.equals(new Pos(1,0,1)) && !p.equals(new Pos(2,0,1))).toList();
+        var route=HarvestRoutePlanner.plan(mature,layout,1);
+        assertEquals(List.of(new Pos(0,0,1),new Pos(2,0,0),new Pos(2,0,2)),route.sweep().subList(0,3));
+        assertTrue(route.primary().stream().allMatch(p -> p.z()==1),"Repairs must not change the primary lane");
+        assertCoverageAndRetention(mature,route,1);
+    }
+
+    @Test void sprinklerHoleUsesAvailableSameRowCentersAndNeverClicksTheHole() {
+        Pos sprinkler=new Pos(1,0,1);
+        List<Pos> layout=square(3).stream().filter(p -> !p.equals(sprinkler)).toList();
+        var route=HarvestRoutePlanner.plan(layout,layout,1);
+        assertEquals(List.of(new Pos(0,0,1),new Pos(2,0,1)),route.primary());
+        assertEquals(route.primary(),route.sweep(),"A repair on the fixed row remains eligible for straight movement");
+        assertFalse(route.ordered().contains(sprinkler));
+        assertCoverageAndRetention(layout,route,1);
+    }
+
+    @Test void sparseMaturityAndSprinklerHolesAreCoveredLocallyOnBothAxesAtEverySupportedRadius() {
+        for (int radius=1;radius<=4;radius++) for (boolean alongX:List.of(true,false)) {
+            List<Pos> layout=new ArrayList<>();
+            List<Pos> mature=new ArrayList<>();
+            java.util.Random random=new java.util.Random(73L+radius);
+            for (int z=0;z<13;z++) for (int x=0;x<23;x++) {
+                if (x%5==2 && z%5==2) continue;
+                Pos crop=alongX ? new Pos(x-40,5,z-30) : new Pos(z-30,5,x-40);
+                layout.add(crop);
+                if (random.nextInt(3)!=0) mature.add(crop);
+            }
+            var route=HarvestRoutePlanner.plan(mature,layout,radius);
+            assertEquals(alongX,route.alongX());
+            assertCoverageAndRetention(mature,route,radius);
+            List<Pos> reversed=new ArrayList<>(mature); java.util.Collections.reverse(reversed);
+            List<Pos> reversedLayout=new ArrayList<>(layout); java.util.Collections.reverse(reversedLayout);
+            assertEquals(route,HarvestRoutePlanner.plan(reversed,reversedLayout,radius),
+                "Coverage and repair order must not depend on observed iteration order");
+        }
+    }
+
+    @Test void legacyRouteConstructorAndAllReturnedQueuesAreImmutable() {
+        List<Pos> original=new ArrayList<>(List.of(new Pos(1,0,1)));
+        var route=new HarvestRoutePlanner.Route(original,List.of(new Pos(0,0,0)),true);
+        original.clear();
+        assertEquals(List.of(new Pos(1,0,1)),route.primary());
+        assertEquals(route.primary(),route.sweep());
+        assertEquals(List.of(new Pos(1,0,1),new Pos(0,0,0)),route.ordered());
+        assertThrows(UnsupportedOperationException.class,() -> route.ordered().clear());
+    }
+
+    private static void assertCoverageAndRetention(List<Pos> mature,HarvestRoutePlanner.Route route,int radius) {
+        var original=new HashSet<>(mature);
+        assertEquals(original,new HashSet<>(route.ordered()),"Prediction must never discard an observed target");
+        assertEquals(original.size(),route.ordered().size(),"Each original needs exactly one queued observation");
+        assertTrue(route.sweep().containsAll(route.primary()));
+        assertTrue(java.util.Collections.disjoint(route.sweep(),route.cleanup()));
+        var predicted=new HashSet<Pos>();
+        for (Pos center:route.sweep()) {
+            assertTrue(original.contains(center),"Only observed mature crop positions may be clicked");
+            assertFalse(predicted.contains(center),"A planned repair must still be usable after earlier area clicks");
+            mature.stream().filter(p -> HarvestRoutePlanner.withinFootprint(center,p,radius)).forEach(predicted::add);
+        }
+        assertEquals(original,predicted,"All geometrically uncovered crops must be scheduled in the initial sweep");
     }
 
     private static List<Pos> square(int width) {
+        return rectangle(width,width);
+    }
+
+    private static List<Pos> rectangle(int width,int depth) {
         List<Pos> result = new ArrayList<>();
-        for (int z=0;z<width;z++) for (int x=0;x<width;x++) result.add(new Pos(x,0,z));
+        for (int z=0;z<depth;z++) for (int x=0;x<width;x++) result.add(new Pos(x,0,z));
         return result;
     }
 }

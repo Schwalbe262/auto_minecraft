@@ -1631,3 +1631,19 @@ configured server and the real player in-world at Y=72, with health and food 20.
 Automation was left OFF; no start command or work action was issued. This verifies
 installation and reconnection only, not native acceptance of logging-goal access,
 queued replanting, stair timing, or the disabled-logging execution path.
+
+### Local harvest coverage repair — 2026-09-09 KST
+
+The previous route deferred every non-primary crop until a whole-field cleanup.
+Its square coverage hint included both lower and upper plants, although installed
+Quark's upper use is conditional on the lower use failing. The route now schedules
+tile-local repairs for missing/unripe row anchors. After the existing target ACK
+and two-tick settle, the module prioritizes still-mature neighbours before leaving
+their footprint, choosing a local area center. It never treats an area hint as
+completion and no longer removes predicted neighbours during a pending use.
+
+Focused planner/module tests cover exclusive upper fallback, partial area effects,
+delayed block updates, sprinkler holes, and temporary client prediction rollback.
+Native harvest timing remains pending: live work was interrupted by a higher-
+priority wine inventory acknowledgement failure. No new harvest artifact was
+installed or benchmarked at this checkpoint.
