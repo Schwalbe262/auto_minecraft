@@ -146,6 +146,8 @@ public final class LoggingModule implements AutomationModule {
             }
             case PLANT -> {
                 inspect(c,plot);
+                if (LoggingRules.partiallyGrown(c.world(),plot))
+                    return fail("2x2 재식재 중 일부 나무만 자랐습니다. 미완료 구역을 보존하며 자동 재벌목·추가 식재하지 않습니다.");
                 if (c.world().menu().container() || !c.world().menu().carried().empty())
                     return fail("재식재 중 메뉴나 커서가 바뀌었습니다. 식재 의무를 보존하고 중단했습니다.");
                 List<Pos> missingCells=plot.plantingPositions().stream().filter(p -> !occupied(c,p)).toList();
@@ -192,8 +194,8 @@ public final class LoggingModule implements AutomationModule {
                 return busy("등록한 빈 칸에 묘목 재식재");
             }
             case WASTE -> {
-                for (LoggingPlot registered:c.profile().loggingPlots) for (Pos base:registered.plantingPositions())
-                    if (!occupied(c,base)) return fail("모든 등록 식재 칸을 먼저 복구해야 합니다. 묘목과 가지는 폐기하지 않았습니다.");
+                for (LoggingPlot registered:c.profile().loggingPlots)
+                    if (!LoggingRules.completePlanting(c.world(),registered)) return fail("모든 등록 구역의 2x2 묘목 또는 네 기둥을 확인해야 합니다. 묘목과 가지는 폐기하지 않았습니다.");
                 ItemSlot trash=inventory(c).stream()
                     .filter(s -> c.profile().loggingHotbarLease==null || s.inventoryIndex()!=c.profile().loggingHotbarLease.sourceIndex())
                     .filter(s -> s.item().is(LoggingRules.TWIG)
@@ -326,6 +328,8 @@ public final class LoggingModule implements AutomationModule {
         catch (RuntimeException failure) { c.profile().loggingRunActive=oldActive; c.profile().loggingRemainingPlots=oldRemaining; throw failure; }
     }
     private static void completePlot(Context c,Pos corner) {
+        LoggingPlot completed=c.profile().loggingPlots.stream().filter(p -> p.corner().equals(corner)).findFirst().orElseThrow();
+        if (!LoggingRules.completePlanting(c.world(),completed)) throw new IllegalStateException("2x2 재식재가 같은 상태의 네 칸으로 완성되지 않았습니다.");
         List<Pos> oldRemaining=c.profile().loggingRemainingPlots;
         List<Pos> oldReplanting=c.profile().loggingReplantingPlots;
         List<Pos> remaining=new ArrayList<>(oldRemaining); remaining.remove(corner); c.profile().loggingRemainingPlots=remaining;
@@ -368,6 +372,8 @@ public final class LoggingModule implements AutomationModule {
         } else throw new IllegalStateException("임시 단축바 교환의 결과가 불명확합니다. 원래 아이템을 확인하세요.");
     }
     private static void finish(Context c) {
+        for (LoggingPlot registered:c.profile().loggingPlots)
+            if (!LoggingRules.completePlanting(c.world(),registered)) throw new IllegalStateException("2x2 재식재 상태가 바뀌어 벌목 완료를 저장하지 않습니다.");
         if (!c.profile().loggingRemainingPlots.isEmpty() || !c.profile().loggingReplantingPlots.isEmpty()
             || c.profile().loggingHotbarLease!=null) throw new IllegalStateException("재식재 또는 단축바 복원이 아직 끝나지 않았습니다.");
         long due=Math.addExact(day(c),c.profile().loggingCycleDays);

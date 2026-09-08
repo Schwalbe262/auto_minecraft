@@ -1091,3 +1091,33 @@ zero failures, errors or skips. Native UP-face clipping, all-goal navigation,
 delayed/partial inventory arrivals and fixed planting order have regression
 coverage. Full live 2x2 replanting and the rest of the logging routine still
 require supervised acceptance after deployment.
+
+#### Placement ACK during falling-tree pickups
+
+The deployed joint-stance run skipped the operator-repaired plot, felled the
+next tree, then timed out on its first planting confirmation. A read-only
+inspection of the existing failure object found a five-sapling starting stack,
+two subsequent raw server replies confirming a spruce sapling at the exact
+requested cell, and that sapling still present with the other three cells empty.
+Retained later slot replies showed increasing pickup counts. Earlier slot
+entries had been evicted from the bounded ring, so their absence is not proof
+that a transient count-decrement packet was never sent. No four-at-once
+planting behavior was established, and the unfinished operation was not resent.
+
+The correction confirms placement from the dispatched AIR-to-spruce request's
+same-generation, latest exact-target raw block reply. It no longer demands an
+exact inventory decrement while falling-tree drops are being collected. A
+missing, stale, other-target or other-generation reply cannot confirm planting;
+a later AIR or unrelated block invalidates an earlier positive reply. Client
+prediction and inventory changes alone still provide no placement confirmation.
+
+Replant completion now requires four spruce saplings or four spruce trunk bases,
+not a mixture of small grown trees and remaining saplings. A partially grown
+one-to-three-trunk plot retains its obligation and stops before further planting
+or disposal; automatic corrective cutting is not added. The same coherent
+pattern is checked before waste disposal and final completion persistence.
+This base pattern is not a claim to identify a particular generated canopy.
+
+Java 17 / Gradle 8.8 `test build` passed after integration: 74 suites, 920
+tests, zero failures, errors or skips. The new native ACK and coherent-pattern
+regressions do not replace the pending full-routine live retest.

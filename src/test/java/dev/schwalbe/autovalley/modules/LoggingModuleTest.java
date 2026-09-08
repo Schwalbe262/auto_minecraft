@@ -108,13 +108,55 @@ class LoggingModuleTest {
         assertEquals(31,f.chops); assertEquals(4,f.plants);
     }
 
-    @Test void restartAfterPartialReplantKeepsReplantPhaseEvenIfThePlantedSaplingAlreadyRegrew() {
-        Fixture f=new Fixture(2); f.until(() -> f.plants==1);
+    @Test void restartAfterPartialReplantBlocksSmallTreeMixUntilOperatorRestoresFourTrunks() {
+        Fixture f=new Fixture(2); f.fillHotbar(); f.until(() -> f.plants==1);
         Pos first=f.actions.stream().filter(a -> a instanceof Action.PlantSapling).map(a -> ((Action.PlantSapling)a).pos()).findFirst().orElseThrow();
         assertTrue(f.profile.loggingReplantingPlots.contains(f.profile.loggingPlots.get(0).corner())); f.blocks.put(first,LoggingRules.LOG);
+        LoggingHotbarLease lease=f.profile.loggingHotbarLease; assertNotNull(lease);
         f.restart();
+        assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertEquals(1,f.plants); assertEquals(2,f.chops);
+        assertEquals(lease,f.profile.loggingHotbarLease); assertEquals(0,f.trashed); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(2,f.profile.loggingRemainingPlots.size());
+        f.setPlot(0,LoggingRules.LOG); f.restart();
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(4,f.chops,"Regrown first planting is not recut");
-        assertEquals(8,f.plants); assertEquals(LoggingRules.LOG,f.id(first));
+        assertEquals(5,f.plants); assertEquals(LoggingRules.LOG,f.id(first));
+    }
+
+    @Test void oneSmallTrunkWithThreeSaplingsCannotCountAsCompletedReplantingOrPermitWaste() {
+        Fixture f=new Fixture(1); Pos corner=f.profile.loggingPlots.get(0).corner();
+        f.profile.loggingRunActive=true; f.profile.loggingRemainingPlots.add(corner); f.profile.loggingReplantingPlots.add(corner);
+        f.setPlot(0,LoggingRules.SAPLING); f.blocks.put(corner,LoggingRules.LOG);
+        f.inventory[9]=item(LoggingRules.SAPLING,8); f.inventory[10]=item(LoggingRules.TWIG,3);
+        assertFalse(LoggingRules.completePlanting(f,f.profile.loggingPlots.get(0)));
+        assertNotNull(LoggingRules.trashRejection(new Action.TrashLogging(9,f.inventory[9]),f.context));
+        assertNotNull(LoggingRules.trashRejection(new Action.TrashLogging(10,f.inventory[10]),f.context));
+        assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertTrue(f.actions.isEmpty());
+        assertEquals(List.of(corner),f.profile.loggingRemainingPlots); assertEquals(List.of(corner),f.profile.loggingReplantingPlots);
+        assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void aCompletedPlotTurningMixedBeforeWasteIsNotSilentlyFinalized() {
+        Fixture f=new Fixture(1); f.until(() -> f.profile.loggingRemainingPlots.isEmpty() && f.plants==4);
+        f.blocks.put(f.profile.loggingPlots.get(0).corner(),LoggingRules.LOG);
+        assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertEquals(0,f.trashed);
+        assertTrue(f.profile.loggingRunActive); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void coherentFourSaplingsOrFourTrunksAreAcceptedButUnloadedOrMissingBasesAreNot() {
+        Fixture f=new Fixture(1); LoggingPlot plot=f.profile.loggingPlots.get(0);
+        assertTrue(LoggingRules.completePlanting(f,plot));
+        f.setPlot(0,LoggingRules.SAPLING); assertTrue(LoggingRules.completePlanting(f,plot));
+        f.blocks.put(plot.corner(),"minecraft:air"); assertFalse(LoggingRules.completePlanting(f,plot));
+        f.setPlot(0,LoggingRules.SAPLING); f.unloaded.add(plot.corner()); assertFalse(LoggingRules.completePlanting(f,plot));
+    }
+
+    @Test void aLateMixedPatternCannotWriteTheFinalCompletionCheckpoint() throws Exception {
+        Fixture f=new Fixture(1); f.profile.loggingRunActive=true; f.setPlot(0,LoggingRules.SAPLING);
+        f.blocks.put(f.profile.loggingPlots.get(0).corner(),LoggingRules.LOG);
+        var stage=LoggingModule.class.getDeclaredField("stage"); stage.setAccessible(true);
+        stage.set(f.module,Arrays.stream(stage.getType().getEnumConstants()).filter(v -> v.toString().equals("FINISH")).findFirst().orElseThrow());
+        assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertTrue(f.profile.loggingRunActive); assertTrue(f.profile.nextEligibleDay.isEmpty()); assertTrue(f.actions.isEmpty());
     }
 
     @Test void completedPlotIsNotRecutAfterResetWhileTheRemainingPlotIsStillPending() {

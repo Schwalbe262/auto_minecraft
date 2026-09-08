@@ -99,6 +99,8 @@ class LoggingSafetyTest {
     @Test void trashAllowsExactTwigButNotVanillaStickWoodOrBerries() {
         Fixture f = new Fixture(); f.actions.trashSupported = true;
         ItemData twig = item(LoggingRules.TWIG, 10, 0); f.world.put(9, twig);
+        assertNotNull(f.reject(new Action.TrashLogging(9, twig)),"Even twig disposal waits for a coherent completed 2x2 pattern");
+        f.planted();
         assertNull(f.reject(new Action.TrashLogging(9, twig)));
         for (String id : List.of("minecraft:stick", LoggingRules.LOG, LoggingRules.FIRE_LOG, LoggingRules.BERRY, ItemData.ROTTEN)) {
             ItemData other = item(id, 10, 0); f.world.put(9, other);

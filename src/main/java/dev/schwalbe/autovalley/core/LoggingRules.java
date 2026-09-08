@@ -67,6 +67,15 @@ public final class LoggingRules {
     public static boolean byproduct(ItemData item) { return item.is(BERRY); }
     public static boolean waste(ItemData item) { return item.is(SAPLING) || item.is(TWIG); }
     public static boolean stump(BlockData block) { return block!=null && (block.id().equals(LOG) || block.id().equals(CHOPPED_LOG)); }
+    /** A coherent 2x2 planting pattern, not proof of a particular generated canopy. */
+    public static boolean completePlanting(WorldAccess world,LoggingPlot plot) {
+        return plot.plantingPositions().stream().allMatch(p -> world.loaded(p) && world.block(p).id().equals(SAPLING))
+            || plot.plantingPositions().stream().allMatch(p -> world.loaded(p) && world.block(p).id().equals(LOG));
+    }
+    public static boolean partiallyGrown(WorldAccess world,LoggingPlot plot) {
+        long logs=plot.plantingPositions().stream().filter(p -> world.loaded(p) && world.block(p).id().equals(LOG)).count();
+        return logs>0 && logs<4;
+    }
     public static int count(WorldAccess world,String id) {
         return world.inventory().stream().filter(s -> s.player() && s.inventoryIndex()>=0 && s.inventoryIndex()<36)
             .map(ItemSlot::item).filter(i -> i.is(id)).mapToInt(ItemData::count).sum();
@@ -83,6 +92,9 @@ public final class LoggingRules {
         return c.world().loggingTreeRejection(pos,c.profile().loggingPlots);
     }
     public static String plantRejection(Pos pos,Context c) {
+        for (LoggingPlot plot:c.profile().loggingPlots)
+            if (plot.plantingPositions().contains(pos) && c.profile().loggingReplantingPlots.contains(plot.corner())
+                && partiallyGrown(c.world(),plot)) return "2x2 재식재 중 일부 나무만 자랐습니다. 자동으로 다시 베거나 남은 칸을 채우지 않습니다.";
         if (!allowed(c) || !base(c.profile(),pos) || c.world().menu().container()
             || !SafetyPolicy.held(c.world()).is(SAPLING) || !c.world().loaded(pos)
             || !c.world().canPlantLoggingSapling(pos)) return "등록한 빈 식재 칸에 가문비나무 묘목만 심을 수 있습니다.";
@@ -97,14 +109,10 @@ public final class LoggingRules {
         var menu=c.world().menu().slots().stream().filter(s -> s.player() && s.inventoryIndex()==trash.inventoryIndex()).toList();
         if (matches.size()!=1 || menu.size()!=1 || !trash.expected().equals(matches.get(0).item())
             || !trash.expected().equals(menu.get(0).item())) return "폐기할 벌목 부산물의 재고가 바뀌었습니다.";
+        if (c.profile().loggingPlots.isEmpty()) return "재식재 구역을 먼저 등록하세요.";
+        for (LoggingPlot plot:c.profile().loggingPlots)
+            if (!completePlanting(c.world(),plot)) return "모든 구역의 2x2 묘목 또는 네 기둥을 먼저 확인한 뒤 부산물을 폐기합니다.";
         if (trash.expected().is(SAPLING)) {
-            // Complete all missing plantings before deleting even a single spare stack.
-            if (c.profile().loggingPlots.isEmpty()) return "재식재 구역을 먼저 등록하세요.";
-            for (LoggingPlot plot:c.profile().loggingPlots) for (Pos base:plot.plantingPositions()) {
-                if (!c.world().loaded(base)) return "재식재 상태를 아직 확인할 수 없습니다.";
-                String id=c.world().block(base).id();
-                if (!id.equals(SAPLING) && !id.equals(LOG)) return "빈 식재 칸을 먼저 채운 뒤 잉여 묘목을 폐기합니다.";
-            }
             if (count(c.world(),SAPLING)-trash.expected().count()<c.profile().loggingSaplingReserve)
                 return "설정한 예비 묘목 수량을 남겨야 합니다.";
         }

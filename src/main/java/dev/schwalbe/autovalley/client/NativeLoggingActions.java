@@ -28,7 +28,7 @@ final class NativeLoggingActions {
     final Pos target;
     private final boolean planting;
     private final ItemStack held;
-    private final int heldIndex,menuId,sourceMenuSlot;
+    private final int heldIndex;
     private final BlockState original;
     private final Map<Pos,Integer> beforeChops;
     private final Map<Pos,BlockState> beforeStates;
@@ -43,9 +43,7 @@ final class NativeLoggingActions {
         planting=action instanceof Action.PlantSapling;
         target=planting ? ((Action.PlantSapling)action).pos() : ((Action.ChopTree)action).pos();
         generation=observations.generation(); beforeSequence=observations.sequence();
-        heldIndex=mc.player.getInventory().selected; held=mc.player.getMainHandItem().copy(); menuId=mc.player.inventoryMenu.containerId;
-        sourceMenuSlot=mc.player.inventoryMenu.slots.stream().filter(s -> s.container==mc.player.getInventory() && s.getContainerSlot()==heldIndex)
-            .mapToInt(s -> s.index).findFirst().orElseThrow();
+        heldIndex=mc.player.getInventory().selected; held=mc.player.getMainHandItem().copy();
         original=mc.level.getBlockState(MinecraftWorld.nativePos(target));
         if (planting) {
             if (!held.is(Items.SPRUCE_SAPLING) || !canPlant(mc,target)) throw new IllegalArgumentException("Sapling planting position changed");
@@ -66,13 +64,14 @@ final class NativeLoggingActions {
         }
     }
     void begin(Minecraft mc,ServerObservations observations) {
-        started=true; // A throwing network call may already have sent its request.
         if (planting) {
             BlockHitResult hit=plantHit(mc,target);
             if (hit==null) throw new IllegalArgumentException("The planting soil UP face is not visible");
+            started=true; // A throwing native use may already have sent its request.
             mc.gameMode.useItemOn(mc.player,InteractionHand.MAIN_HAND,hit);
             mc.player.swing(InteractionHand.MAIN_HAND);
         } else {
+            started=true; // A throwing network call may already have sent its request.
             send(mc,observations,ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK);
             // Instant native blocks are handled by START on the server. Never invent a STOP.
             stopped=progress>=1;
@@ -130,13 +129,13 @@ final class NativeLoggingActions {
     boolean confirmed(ServerObservations observations) {
         if (generation!=observations.generation()) return false;
         if (planting) {
-            boolean planted=observations.nativeBlocksSince(beforeSequence).stream().anyMatch(s -> s.pos().equals(target)
-                && (s.state().is(Blocks.SPRUCE_SAPLING) || s.state().is(Blocks.SPRUCE_LOG)));
-            if (!planted) return false;
-            for (var ack:observations.fullNativeMenuSnapshotsSince(menuId,beforeSequence))
-                if (ack.carried().isEmpty() && sourceMenuSlot<ack.items().size() && consumedOne(ack.items().get(sourceMenuSlot))) return true;
-            return observations.nativeSlotSnapshotsSince(menuId,beforeSequence).stream()
-                .anyMatch(s -> s.slot()==sourceMenuSlot && s.appliedMenu().carried().isEmpty() && consumedOne(s.packetItem()));
+            // Placement is a world postcondition, not an inventory transfer. Concurrent
+            // falling-tree pickups may coalesce away the transient held-count decrement.
+            // Only raw server block replies enter this proof; client prediction does not.
+            return plantingConfirmed(started,original.isAir(),!held.isEmpty() && held.is(Items.SPRUCE_SAPLING),
+                generation,observations.generation(),beforeSequence,target,
+                observations.nativeBlocksSince(beforeSequence).stream().map(s -> new PlantBlockAck(s.seq(),s.pos(),
+                    s.state().is(Blocks.SPRUCE_SAPLING) || s.state().is(Blocks.SPRUCE_LOG))).toList());
         }
         for (var ack:observations.nativeChopsSince(beforeSequence)) {
             Integer before=beforeChops.get(ack.pos());
@@ -146,8 +145,18 @@ final class NativeLoggingActions {
             && (s.state().isAir() && !beforeStates.get(s.pos()).isAir() || beforeStates.get(s.pos()).is(Blocks.SPRUCE_LOG)
                 && LoggingRules.CHOPPED_LOG.equals(BuiltInRegistries.BLOCK.getKey(s.state().getBlock()).toString())));
     }
-    private boolean consumedOne(ItemStack after) {
-        return held.getCount()==1 && after.isEmpty() || !after.isEmpty() && ItemStack.isSameItemSameTags(held,after) && after.getCount()==held.getCount()-1;
+    record PlantBlockAck(long sequence,Pos pos,boolean planted) { }
+    /** Reduced raw-block proof, kept pure so stale/latest/connection guards can be tested without a running registry. */
+    static boolean plantingConfirmed(boolean started,boolean originalAir,boolean saplingHeld,
+            long generation,long currentGeneration,long beforeSequence,Pos target,List<PlantBlockAck> replies) {
+        if (!started || !originalAir || !saplingHeld || generation!=currentGeneration || target==null || replies==null) return false;
+        PlantBlockAck latest=null;
+        for (PlantBlockAck reply:replies) {
+            if (reply==null || reply.pos()==null) return false;
+            if (reply.sequence()>beforeSequence && target.equals(reply.pos())
+                && (latest==null || reply.sequence()>latest.sequence())) latest=reply;
+        }
+        return latest!=null && latest.planted();
     }
     void abort(Minecraft mc,ServerObservations observations) {
         if (!planting && started && !aborted && generation==observations.generation() && mc.getConnection()!=null) {
