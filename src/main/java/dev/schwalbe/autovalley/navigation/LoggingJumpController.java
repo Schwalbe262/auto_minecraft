@@ -24,6 +24,8 @@ public class LoggingJumpController {
     public Phase phase() { return phase; }
     public boolean attempted() { return attempted; }
     public String failureReason() { return failure; }
+    /** Presentation only; subclasses retain the same verified motion and failure guards. */
+    protected String actionLabel() { return "벌목 오르기"; }
 
     public Navigation.Result tick(Context c) {
         if (phase==Phase.FAILED) return Navigation.Result.BLOCKED;
@@ -32,7 +34,7 @@ public class LoggingJumpController {
         if (!(loggingAuthority ? LoggingJumpRules.permitted(edge,c) : StepUpRules.permitted(edge,c)))
             return fail("한 칸 오르기의 권한이나 안전 지형이 바뀌었습니다.");
         long now=c.world().tick();
-        if (lastTick!=Long.MIN_VALUE && now<lastTick) return fail("벌목 오르기 중 시간이 되돌아갔습니다. 자동 재점프하지 않습니다.");
+        if (lastTick!=Long.MIN_VALUE && now<lastTick) return fail(actionLabel()+" 중 시간이 되돌아갔습니다. 자동 재점프하지 않습니다.");
         // Multiple module calls in one client tick must not clear the launch pulse before physics runs.
         if (now==lastTick) return Navigation.Result.MOVING;
         lastTick=now;
@@ -41,16 +43,16 @@ public class LoggingJumpController {
         }
         if (Math.abs(c.world().standingY(edge.from())-fromHeight)>.00001
             || Math.abs(c.world().standingY(edge.to())-toHeight)>.00001)
-            return fail("벌목 오르기의 출발 또는 착지 지면 높이가 바뀌었습니다.");
+            return fail(actionLabel()+"의 출발 또는 착지 지면 높이가 바뀌었습니다.");
         PlayerState p=c.world().player();
         boolean measuredMotion=motionSample!=null && now-motionSampleTick==1;
         double vx=measuredMotion ? p.x()-motionSample.x() : 0;
         double vz=measuredMotion ? p.z()-motionSample.z() : 0;
         motionSample=p; motionSampleTick=now;
         if (phase==Phase.PREPARE) {
-            if (now-startedTick>60) return fail("벌목 오르기 출발점에 안전하게 정렬하지 못했습니다.");
+            if (now-startedTick>60) return fail(actionLabel()+" 출발점에 안전하게 정렬하지 못했습니다.");
             if (!p.onGround() || Math.abs(p.y()-fromHeight)>LoggingJumpRules.HEIGHT_TOLERANCE
-                || !LoggingJumpRules.centered(p,edge.from(),.45)) return fail("벌목 오르기는 확인된 출발 지면에서만 시작합니다.");
+                || !LoggingJumpRules.centered(p,edge.from(),.45)) return fail(actionLabel()+"는 확인된 출발 지면에서만 시작합니다.");
             if (!LoggingJumpRules.centered(p,edge.from(),LoggingJumpRules.SOURCE_CENTER)) {
                 quietSamples=0; preparedSample=null; steer(c.actions(),p,edge.from()); return Navigation.Result.MOVING;
             }
@@ -63,18 +65,18 @@ public class LoggingJumpController {
                 return fail("네이티브 한 칸 오르기 시작이 거절되었습니다. 재전송하지 않습니다.");
             return Navigation.Result.MOVING;
         }
-        if (now-launchTick>40) return fail("벌목 오르기 착지가 시간 안에 확인되지 않았습니다. 자동 재점프하지 않습니다.");
+        if (now-launchTick>40) return fail(actionLabel()+" 착지가 시간 안에 확인되지 않았습니다. 자동 재점프하지 않습니다.");
         // Once native ground contact at the landing height was observed, inertia
         // is grounded motion, not a reason to enlarge the airborne permission.
         if (phase==Phase.LAND) return land(c,p,measuredMotion,vx,vz);
-        if (!LoggingJumpRules.insideFlight(edge,p,fromHeight)) return fail("벌목 오르기의 검증된 비행 범위를 벗어났습니다.");
+        if (!LoggingJumpRules.insideFlight(edge,p,fromHeight)) return fail(actionLabel()+"의 검증된 비행 범위를 벗어났습니다.");
         if (p.onGround() && Math.abs(p.y()-toHeight)<=LoggingJumpRules.HEIGHT_TOLERANCE) {
             phase=Phase.LAND; c.actions().stopMovement();
             return land(c,p,measuredMotion,vx,vz);
         }
         if (p.onGround()) {
             if (phase==Phase.FLIGHT || now-launchTick>4 || Math.abs(p.y()-fromHeight)>LoggingJumpRules.HEIGHT_TOLERANCE)
-                return fail("벌목 오르기의 이륙 또는 착지가 확인되지 않았습니다. 자동 재점프하지 않습니다.");
+                return fail(actionLabel()+"의 이륙 또는 착지가 확인되지 않았습니다. 자동 재점프하지 않습니다.");
         } else phase=Phase.FLIGHT;
         if (!(loggingAuthority ? c.actions().moveLoggingJump(edge,false) : c.actions().moveStepUp(edge,false)))
             return fail("한 칸 오르기의 안전한 공중 이동이 거절되었습니다.");
@@ -83,12 +85,12 @@ public class LoggingJumpController {
 
     private Navigation.Result land(Context c,PlayerState p,boolean measuredMotion,double vx,double vz) {
         if (!p.onGround() || Math.abs(p.y()-toHeight)>LoggingJumpRules.HEIGHT_TOLERANCE)
-            return fail("벌목 오르기 착지 확인 중 다시 지면에서 벗어났습니다.");
+            return fail(actionLabel()+" 착지 확인 중 다시 지면에서 벗어났습니다.");
         // Early native landing can happen with only the body's leading edge on
         // the riser. Keep that original corridor, plus only the SAME verified
         // high landing cell. Airborne motion never receives this wider allowance.
         if (!LoggingJumpRules.insideFlight(edge,p,fromHeight) && !LoggingJumpRules.centered(p,edge.to(),.45))
-            return fail("벌목 오르기의 확인된 착지 지면을 벗어났습니다.");
+            return fail(actionLabel()+"의 확인된 착지 지면을 벗어났습니다.");
         double speed=Math.hypot(vx,vz);
         if (measuredMotion && speed<=.002 && LoggingJumpRules.centered(p,edge.to(),LoggingJumpRules.LANDING_CENTER)) {
             c.actions().stopMovement();
@@ -118,7 +120,7 @@ public class LoggingJumpController {
     }
 
     /** Cancellation latches this controller; it can never issue another launch. */
-    public void cancel() { if (phase!=Phase.COMPLETE) fail("벌목 오르기가 취소되었습니다. 같은 요청을 재전송하지 않습니다."); }
+    public void cancel() { if (phase!=Phase.COMPLETE) fail(actionLabel()+"가 취소되었습니다. 같은 요청을 재전송하지 않습니다."); }
     private Navigation.Result fail(String message) {
         phase=Phase.FAILED; failure=message;
         if (lastActions!=null) lastActions.stopMovement();
