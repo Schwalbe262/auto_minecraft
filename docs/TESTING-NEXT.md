@@ -1432,3 +1432,13 @@ its 200 ms sampling does not reconstruct every intervening physics frame.
 Continuous automation resumed at 13:57:34 UTC and remains under observation.
 These movement retests do not establish three-hour uninterrupted acceptance or
 close the separate coordinate-UI acceptance requirement.
+
+The subsequent continuous window ended on detected manual input at 14:02:24 UTC,
+after about four minutes fifty seconds. Its 290 one-second samples had no missing
+sample indices, trace-write errors, navigation failure, native failure fence or
+pending output; the maximum observation interval was 1.010 seconds. Final action
+receipts were contiguous: 366 succeeded and the last was cancelled, with none
+failed or unresolved. No automated wine/preserves production or actual sleep was
+observed in this window. Machine-state changes outside the active work are not
+credited to automation. The client remained OFF for manual control, and the
+three-hour uninterrupted acceptance requirement remains unverified.
