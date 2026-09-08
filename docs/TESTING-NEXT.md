@@ -645,3 +645,29 @@ verification. No new inventory interruption was induced in the running soak test
   This is recovery evidence, **not a post-fix endurance pass**. The 681-test build
   failed this live window. The separate mid-transaction manual-handoff limitation
   above remains unverified; the corrected build needs a new uninterrupted run.
+
+### Sixth build: remaining-batch preflight and new continuous start
+
+- Source `d985e04`, **694 passing tests**, was installed by a normal restart.
+  Snapshot SHA-256:
+  `36F735C975806F3263D4D1A634B55F3362A4FAFA1C16D86D4EDD24B11F289D4E`.
+  The guarded recovery above precedes this new observation window; it is not
+  counted as uninterrupted operation.
+- A wine-only preflight completed the remaining **60 refills** with all 136
+  actions successful, including 70 consolidations, without a source survey.
+  Tomatoes fell from 188 to 8 and wine rose from 323 to **383, not 384**.
+  All 384 kegs were then working; the common batch became inactive, with no
+  remaining members and next due day 371, six days after the final feed on 365.
+- Continuous operation then stored the eight leftover tomatoes. Of the 383
+  wine bottles, **192 were stored and 191 shipped as verified surplus**;
+  confirmed shipping transfers were **64 + 64 + 62 + 1**. Player inventory
+  contained no remaining wine when harvesting began. This is item-transfer
+  evidence, not monetary payout or an independent audit of the whole reserve.
+- The new first ON sample is **2026-09-08 02:23:47.6879135 UTC**. Through the
+  fixed **02:26:00 UTC** bound, 133 samples remained ON/connected and all 132
+  post-preflight actions succeeded, with no missing action, native failure or
+  late-reply flag, navigation error or trace loss. Harvesting was still active;
+  no full harvest cycle or three-hour endurance pass is claimed.
+- All earlier anchors and preflight time are excluded. The earliest qualifying
+  three-hour end is conservatively **2026-09-08 05:23:48 UTC**. Build/preflight
+  success and this initial two-minute interval do not establish long-run safety.
