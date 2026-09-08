@@ -22,7 +22,7 @@ class MachineApproachTest {
         assertEquals(1,f.uses,"Pending machine acknowledgement never causes another use");
     }
 
-    @Test void alreadyEquippedMachineWaitsTwoWorldTicksNotTwoPolls() {
+    @Test void alreadyEquippedMachineCountsTwoWorldTicksFromArrivalNotTwoPolls() {
         Fixture f=new Fixture(); f.equipped();
         WorkResult result=null;
         for (int n=0;n<15;n++) {
@@ -31,22 +31,61 @@ class MachineApproachTest {
             f.advance();
         }
         assertNotNull(result); assertTrue(result.message().contains("정지 안정화"));
+        assertEquals(f.firstStopTick+1,f.ticks);
         for (int n=0;n<10;n++) f.step();
         assertEquals(0,f.uses); assertTrue(f.profile.pendingMachineOutputs.isEmpty());
-        f.advance(); f.step(); assertEquals(0,f.uses);
         f.advance(); f.step(); assertEquals(1,f.uses);
+        assertEquals(f.firstStopTick+2,f.ticks);
         assertTrue(f.stopCalls>0);
+    }
+
+    @Test void equipmentAcknowledgementDoesNotRestartTheCompletedStopWindow() {
+        for (Feature feature:new Feature[]{Feature.PRESERVES,Feature.WINE}) {
+            Fixture f=new Fixture(feature);
+            for (int n=0;n<20 && !(f.pending instanceof Action.SelectHotbar);n++) { f.step(); if (!(f.pending instanceof Action.SelectHotbar)) f.advance(); }
+            assertInstanceOf(Action.SelectHotbar.class,f.pending);
+            assertEquals(0,f.uses);
+            assertTrue(f.ticks-f.firstStopTick>=2);
+            f.advance(); f.step();
+            assertEquals(1,f.uses,"An acknowledged selection can dispatch immediately after the existing stop window");
+            for (int n=0;n<10;n++) f.step();
+            assertEquals(1,f.uses,"A pending machine ACK is never bypassed or replayed");
+        }
+    }
+
+    @Test void elapsedStopWindowNeverBypassesAnUnconfirmedEquipmentAction() {
+        Fixture f=new Fixture(Feature.WINE);
+        for (int n=0;n<20 && !(f.pending instanceof Action.SwapHotbar);n++) { f.step(); if (!(f.pending instanceof Action.SwapHotbar)) f.advance(); }
+        assertInstanceOf(Action.SwapHotbar.class,f.pending);
+        for (int n=0;n<10;n++) { f.ticks++; f.step(); }
+        assertEquals(0,f.uses); assertInstanceOf(Action.SwapHotbar.class,f.pending);
+        f.advance(); f.step(); assertInstanceOf(Action.SelectHotbar.class,f.pending);
+        for (int n=0;n<10;n++) { f.ticks++; f.step(); }
+        assertEquals(0,f.uses); assertInstanceOf(Action.SelectHotbar.class,f.pending);
+        f.advance(); f.step(); assertEquals(1,f.uses);
     }
 
     @Test void reachLostWhileSettlingIsCheckedAgainBeforeWriteAheadRecord() {
         Fixture f=new Fixture(); f.equipped();
         for (int n=0;n<15;n++) { if (f.step().message().contains("정지 안정화")) break; f.advance(); }
         f.reachable=false;
-        f.advance(); f.step(); f.advance();
+        f.advance();
         WorkResult result=f.step();
         assertEquals(0,f.uses); assertEquals(0,f.checkpoints);
         assertTrue(f.profile.pendingMachineOutputs.isEmpty());
         assertTrue(result.message().contains("상호작용 위치 재접근"));
+    }
+
+    @Test void reapproachCannotBorrowAnEarlierArrivalStopWindow() {
+        Fixture f=new Fixture(); f.equipped();
+        for (int n=0;n<15;n++) { if (f.step().message().contains("정지 안정화")) break; f.advance(); }
+        f.reachable=false; f.advance();
+        assertTrue(f.step().message().contains("상호작용 위치 재접근"));
+        f.repairOnNavigation=true; f.step();
+        for (int n=0;n<10;n++) f.step();
+        assertEquals(0,f.uses);
+        f.advance(); f.step(); assertEquals(0,f.uses);
+        f.advance(); f.step(); assertEquals(1,f.uses);
     }
 
     @Test void highRackStillUsesTheFullNativeFourBlockReach() {
@@ -101,7 +140,7 @@ class MachineApproachTest {
         final List<Double> navigationReaches=new ArrayList<>(),interactionReaches=new ArrayList<>();
         final List<GroundItem> ground=new ArrayList<>();
         Integer wineYear=9;
-        long ticks,ticket; int selected=4,uses,checkpoints,stopCalls;
+        long ticks,ticket,firstStopTick=-1; int selected=4,uses,checkpoints,stopCalls;
         boolean reachable=true,loaded=true,loseReachOnEquip,repairOnNavigation;
         double minimumReach;
         Action pending; ActionOutcome outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
@@ -150,7 +189,7 @@ class MachineApproachTest {
         }
         public ActionOutcome outcome(long ticket) { return outcome; }
         public void move(Movement movement) { throw new AssertionError(); }
-        public void stopMovement() { stopCalls++; }
+        public void stopMovement() { stopCalls++; if(firstStopTick<0) firstStopTick=ticks; }
         public void cancel() { pending=null; }
         public Result moveTo(Pos target,double reach,Context context) {
             navigationReaches.add(reach); if(repairOnNavigation) reachable=true;

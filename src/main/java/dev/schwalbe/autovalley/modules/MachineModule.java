@@ -18,7 +18,7 @@ public final class MachineModule implements AutomationModule {
     private final Map<Pos,BlockData> wineObservations=new LinkedHashMap<>();
     private Set<Pos> wineObservationTargets=Set.of();
     private long wineObservationDay=Long.MIN_VALUE,wineObservationRetry;
-    private static final int OUTPUT_SETTLE_TICKS = 5;
+    private static final int USE_SETTLE_TICKS = 2;
     private static final int PRESERVES_MORNING_SNAPSHOT_TICK = 240;
     private static final int RESERVED_OUTPUT_SLOTS = 2;
     private boolean stockReady, freshForHaul;
@@ -69,7 +69,7 @@ public final class MachineModule implements AutomationModule {
                     if (invalid != null) return fail(invalid);
                     stage = Stage.FETCH;
                 }
-                case SWAP, SELECT -> { useSettleAt = -1; stage = Stage.EQUIP; }
+                case SWAP, SELECT -> stage = Stage.EQUIP;
                 case USE -> { stage = Stage.VERIFY; verifySince = c.world().tick(); }
                 case INPUT_MERGE -> {
                     if (result.confirmedCount()==0 && !pendingReposition) rejectedInputMerge=pendingMergeState;
@@ -271,7 +271,7 @@ public final class MachineModule implements AutomationModule {
                     }
                     if (!feeding && !block.flag("mature")) { machineIndex++; stage = Stage.MACHINE; break; }
                     c.actions().stopMovement();
-                    useSettleAt = -1;
+                    useSettleAt = c.world().tick();
                     hotbar = (c.profile().hoeHotbarSlot + 1) % 9; stage = Stage.EQUIP;
                 }
             }
@@ -308,10 +308,11 @@ public final class MachineModule implements AutomationModule {
                     return fail("Pick up previously dropped "+outputId()+" before collecting another completed machine");
                 // Arrival is not a lease on reach: inventory selection takes multiple
                 // ticks and residual movement can leave the native hit ray out of range.
-                // Stop, allow two real game ticks to settle, then check the actual ray
-                // immediately before a write-ahead obligation or any machine dispatch.
+                // Count the two real stopped ticks from arrival, including time already
+                // spent awaiting equipment ACKs; selecting a slot does not restart motion.
+                // Recheck the actual ray immediately before a write-ahead obligation or use.
                 if (useSettleAt < 0) useSettleAt = c.world().tick();
-                if (c.world().tick() - useSettleAt < 2)
+                if (c.world().tick() - useSettleAt < USE_SETTLE_TICKS)
                     return WorkResult.busy(machineStatus("상호작용 전 정지 안정화"));
                 if (!c.world().loaded(target().pos()) || !c.world().canInteract(target().pos(),4.0)) {
                     useSettleAt = -1; c.navigation().reset(); stage = Stage.RETURN;
@@ -356,7 +357,9 @@ public final class MachineModule implements AutomationModule {
                     outputOperationId=null; outputMergeAttempts=0; stage=Stage.OUTPUT; break;
                 }
                 if (c.world().tick() - verifySince > c.profile().interactionTimeoutTicks) return fail("Completed product was not picked up; inspect the machine output side");
-                Pos observed = c.world().tick()-verifySince < OUTPUT_SETTLE_TICKS ? null : observedPickup(c);
+                // Machine/input acknowledgement has already completed. A currently observed,
+                // standable pickup position is enough to approach; a fixed delay adds no proof.
+                Pos observed = observedPickup(c);
                 if (observed == null) {
                     c.actions().stopMovement();
                     return WorkResult.busy(machineStatus("완성된 병조림 회수 대기"));

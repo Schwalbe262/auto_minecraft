@@ -1385,6 +1385,47 @@ class LogisticsTest {
         assertTrue(f.navigationHistory.stream().filter(v -> v.target().equals(source)).allMatch(v -> v.reach()==2.5));
     }
 
+    @Test void confirmedPreservesOutputApproachesAnObservedSafeFloorWithoutFiveTickDelay() {
+        Fixture f=new Fixture(); f.inventory[0]=tomato(0,9); f.pickup=false;
+        f.machine(PoiKind.PRESERVES_JAR,1,66,true,true,true);
+        MachineModule module=new MachineModule(Feature.PRESERVES);
+        PendingMachineOutput output=f.awaitPickup(module);
+        Pos floor=new Pos(1,64,-1);
+        f.ground.add(new GroundItem(1,1.5,64.01,-.5,preserves(1)));
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+        assertTrue(f.navigationHistory.stream().anyMatch(v -> v.target().equals(floor) && v.reach()==.9),
+            "The first post-confirmation pickup tick already has a verified destination");
+        assertEquals(output,f.profile.pendingMachineOutputs.get(output.id()),"Approaching is not pickup evidence");
+        assertEquals(1,f.machineClicks());
+    }
+
+    @Test void earlyObservedPreservesNeverBypassesThePendingMachineAcknowledgement() {
+        Fixture f=new Fixture(); f.inventory[0]=tomato(0,9); f.pickup=false;
+        f.machine(PoiKind.PRESERVES_JAR,1,66,true,true,true);
+        MachineModule module=new MachineModule(Feature.PRESERVES);
+        for (int n=0;n<30 && f.machineClicks()==0;n++) { module.tick(f.context()); if(f.machineClicks()==0) f.advance(); }
+        assertEquals(1,f.machineClicks());
+        f.ground.add(new GroundItem(1,1.5,64.01,-.5,preserves(1)));
+        for (int n=0;n<10;n++) { f.ticks++; assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state()); }
+        assertTrue(f.navigationHistory.stream().noneMatch(v -> v.reach()==.9));
+        assertEquals(PendingMachineOutput.Phase.AWAITING_MACHINE_CONFIRMATION,
+            f.profile.pendingMachineOutputs.values().iterator().next().phase());
+        assertEquals(1,f.machineClicks());
+    }
+
+    @Test void missingObservedPickupDoesNotInventAFloorAfterRemovingFixedDelay() {
+        Fixture f=new Fixture(); f.inventory[0]=tomato(0,9); f.pickup=false;
+        f.machine(PoiKind.PRESERVES_JAR,1,66,true,true,true);
+        MachineModule module=new MachineModule(Feature.PRESERVES);
+        PendingMachineOutput output=f.awaitPickup(module);
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+        assertTrue(f.navigationHistory.stream().noneMatch(v -> v.reach()==.9));
+        assertEquals(output,f.profile.pendingMachineOutputs.get(output.id()));
+        f.pickup=true; f.advance(); module.tick(f.context());
+        assertTrue(f.profile.pendingMachineOutputs.isEmpty(),"Real inventory pickup clears without an artificial delay");
+        assertEquals(1,f.machineClicks());
+    }
+
     @Test void observedOutputOnPartialHeightSupportUsesTheVerifiedSurfaceCell() {
         for (double surface:new double[]{63.5,63.9375}) {
             Fixture f=new Fixture(); f.inventory[0]=tomato(0,9); f.pickup=false;
