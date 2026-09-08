@@ -35,7 +35,9 @@ public final class MinecraftActions implements ActionPort {
     private ContainerShape openingShape, ownedShape;
     private int ownedMenu=-1;
     private NativeInventoryConsolidation consolidation, lateInventoryReply;
-    private boolean consolidationInFlight;
+    private boolean consolidationInFlight,lateInventoryReplyInFlight;
+    private ConsolidationRecoveryBudget consolidationRecovery;
+    private long lateInventoryResolutionGeneration,lateInventoryResolutionAfter;
     private String consolidationFailure;
     private long failureGeneration;
     private NativeTrashSlot trash,lateTrashReply;
@@ -54,6 +56,12 @@ public final class MinecraftActions implements ActionPort {
     public boolean busy() { return pending!=null; }
     @Override public boolean supportsMovingHarvest() { return true; }
     @Override public boolean supportsInventoryTrash() { return NativeTrashSlot.available(); }
+    @Override public String recoveryStatus() {
+        if (pending instanceof Action.ConsolidateInventory && consolidationRecovery!=null && consolidationRecovery.recovering())
+            return "인벤토리 정리 재확인 중 ("+((consolidationRecovery.remainingTicks(world.tick())+19)/20)
+                +"초 이내) — 같은 클릭을 재전송하지 않고 서버 확인 후 이어갑니다";
+        return null;
+    }
     public Movement movement() { return enabled && world.tick()-movementAt<=2 ? movement : null; }
     public boolean ownsContainer() {
         MenuData menu=world.menu();
@@ -134,6 +142,7 @@ public final class MinecraftActions implements ActionPort {
         } else if (action instanceof Action.ConsolidateInventory merge) {
             consolidation=NativeInventoryConsolidation.create(mc.player,merge.plan(),observations,context.profile().hoeHotbarSlot);
             if (consolidation==null) { finish(ActionOutcome.State.SUCCEEDED,"Native stacks cannot be consolidated",0); return; }
+            consolidationRecovery=new ConsolidationRecoveryBudget();
             sendConsolidationClick();
         } else if (action instanceof Action.TrashRotten rotten) {
             trash=new NativeTrashSlot(mc.player,rotten,observations);
@@ -279,12 +288,15 @@ public final class MinecraftActions implements ActionPort {
         }
     }
     private void sendConsolidationClick() {
+        if (!enabled || consolidation==null || consolidationRecovery==null || !consolidationRecovery.mayContinue(world.tick())) {
+            finish(ActionOutcome.State.FAILED,"인벤토리 정리 재확인 시간이 끝났습니다. 미확인 클릭과 임시 슬롯은 보존했습니다."); return;
+        }
         if (MachineOutputLedger.hasPending(context) || !context.session().allows(context.profile(),consolidation.plan.feature())
             || context.profile().hoeHotbarSlot!=consolidation.protectedHotbar) {
             finish(ActionOutcome.State.FAILED,"Production settings changed; no further inventory clicks were sent"); return;
         }
         if (!consolidation.matchesLive(mc.player,observations)) {
-            finish(ActionOutcome.State.FAILED,"Inventory changed before the next consolidation step; inspect the layout"); return;
+            awaitConsolidationProof(); return;
         }
         var click=consolidation.transaction.click();
         consolidation.beforeSequence=observations.sequence(); started=world.tick();
@@ -299,19 +311,30 @@ public final class MinecraftActions implements ActionPort {
         if (mc.player.containerMenu!=mc.player.inventoryMenu || !mc.player.containerMenu.getCarried().isEmpty()) {
             finish(ActionOutcome.State.FAILED,"Inventory menu or cursor changed; no restoration was sent"); return;
         }
-        for (var acknowledgement:observations.fullNativeMenuSnapshotsSince(consolidation.menuId,consolidation.beforeSequence)) {
-            var confirmation=consolidation.acknowledge(acknowledgement);
-            if (confirmation==InventoryConsolidation.Confirmation.WAIT) continue;
-            consolidationInFlight=false;
-            if (confirmation==InventoryConsolidation.Confirmation.COMPLETE) {
-                finish(ActionOutcome.State.SUCCEEDED,"Server verified inventory consolidation",consolidation.transaction.freedSlots()); return;
+        ConsolidationRecoveryFlow.poll(consolidationRecovery,world.tick(),new ConsolidationRecoveryFlow.Step<ServerObservations.NativeMenuSnapshot>() {
+            public boolean inFlight() { return consolidationInFlight; }
+            public boolean normalTimeout() { return world.tick()-started>=context.profile().interactionTimeoutTicks; }
+            public Iterable<ServerObservations.NativeMenuSnapshot> acknowledgements() {
+                return observations.fullNativeMenuSnapshotsSince(consolidation.menuId,consolidation.beforeSequence);
             }
-            // A later pickup needs exact post-ACK server slot evidence before
-            // rebasing unrelated slots. An unconfirmed primitive is never replayed.
-            sendConsolidationClick(); return;
+            public InventoryConsolidation.Confirmation acknowledge(ServerObservations.NativeMenuSnapshot acknowledgement) { return consolidation.acknowledge(acknowledgement); }
+            public void markAcknowledged() { consolidationInFlight=false; }
+            public void complete() { finish(ActionOutcome.State.SUCCEEDED,"Server verified inventory consolidation",consolidation.transaction.freedSlots()); }
+            // A later pickup needs actual post-ACK slot evidence before rebasing.
+            // This callback never sends the primitive that was just acknowledged.
+            public void sendUnsent() { sendConsolidationClick(); }
+            public void hold() { awaitConsolidationProof(); }
+            public void expired() { finish(ActionOutcome.State.FAILED,"인벤토리 정리 재확인 시간이 끝났습니다. 미확인 클릭과 임시 슬롯은 보존했습니다."); }
+        });
+    }
+    private void awaitConsolidationProof() {
+        stopMovement();
+        if (consolidationRecovery==null || !consolidationRecovery.awaitProof(world.tick())) {
+            finish(ActionOutcome.State.FAILED,"인벤토리 정리 재확인 시간이 끝났습니다. 미확인 클릭과 임시 슬롯은 보존했습니다."); return;
         }
-        if (world.tick()-started>=context.profile().interactionTimeoutTicks)
-            finish(ActionOutcome.State.FAILED,"No exact consolidation acknowledgement; inspect inventory before resuming");
+        // Retain the original ticket and module ownership. It remains PENDING,
+        // so no scheduler neighbour or automatic restart can consume its items.
+        put(pendingTicket,ActionOutcome.State.PENDING,"서버의 정확한 인벤토리 응답 재확인 중 — 클릭 재전송 없음");
     }
     private void tickTrash() {
         if (trash==null || trash.generation!=observations.generation()) {
@@ -353,12 +376,35 @@ public final class MinecraftActions implements ActionPort {
         if (trashFailure!=null) return trashFailure;
         if (failureGeneration!=observations.generation()) consolidationFailure=null;
         if (lateInventoryReply!=null) {
-            if (lateInventoryReply.generation!=observations.generation()) lateInventoryReply=null;
-            else for (var acknowledgement:observations.fullNativeMenuSnapshotsSince(lateInventoryReply.menuId,lateInventoryReply.beforeSequence)) {
-                if (lateInventoryReply.acknowledge(acknowledgement)!=InventoryConsolidation.Confirmation.WAIT) { lateInventoryReply=null; break; }
+            if (lateInventoryReply.generation!=observations.generation() && !lateInventoryReply.transaction.requiresRestoration()) {
+                lateInventoryReply=null;lateInventoryReplyInFlight=false;
+            } else if (lateInventoryReplyInFlight && lateInventoryReply.generation==observations.generation()) {
+                for (var acknowledgement:observations.fullNativeMenuSnapshotsSince(lateInventoryReply.menuId,lateInventoryReply.beforeSequence)) {
+                    if (lateInventoryReply.acknowledge(acknowledgement)==InventoryConsolidation.Confirmation.WAIT) continue;
+                    lateInventoryReplyInFlight=false;
+                    lateInventoryResolutionAfter=Math.max(lateInventoryResolutionAfter,acknowledgement.seq());
+                    if (!lateInventoryReply.transaction.requiresRestoration()) lateInventoryReply=null;
+                    break;
+                }
+            }
+            if (lateInventoryReply!=null && lateInventoryReply.transaction.requiresRestoration()
+                && (!lateInventoryReplyInFlight || lateInventoryReply.generation!=observations.generation())) {
+                // A different generation has terminated the old channel. Its
+                // genuine new FULL packet may prove exact final custody, never
+                // acknowledge/resend the old click or claim production success.
+                long after=lateInventoryResolutionGeneration==observations.generation()?lateInventoryResolutionAfter:-1;
+                for (var acknowledgement:observations.fullNativeMenuSnapshotsSince(lateInventoryReply.menuId,after)) {
+                    if (!ConsolidationRecoveryFlow.manualRestoreCandidate(lateInventoryReplyInFlight,lateInventoryReply.generation,
+                        observations.generation(),lateInventoryResolutionGeneration,lateInventoryResolutionAfter,acknowledgement.seq())) continue;
+                    if (!lateInventoryReply.acknowledgeCancelledRestoration(acknowledgement)) continue;
+                    lateInventoryReply=null;lateInventoryReplyInFlight=false;break;
+                }
             }
         }
-        return lateInventoryReply!=null ? "Waiting for an unconfirmed inventory click's exact server reply; no new actions. Reconnect if it never arrives."
+        if (lateInventoryReply!=null && lateInventoryReply.transaction.requiresRestoration()
+            && (!lateInventoryReplyInFlight || lateInventoryReply.generation!=observations.generation()))
+            return "인벤토리 정리의 빌린 핫바 슬롯 복원이 남아 있습니다. 원래 아이템을 정확히 되돌린 뒤 F8로 다시 확인하세요. 자동 클릭은 보내지 않습니다.";
+        return lateInventoryReply!=null ? "이전 인벤토리 클릭의 정확한 서버 확인이 남아 있습니다. 같은 클릭을 다시 보내거나 자동으로 재접속하지 않습니다."
             : consolidationFailure;
     }
     @Override public String startRejection() {
@@ -371,8 +417,13 @@ public final class MinecraftActions implements ActionPort {
     }
     private void finishConsolidation(ActionOutcome.State state,String message) {
         if (!(pending instanceof Action.ConsolidateInventory)) return;
-        if (consolidationInFlight && consolidation!=null) lateInventoryReply=consolidation;
+        if (consolidation!=null && (consolidationInFlight || consolidation.transaction.requiresRestoration())) {
+            lateInventoryReply=consolidation;lateInventoryReplyInFlight=consolidationInFlight;
+            lateInventoryResolutionGeneration=observations.generation();lateInventoryResolutionAfter=observations.sequence();
+        }
         if (state==ActionOutcome.State.FAILED) { consolidationFailure=message; failureGeneration=observations.generation(); }
+        if (consolidationRecovery!=null) consolidationRecovery.cancel();
+        consolidationRecovery=null;
         consolidation=null; consolidationInFlight=false;
     }
     private void finishTrash(ActionOutcome.State state,String message) {
@@ -514,6 +565,7 @@ public final class MinecraftActions implements ActionPort {
     public void stopMovement() { movement=null; clearLoggingJump(); if (mc.player!=null && enabled) mc.player.setSprinting(false); }
     public void cancel() {
         stopMovement();
+        if (consolidationRecovery!=null) consolidationRecovery.cancel();
         if (pending!=null) finish(ActionOutcome.State.CANCELLED,"Cancelled without additional input");
         // Ownership survives pause only for diagnostics; start() requires manual closure.
     }

@@ -14,6 +14,8 @@ public interface ActionPort {
     default String pauseReason() { return null; }
     /** Explicit manual resume may clear an already-resolved failure, never a late-ACK fence. */
     default String startRejection() { return pauseReason(); }
+    /** Informational bounded same-ticket recovery; null does not clear any action fence. */
+    default String recoveryStatus() { return null; }
     /** Moving/aiming separation must be supported before a module overlaps harvest and walking. */
     default boolean supportsMovingHarvest() { return false; }
     /** Requires a supported server-side TrashSlot single-slot deletion channel. */

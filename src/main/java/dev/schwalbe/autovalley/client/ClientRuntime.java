@@ -51,6 +51,8 @@ public final class ClientRuntime {
     public String status() {
         if (persistenceError!=null) return persistenceError;
         if (coordinateTravel!=null) return coordinateTravel.status();
+        String recovery=running() ? actions.recoveryStatus() : null;
+        if (recovery!=null) return recovery;
         String detail=running() ? navigator.diagnosticStatus() : "";
         return engine.status() + (detail.isBlank() ? "" : " — " + detail);
     }

@@ -1647,3 +1647,35 @@ delayed block updates, sprinkler holes, and temporary client prediction rollback
 Native harvest timing remains pending: live work was interrupted by a higher-
 priority wine inventory acknowledgement failure. No new harvest artifact was
 installed or benchmarked at this checkpoint.
+
+### Wine inventory merge and bounded recovery — 2026-09-09 KST
+
+Read-only native evidence identified a rejected full-menu reply: a two-item wine
+QUICK_MOVE emptied its temporary hotbar slot and increased its exact receiver
+from one to three, while a different native wine identity arrived in another
+inventory slot. The old verifier excluded the entire destination region from
+concurrent pickup classification, rejecting this conserved transfer. The new
+identity-aware exception permits only independently whitelisted positive additions
+that cannot receive the moved native identity; the actual move still requires
+exact source/destination conservation. A raw-server-backed distinct pickup may
+also refresh the next unsent primitive's baseline without acknowledging that click.
+
+The native adapter now retains the same ticket during a bounded confirmation
+grace window rather than immediately discarding its transaction. Delayed exact
+acknowledgements can advance only the next unsent primitive, including the inverse
+SWAP owed for a borrowed hotbar item. The single 600-tick grace deadline cannot be
+renewed by repeated waits or later steps. Cancellation cannot auto-resume, and
+unknown acknowledgements/borrowed-item obligations remain fenced. This is scoped
+inventory recovery, not automatic reconnection or recovery from every game error.
+
+Build, deployment, and resumed native wine results are recorded below when verified.
+
+Final Java 17 offline Gradle `test build`: **1,159 tests / 91 suites**, zero
+failures, errors, or skips. The actual recovery dispatcher has 12 detached tests;
+the focused consolidation/slot-rebase run passed 69 tests. Candidate SHA-256:
+`DE8A00038DC51F76729D019F1FDF05CBA574A89EA867411AD1039BFA8FDEC211`.
+
+Private ticket-specific restoration preflights sent no inventory action: first
+the scratch slot had collected more items, then the user opened a menu and changed
+the inventory while playing. The changed manual layout is preserved rather than
+forcing the earlier layout back. No attempt marker or restoration click was sent.
