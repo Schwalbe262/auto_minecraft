@@ -9,18 +9,25 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.TagParser;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.inventory.CraftingMenu;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.TransientCraftingContainer;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.crafting.Recipe;
+import net.minecraft.world.item.crafting.RecipeType;
 import net.minecraft.world.item.crafting.ShapelessRecipe;
 
-/** One native recipe-book placement and one result QUICK_MOVE, each with a true full ACK. */
+/** Native recipe placement (book or exact manual clicks) and result QUICK_MOVE, with true full ACKs. */
 final class NativeLoggingRecipe {
     final long generation;
     final int menuId,selfSlot,selfHotbar;
     long beforeSequence,stepStarted;
     private final Recipe<?> recipe;
     private final Stack output;
+    private final LoggingCraftPlan.Plan manualPlan;
+    private int manualStep;
+    private boolean manualInFlight;
     private List<Stack> before,placed;
     private int quantity;
     private boolean outputSent,done;
@@ -53,6 +60,13 @@ final class NativeLoggingRecipe {
         before=stacks(mc.player.containerMenu.slots.stream().map(s -> s.getItem()).toList());
         if (count(before,LoggingRules.LOG)<6) throw new IllegalArgumentException("Six spruce logs are required");
         recipe=candidate; output=stack(expected); generation=observations.generation(); beforeSequence=observations.sequence();
+        // Choose once, before any dispatch. Never fall back after an uncertain book
+        // request: it could still populate the real grid later.
+        if (useManualPlacement(mc.player.getRecipeBook().contains(candidate))) {
+            Set<Integer> spruceSlots=new HashSet<>();
+            for (var slot:normal) if (slot.getItem().is(Items.SPRUCE_LOG)) spruceSlots.add(slot.index);
+            manualPlan=LoggingCraftPlan.create(before,Stack.EMPTY,spruceSlots,output,grid -> resultForGrid(mc,grid));
+        } else manualPlan=null;
         menuId=mc.player.containerMenu.containerId;
         selfHotbar=mc.player.getInventory().selected;
         selfSlot=mc.player.containerMenu.slots.stream().filter(s -> s.container==mc.player.getInventory() && s.getContainerSlot()==selfHotbar)
@@ -64,25 +78,97 @@ final class NativeLoggingRecipe {
         return shapeless && canCraft3x3 && LoggingRules.FIRE_LOG.equals(outputId) && outputCount==1
             && acceptsSpruce!=null && acceptsSpruce.size()==6 && acceptsSpruce.stream().allMatch(Boolean.TRUE::equals);
     }
-    static boolean menu(net.minecraft.world.inventory.AbstractContainerMenu menu) {
+    static boolean useManualPlacement(boolean clientBookContains) { return !clientBookContains; }
+    private static boolean menuShape(AbstractContainerMenu menu) {
         return menu instanceof CraftingMenu crafting && crafting.getGridWidth()==3 && crafting.getGridHeight()==3
-            && crafting.getResultSlotIndex()==0 && crafting.getSize()==10 && menu.slots.size()==46 && menu.getCarried().isEmpty();
+            && crafting.getResultSlotIndex()==0 && crafting.getSize()==10 && menu.slots.size()==46;
+    }
+    static boolean menu(net.minecraft.world.inventory.AbstractContainerMenu menu) {
+        return menuShape(menu) && menu.getCarried().isEmpty();
     }
     static boolean gridEmpty(net.minecraft.world.inventory.AbstractContainerMenu menu) {
         if (!menu(menu)) return false;
         for (int i=0;i<10;i++) if (!menu.getSlot(i).getItem().isEmpty()) return false;
         return true;
     }
+    boolean manual() { return manualPlan!=null; }
+    /** Only the current primitive's exact before/after cursor is temporarily owned. */
+    boolean ownsManualMenu(Minecraft mc) {
+        if (!manual() || mc.player==null || !menuShape(mc.player.containerMenu) || mc.player.containerMenu.containerId!=menuId) return false;
+        Stack carried=stack(mc.player.containerMenu.getCarried());
+        if (outputSent || manualStep>=manualPlan.steps().size()) return carried.empty();
+        var step=manualPlan.steps().get(manualStep);
+        return allowedManualCursor(carried,step.before().carried(),step.after().carried(),manualInFlight);
+    }
+    static boolean allowedManualCursor(Stack actual,Stack before,Stack after,boolean inFlight) {
+        return actual!=null && before!=null && after!=null && (actual.equals(before) || inFlight && actual.equals(after));
+    }
+    static int manualPlacementAck(LoggingCraftPlan.Plan plan,int step,boolean inFlight,long beforeSequence,
+            long sequence,LoggingCraftPlan.Snapshot after) {
+        if (plan==null || !inFlight || sequence<=beforeSequence || step<0 || step>=plan.steps().size()
+            || after==null || !plan.steps().get(step).matches(after)) return 0;
+        return step+1==plan.steps().size() ? -1 : -2;
+    }
+    LoggingCraftPlan.Click prepareManualClick(Minecraft mc,long sequence,long tick) {
+        if (!manual() || manualInFlight || outputSent || manualStep>=manualPlan.steps().size()
+            || !ownsManualMenu(mc)) throw new IllegalStateException("Manual crafting state is not ready for another click");
+        var step=manualPlan.steps().get(manualStep);
+        var live=new LoggingCraftPlan.Snapshot(stacks(mc.player.containerMenu.slots.stream().map(s -> s.getItem()).toList()),
+            stack(mc.player.containerMenu.getCarried()));
+        if (!step.before().equals(live)) throw new IllegalStateException("Inventory changed before the next manual crafting click");
+        beforeSequence=sequence; stepStarted=tick;
+        manualInFlight=true; // Set before the network call, which may throw after sending.
+        return step.click();
+    }
+    private static Stack resultForGrid(Minecraft mc,List<Stack> expectedItems) {
+        // This container and its inert parent are detached from the player's menu.
+        // Query recipe data only: never set a live slot, unlock a recipe, or call
+        // an assembly callback that could have mod-defined side effects.
+        AbstractContainerMenu parent=new AbstractContainerMenu(null,-1) {
+            @Override public ItemStack quickMoveStack(Player player,int slot) { return ItemStack.EMPTY; }
+            @Override public boolean stillValid(Player player) { return false; }
+        };
+        var grid=new TransientCraftingContainer(parent,3,3);
+        for (int index=0;index<9;index++) grid.setItem(index,nativeStack(expectedItems.get(index+1)));
+        return mc.level.getRecipeManager().getRecipeFor(RecipeType.CRAFTING,grid,mc.level)
+            .map(found -> stack(found.getResultItem(mc.level.registryAccess()))).orElse(Stack.EMPTY);
+    }
+    private static ItemStack nativeStack(Stack stack) {
+        if (stack.empty()) return ItemStack.EMPTY;
+        try {
+            ItemStack nativeItem=ItemStack.of(TagParser.parseTag(stack.identity()));
+            nativeItem.setCount(stack.count());
+            if (!stack(nativeItem).equals(stack)) throw new IllegalArgumentException("Unexpected manual crafting item fingerprint");
+            return nativeItem;
+        } catch (com.mojang.brigadier.exceptions.CommandSyntaxException failure) {
+            throw new IllegalArgumentException("Invalid manual crafting item fingerprint",failure);
+        }
+    }
     void place(Minecraft mc,Runnable requestFullSnapshot) {
+        if (manual()) throw new IllegalStateException("Manual crafting cannot dispatch recipe-book placement");
         mc.gameMode.handlePlaceRecipe(menuId,recipe,true);
         // An exact self-hotbar SWAP is a no-op even after recipe placement. Its
         // unpredicted state-id forces a complete server reply without touching the grid.
         requestFullSnapshot.run();
     }
-    /** Returns 0 while waiting, -1 when placement was confirmed, or the completed output count. */
+    /** 0 waits, -2 permits the next manual primitive, -1 permits output, positive means completed output. */
     int acknowledge(ServerObservations.NativeMenuSnapshot ack) {
-        if (ack.seq()<=beforeSequence || !ack.carried().isEmpty()) return 0;
+        if (ack.seq()<=beforeSequence) return 0;
         List<Stack> after=stacks(ack.items());
+        if (manual() && !outputSent) {
+            if (after.size()!=46) return 0;
+            int result=manualPlacementAck(manualPlan,manualStep,manualInFlight,beforeSequence,ack.seq(),
+                new LoggingCraftPlan.Snapshot(after,stack(ack.carried())));
+            if (result==0) return 0;
+            if (manualStep+1==manualPlan.steps().size()) {
+                int n=placement(before,after,output);
+                if (n!=manualPlan.quantity() || !ack.carried().isEmpty()) return 0;
+                placed=after; quantity=n;
+            }
+            manualStep++; manualInFlight=false; beforeSequence=ack.seq();
+            return result;
+        }
+        if (!ack.carried().isEmpty()) return 0;
         if (!outputSent) {
             int n=placement(before,after,output);
             if (n==0) return 0;

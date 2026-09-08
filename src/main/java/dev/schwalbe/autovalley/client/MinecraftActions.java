@@ -58,7 +58,8 @@ public final class MinecraftActions implements ActionPort {
     public boolean ownsContainer() {
         MenuData menu=world.menu();
         return menu!=null && menu.container() && menu.id()==ownedMenu && ownedShape!=null
-            && (!ownedShape.blockId().equals("minecraft:crafting_table") || world.loggingCraftingMenu())
+            && (!ownedShape.blockId().equals("minecraft:crafting_table") || world.loggingCraftingMenu()
+                || pending instanceof Action.CraftFireLogs && loggingRecipe!=null && loggingRecipe.ownsManualMenu(mc))
             && ownedShape.equals(containerShape(ownedContainer)) && ownedShape.matches(menu);
     }
     public boolean openingContainer() { return pending instanceof Action.UseBlock use && (use.purpose()==Action.Use.OPEN_CONTAINER || use.purpose()==Action.Use.OPEN_CRAFTING); }
@@ -148,7 +149,8 @@ public final class MinecraftActions implements ActionPort {
             loggingAction.begin(mc,observations);
         } else if (action instanceof Action.CraftFireLogs) {
             loggingRecipe=new NativeLoggingRecipe(mc,observations,world.tick());
-            loggingRecipe.place(mc,() -> confirmedClick(loggingRecipe.menuId,loggingRecipe.selfSlot,loggingRecipe.selfHotbar,ClickType.SWAP));
+            if (loggingRecipe.manual()) sendManualLoggingCraftClick();
+            else loggingRecipe.place(mc,() -> confirmedClick(loggingRecipe.menuId,loggingRecipe.selfSlot,loggingRecipe.selfHotbar,ClickType.SWAP));
         } else if (action instanceof Action.ThrowRotten drop) {
             Look facing=context.profile().disposalDirections.get(Profile.positionKey(drop.disposal()));
             mc.player.setYRot(facing.yaw()); mc.player.setXRot(facing.pitch());
@@ -243,13 +245,14 @@ public final class MinecraftActions implements ActionPort {
     }
     private void tickLoggingRecipe() {
         if (loggingRecipe.generation!=observations.generation() || !LoggingRules.allowed(context)
-            || !ownsContainer() || !world.loggingCraftingMenu()) {
+            || !ownsContainer() || !world.loggingCraftingMenu() && !loggingRecipe.ownsManualMenu(mc)) {
             finish(ActionOutcome.State.FAILED,"제작 중 연결·작업대 또는 권한이 바뀌었습니다. 제작 칸을 확인하세요."); return;
         }
         for (var ack:observations.fullNativeMenuSnapshotsSince(loggingRecipe.menuId,loggingRecipe.beforeSequence)) {
             int result=loggingRecipe.acknowledge(ack);
             if (result>0) { finish(ActionOutcome.State.SUCCEEDED,"서버가 장작 제작을 확인했습니다.",result); return; }
-            if (result<0) {
+            if (result==-2) { sendManualLoggingCraftClick(); return; }
+            if (result==-1) {
                 if (!loggingRecipe.readyToTake(mc)) {
                     finish(ActionOutcome.State.FAILED,"제작 재료 배치 후 인벤토리가 바뀌었거나 장작 공간이 없습니다. 제작 칸을 확인하세요."); return;
                 }
@@ -259,6 +262,21 @@ public final class MinecraftActions implements ActionPort {
         }
         if (world.tick()-loggingRecipe.stepStarted>=context.profile().interactionTimeoutTicks)
             finish(ActionOutcome.State.FAILED,"제작 응답이 불확실합니다. 재료 칸을 자동으로 닫거나 다시 누르지 않습니다.");
+    }
+    private void sendManualLoggingCraftClick() {
+        if (loggingRecipe==null || loggingRecipe.generation!=observations.generation()
+            || !LoggingRules.allowed(context) || !ownsContainer()) {
+            finish(ActionOutcome.State.FAILED,"수동 장작 제작 중 작업대·연결·권한이 바뀌었습니다. 재료를 그대로 보존했습니다."); return;
+        }
+        try {
+            var click=loggingRecipe.prepareManualClick(mc,observations.sequence(),world.tick());
+            confirmedClick(loggingRecipe.menuId,click.slot(),click.button(),switch (click.type()) {
+                case PICKUP -> ClickType.PICKUP;
+                case QUICK_CRAFT -> ClickType.QUICK_CRAFT;
+            });
+        } catch (RuntimeException failure) {
+            finish(ActionOutcome.State.FAILED,"수동 장작 제작 클릭이 불확실하거나 재료가 바뀌었습니다. 재전송하지 않고 제작 칸을 보존했습니다.");
+        }
     }
     private void sendConsolidationClick() {
         if (MachineOutputLedger.hasPending(context) || !context.session().allows(context.profile(),consolidation.plan.feature())
@@ -316,7 +334,9 @@ public final class MinecraftActions implements ActionPort {
         if (lateLoggingRecipe!=null) {
             if (lateLoggingRecipe.generation!=observations.generation()) lateLoggingRecipe=null;
             else for (var ack:observations.fullNativeMenuSnapshotsSince(lateLoggingRecipe.menuId,lateLoggingRecipe.beforeSequence)) {
-                if (lateLoggingRecipe.acknowledge(ack)!=0) { lateLoggingRecipe=null; break; }
+                // An intermediate manual placement ACK never clears a cancelled
+                // multi-click operation or authorizes cleanup/continuation.
+                if (lateLoggingRecipe.acknowledge(ack)>0) { lateLoggingRecipe=null; break; }
             }
         }
         if (lateLoggingAction!=null || lateLoggingSwap!=null || lateLoggingRecipe!=null)

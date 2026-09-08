@@ -241,7 +241,10 @@ public final class LoggingModule implements AutomationModule {
                 if (LoggingRules.count(c.world(),LoggingRules.LOG)<6) {
                     stage=Stage.CRAFT_CLOSE; submit(c,new Action.CloseContainer(craftingMenu),Pending.CLOSE);
                 } else {
-                    if (++craftOperations>64) return fail("장작 제작 배치 한도에 도달했습니다. 재고를 확인하세요.");
+                    // Manual placement may produce only one fire log from a
+                    // fragmented haul. Bound by 36 full stacks / six ingredients,
+                    // not the old recipe-book batch size.
+                    if (++craftOperations>36*64/6) return fail("장작 제작 배치 한도에 도달했습니다. 재고를 확인하세요.");
                     submit(c,new Action.CraftFireLogs(table.pos()),Pending.CRAFT);
                 }
                 return busy("가문비나무 원목 6개당 장작 1개 제작");

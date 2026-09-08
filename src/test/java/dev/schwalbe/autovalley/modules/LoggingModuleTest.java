@@ -418,6 +418,18 @@ class LoggingModuleTest {
         assertTrue(f.craftingGridEmpty); assertEquals(0,f.chops);
     }
 
+    @Test void manualFragmentedElevenLogHaulsAndOneRealPickupCanCompleteBeyondSixtyFourBatches() {
+        Fixture f=cleanupFixture(); f.manualCraftBatches=true;
+        Arrays.fill(f.inventory,item(LoggingRules.LOG,11)); f.inventory[35]=ItemData.EMPTY;
+        // The first output needs one REAL empty slot. Individual placement later
+        // empties ingredient slots; a subsequent pickup may safely occupy one.
+        f.until(() -> f.craftCalls==36);
+        assertTrue(Arrays.stream(f.inventory).anyMatch(ItemData::empty)); f.add(LoggingRules.LOG,11);
+        assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertEquals(65,f.craftCalls); assertEquals(66,f.crafted); assertEquals(66,f.stored(LoggingRules.FIRE_LOG));
+        assertEquals(0,f.count(LoggingRules.LOG)); assertEquals(0,f.chops); assertEquals(0,f.plants);
+    }
+
     @Test void failedCraftOrNonemptyGridCannotCompleteCloseOrSendProducts() {
         Fixture f=new Fixture(1); f.setPlot(0,LoggingRules.SAPLING); f.add(LoggingRules.LOG,12);
         f.until(() -> f.pending instanceof Action.CraftFireLogs); f.reject("recipe unknown");
@@ -566,7 +578,7 @@ class LoggingModuleTest {
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
         double playerX=.5;
         int fingerprintCalls,fingerprintEpoch,omittedInventorySlot=-1;
-        boolean fingerprintSupported=true,duplicateInventorySlot;
+        boolean fingerprintSupported=true,duplicateInventorySlot,manualCraftBatches;
         int containerId,nextContainer=1; Pos opened;
         Action pending; ActionOutcome outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
         boolean craftingGridEmpty=true,failNextCheckpoint,failCompletionCheckpoint,blockPlantingApproach,keepPlantingOccluded;
@@ -637,7 +649,20 @@ class LoggingModuleTest {
                 if(use.purpose()==Action.Use.OPEN_CRAFTING) assertEquals(tablePos,use.pos());
             } else if(action instanceof Action.CraftFireLogs craft) {
                 assertEquals(tablePos,opened); assertEquals(tablePos,craft.table()); assertTrue(craftingGridEmpty);
-                confirmed=Math.min(64,count(LoggingRules.LOG)/6); consume(LoggingRules.LOG,confirmed*6); add(LoggingRules.FIRE_LOG,confirmed);
+                if(manualCraftBatches) {
+                    List<InventoryConsolidation.Stack> before=new ArrayList<>(Collections.nCopies(46,InventoryConsolidation.Stack.EMPTY));
+                    Set<Integer> sources=new HashSet<>();
+                    for(int i=0;i<36;i++) if(!inventory[i].empty()) {
+                        before.set(10+i,new InventoryConsolidation.Stack(inventory[i].id(),inventory[i].count(),64));
+                        if(inventory[i].is(LoggingRules.LOG)) sources.add(10+i);
+                    }
+                    var fire=new InventoryConsolidation.Stack(LoggingRules.FIRE_LOG,1,64);
+                    var plan=LoggingCraftPlan.create(before,InventoryConsolidation.Stack.EMPTY,sources,fire,
+                        menu -> menu.subList(1,10).stream().filter(s -> !s.empty()).count()==6 ? fire : InventoryConsolidation.Stack.EMPTY);
+                    confirmed=plan.quantity();
+                    for(int i=0;i<36;i++) { var after=plan.placed().items().get(10+i); inventory[i]=item(after.identity(),after.count()); }
+                } else { confirmed=Math.min(64,count(LoggingRules.LOG)/6); consume(LoggingRules.LOG,confirmed*6); }
+                add(LoggingRules.FIRE_LOG,confirmed);
                 crafted+=confirmed; craftCalls++; events.add("craft:"+confirmed);
             } else if(action instanceof Action.CloseContainer close) {
                 assertEquals(containerId,close.containerId()); if(Objects.equals(opened,tablePos)) assertTrue(craftingGridEmpty);

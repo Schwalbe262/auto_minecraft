@@ -1178,3 +1178,34 @@ logging twigs as rotten tomatoes.
 Java 17 / Gradle 8.8 integrated `test build` passed: 74 suites, 931 tests,
 zero failures, errors or skips. The three added regressions retain all recipe
 data guards and reject unchanged/pickup-only menus after server refusal.
+
+The live normal recipe-book request did not place ingredients. A later read-only
+probe found a same-generation full server menu after the request, with all 46
+slots exactly unchanged and the cursor/grid empty; no output click was sent.
+This identifies non-placement, not the remote server's recipe-book contents or
+its precise reason. The failed request was not retried or silently converted to
+a different operation.
+
+When the client has no book entry, a new crafting action now chooses ordinary
+manual inventory clicks up front. A native-verified spruce stack is distributed
+evenly over six grid cells with vanilla left-drag; any remainder returns to its
+exact source. If only small fragments remain, ordinary single-item placement
+collects the six ingredients across those source stacks. The detached planner
+models all 46 slots and the cursor after each click, including the temporary
+plank result exposed by a single log. It never takes an intermediate result or
+uses an outside-slot PICKUP. The live adapter requires a fresh full server
+reply for each primitive and exact live state before the next one.
+
+Only the current manual crafting primitive's exact before/after cursor remains
+owned while nonempty. Other cursor, menu and manual-input protections are
+unchanged. A cancelled intermediate ACK cannot clear the unfinished crafting
+fence or start cleanup. Final six-cell placement, empty cursor and fire-log
+material conservation remain mandatory before/after taking the result.
+The module's finite crafting-batch limit now covers fragmented one-output
+batches; a regression uses real output space and a subsequent inventory pickup
+to complete 65 batches producing 66 fire logs.
+
+Java 17 / Gradle 8.8 integrated `test build`: 75 suites, 947 tests, zero
+failures, errors or skips. Manual planner conservation, cursor ownership,
+sequence-bound intermediate ACKs and fragmented-batch coverage passed; live
+manual crafting and downstream storage/shipping still require deployment tests.
