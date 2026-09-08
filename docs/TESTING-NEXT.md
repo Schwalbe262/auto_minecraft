@@ -671,3 +671,38 @@ verification. No new inventory interruption was induced in the running soak test
 - All earlier anchors and preflight time are excluded. The earliest qualifying
   three-hour end is conservatively **2026-09-08 05:23:48 UTC**. Build/preflight
   success and this initial two-minute interval do not establish long-run safety.
+
+### Sixth observation ended by manual-input pause
+
+- The last ON sample was **2026-09-08 03:07:57.0679383 UTC** in normal waiting.
+  At **03:07:58.065492 UTC**, the runtime reported a direct-input pause. This
+  ends the window after **44 minutes 10.378 seconds**; it is not an automation
+  failure or a three-hour pass. The adjacent samples remained connected, with
+  no inventory/TrashSlot failure or late-reply flag, navigation error, trace
+  failure or pending output.
+- The previous **05:23:48 UTC** acceptance target is cancelled. Manual play,
+  the upcoming restart and any later run require a new observation anchor;
+  interrupted windows must not be added together.
+- Daily harvest activity was observed on days 365–368, but confirmed tomato
+  intake alternated **1,452 / 148 / 1,452 / 148**. This does not mean every plant
+  was harvested daily. The mature-only check admits recognized tomatoes at
+  age 3 and excludes unripe targets; daily eligibility does not establish the
+  native regrowth period. Generic interaction receipts and screenshots cannot
+  independently establish every plant's pre/post-harvest age.
+
+### Harvest movement optimization: tests passed, live verification pending
+
+- The updated build passes **716 tests**: nine added harvest-route regressions,
+  eight diagonal-movement regressions and five camera regressions, in addition
+  to the preceding 694-test suite.
+- Harvest routing anchors straight strips to the observed tomato layout,
+  including unripe plants. All originally mature targets remain in the primary
+  or cleanup pass, including upper vines. Only observed state changes may skip
+  a target; predicted area coverage is not completion evidence. Movement while
+  awaiting a harvest acknowledgement is limited to the immediate next center
+  in the same field and lane, without overtaking cleanup or turning early.
+- The operator authorized a restart and test. **This optimization has not yet
+  been verified in the live client at this checkpoint.** Passing tests do not
+  establish actual camera behavior, route efficiency, throughput or endurance;
+  those need separate post-restart observations. No gameplay safety checks or
+  native acknowledgement requirements are waived by these optimizations.
