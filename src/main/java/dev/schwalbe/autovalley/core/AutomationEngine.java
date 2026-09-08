@@ -8,6 +8,9 @@ public final class AutomationEngine {
     private final Map<AutomationModule,String> blockedThisSweep=new LinkedHashMap<>();
     private record DeferredRetry(int failures,long at,String message) { }
     private final Map<AutomationModule,DeferredRetry> deferred=new LinkedHashMap<>();
+    private AutomationModule resourceWaiting;
+    private String resourceWaitMessage;
+    private long resourceCheckAt;
     private long lastTick=Long.MIN_VALUE;
     private AutomationModule active;
     private State state=State.OFF;
@@ -73,7 +76,7 @@ public final class AutomationEngine {
         c.navigation().reset();
         for (AutomationModule module : modules) module.reset();
         blockedThisSweep.clear();
-        deferred.clear(); lastTick=Long.MIN_VALUE;
+        deferred.clear(); clearResourceWait(); lastTick=Long.MIN_VALUE;
         active=null;
         c.session().oneShotFeature=null;
         c.session().activeMachineOutputId=null;
@@ -87,7 +90,7 @@ public final class AutomationEngine {
         if (!c.profile().allowBackground && !player.focused()) { stop(c,State.PAUSED,"Game lost focus"); return; }
         if (player.health()<=4 || player.food()<=4) { stop(c,State.PAUSED,"Low health or hunger: take over manually"); return; }
         if (pauseForActions(c)) return;
-        if (lastTick>c.world().tick()) { deferred.clear(); retryAt=0; }
+        if (lastTick>c.world().tick()) { deferred.clear(); resourceCheckAt=0; retryAt=0; }
         lastTick=c.world().tick();
         if (c.world().tick()<retryAt) return;
         try {
@@ -101,11 +104,12 @@ public final class AutomationEngine {
                     stop(c,State.PAUSED,unfinishedLoggingMessage()); return;
                 }
                 AutomationModule logging=modules.stream().filter(module -> module.feature()==Feature.LOGGING).findFirst().orElse(null);
-                if (logging==null || active!=null && active!=logging) {
+                if (logging==null || resourceWaiting!=logging && active!=null && active!=logging) {
                     stop(c,State.PAUSED,"미완료 벌목을 먼저 재개해야 합니다. 다른 작업은 진행하지 않았습니다."); return;
                 }
-                active=logging;
+                if (resourceWaiting!=logging) active=logging;
             }
+            if (!refreshResourceWait(c)) return;
             if (mode==RunMode.ONCE) { tickOnce(c); return; }
             deferred.keySet().removeIf(module -> !c.profile().enabled(module.feature()));
             if (active!=null && !c.profile().enabled(active.feature())) { stop(c,State.PAUSED,"Feature was disabled"); return; }
@@ -113,6 +117,7 @@ public final class AutomationEngine {
                 WorkResult result=active.tick(c);
                 if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) { state=State.RUNNING; status=result.message(); return; }
+                if (result.state()==WorkResult.State.RESOURCE_WAIT && !grantResourceWait(c,active,result)) return;
                 if (pauseForUnfinishedLogging(c,active,result)) return;
                 if (MachineOutputLedger.hasPending(c)) { stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return; }
                 if (result.state()==WorkResult.State.DEFERRED && !defer(c,active,result)) return;
@@ -126,10 +131,15 @@ public final class AutomationEngine {
                 }
                 active=null;
             }
+            // Never preempt another module's BUSY/native transaction. Once it yields,
+            // supplied saplings take priority over starting another ordinary consumer.
+            if (!refreshResourceWait(c)) return;
+            if (active!=null) { state=State.RUNNING; status="미완료 벌목 재식재 다시 확인"; retryAt=0; return; }
             String blocked=blockedThisSweep.values().stream().findFirst().orElseGet(() -> deferred.values().stream().map(DeferredRetry::message).findFirst().orElse(null));
             boolean wineBlocked=blockedThisSweep.keySet().stream().anyMatch(m -> m.feature()==Feature.WINE);
             for (AutomationModule module : modules) {
                 if (!c.profile().enabled(module.feature())) continue;
+                if (module==resourceWaiting) continue;
                 if (blockedThisSweep.containsKey(module)) continue;
                 DeferredRetry retry=deferred.get(module);
                 if (retry!=null && c.world().tick()<retry.at()) continue;
@@ -138,6 +148,7 @@ public final class AutomationEngine {
                 WorkResult result=module.tick(c);
                 if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) { active=module; state=State.RUNNING; status=result.message(); return; }
+                if (result.state()==WorkResult.State.RESOURCE_WAIT && !grantResourceWait(c,module,result)) return;
                 if (pauseForUnfinishedLogging(c,module,result)) return;
                 if (MachineOutputLedger.hasPending(c)) { stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return; }
                 if (result.state()==WorkResult.State.DEFERRED) {
@@ -153,7 +164,7 @@ public final class AutomationEngine {
             c.actions().stopMovement();
             state=State.WAITING;
             status=blockedThisSweep.values().stream().findFirst().orElseGet(() -> deferred.values().stream()
-                .map(DeferredRetry::message).findFirst().orElse("Waiting for crops, machines, or bedtime"));
+                .map(DeferredRetry::message).findFirst().orElse(resourceWaitMessage!=null ? resourceWaitMessage : "Waiting for crops, machines, or bedtime"));
             blockedThisSweep.clear();
             retryAt=c.world().tick()+20;
         } catch (RuntimeException e) {
@@ -169,10 +180,12 @@ public final class AutomationEngine {
     }
     private void tickOnce(Context c) {
         if (active==null) { stop(c,State.PAUSED,"Selected one-shot job is unavailable"); return; }
+        if (active==resourceWaiting) { state=State.WAITING; status=resourceWaitMessage; retryAt=c.world().tick()+20; return; }
         DeferredRetry retry=deferred.get(active);
         if (retry!=null && c.world().tick()<retry.at()) { state=State.WAITING; status=retry.message(); return; }
         WorkResult result=active.tick(c);
         if (pauseForActions(c)) return;
+        if (result.state()==WorkResult.State.RESOURCE_WAIT && !grantResourceWait(c,active,result)) return;
         if (result.state()!=WorkResult.State.BUSY && pauseForUnfinishedLogging(c,active,result)) return;
         if (result.state()!=WorkResult.State.BUSY && MachineOutputLedger.hasPending(c)) {
             stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return;
@@ -183,11 +196,44 @@ public final class AutomationEngine {
                 + (result.message()==null || result.message().isBlank() ? "" : " — "+result.message()));
             case BLOCKED -> stop(c,State.PAUSED,"One-shot " + oneShotFeature + " paused: " + result.message());
             case DEFERRED -> { if (defer(c,active,result)) { state=State.WAITING; status=deferred.get(active).message(); } }
+            case RESOURCE_WAIT -> { state=State.WAITING; status=resourceWaitMessage; retryAt=c.world().tick()+20; }
         }
     }
+    private boolean grantResourceWait(Context c,AutomationModule module,WorkResult result) {
+        if (module.feature()!=Feature.LOGGING || !c.profile().loggingRunActive || !resourceBoundary(c)
+            || module.resourceReadiness(c)!=AutomationModule.ResourceReadiness.WAITING) {
+            stop(c,State.PAUSED,"재식재 재료 보류 조건이 불확실해 미완료 작업을 보존했습니다: "+result.message()); return false;
+        }
+        resourceWaiting=module; resourceWaitMessage=result.message(); resourceCheckAt=c.world().tick()+1200;
+        c.actions().stopMovement(); c.navigation().reset();
+        // Keep the module's confirmed PLANT phase, not an action ticket or an outcome.
+        return true;
+    }
+    private boolean refreshResourceWait(Context c) {
+        if (resourceWaiting==null || active!=null && active!=resourceWaiting) return true;
+        if (!c.profile().loggingRunActive || !resourceBoundary(c)) {
+            stop(c,State.PAUSED,"재식재 재료 대기 중 조작 상태가 바뀌었습니다. 미완료 벌목을 확인하세요."); return false;
+        }
+        AutomationModule.ResourceReadiness readiness=resourceWaiting.resourceReadiness(c);
+        if (readiness==AutomationModule.ResourceReadiness.UNSAFE) {
+            stop(c,State.PAUSED,"재식재 구역이나 임시 아이템이 바뀌었습니다. 미완료 벌목을 보존했습니다."); return false;
+        }
+        if (readiness==AutomationModule.ResourceReadiness.READY || c.world().tick()>=resourceCheckAt) {
+            active=resourceWaiting; clearResourceWait();
+        } else active=mode==RunMode.ONCE ? resourceWaiting : null;
+        return true;
+    }
+    private static boolean resourceBoundary(Context c) {
+        return c.world().player().onGround() && !c.actions().busy() && c.world().menu()!=null
+            && !c.world().menu().container() && c.world().menu().carried().empty()
+            && c.profile().loggingHotbarLease==null && !MachineOutputLedger.hasPending(c);
+    }
+    private void clearResourceWait() { resourceWaiting=null; resourceWaitMessage=null; resourceCheckAt=0; }
     private boolean defer(Context c,AutomationModule module,WorkResult result) {
+        boolean loggingAllowsOtherRetry=resourceWaiting!=null && resourceWaiting!=module
+            && resourceWaiting.resourceReadiness(c)!=AutomationModule.ResourceReadiness.UNSAFE;
         if (!c.world().player().onGround() || c.actions().busy() || c.world().menu()==null || c.world().menu().container()
-            || !c.world().menu().carried().empty() || c.profile().loggingRunActive
+            || !c.world().menu().carried().empty() || c.profile().loggingRunActive && !loggingAllowsOtherRetry
             || c.profile().loggingHotbarLease!=null || MachineOutputLedger.hasPending(c)) {
             stop(c,State.PAUSED,"미완료 조작 또는 독점 작업을 보존하고 중지했습니다: "+result.message()); return false;
         }
@@ -204,6 +250,7 @@ public final class AutomationEngine {
     }
     private boolean pauseForUnfinishedLogging(Context c,AutomationModule module,WorkResult result) {
         if (!c.profile().loggingRunActive || module.feature()!=Feature.LOGGING) return false;
+        if (result.state()==WorkResult.State.RESOURCE_WAIT && resourceWaiting==module) return false;
         stop(c,State.PAUSED,"미완료 벌목을 보존하고 중지했습니다: "+result.message());
         return true;
     }

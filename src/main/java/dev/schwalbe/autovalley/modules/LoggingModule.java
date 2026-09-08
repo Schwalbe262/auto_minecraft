@@ -13,6 +13,7 @@ public final class LoggingModule implements AutomationModule {
     private Pending pending;
     private long ticket=-1, settleUntil, nextCheckTick=-1, lastTick=-1;
     private long saplingWaitUntil=-1;
+    private int saplingWaitRequired;
     private boolean plantingStanceReady;
     private List<Pos> plantingOrder=List.of();
     private List<ItemData> cleanupInventory;
@@ -127,7 +128,7 @@ public final class LoggingModule implements AutomationModule {
             case PLOT -> {
                 validateRemaining(c);
                 if (c.profile().loggingRemainingPlots.isEmpty()) { observationWindow.clear(); stage=Stage.WASTE; return busy("전체 재식재 확인"); }
-                Pos corner=c.profile().loggingRemainingPlots.get(0);
+                Pos corner=nextPlot(c);
                 plot=c.profile().loggingPlots.stream().filter(p -> p.corner().equals(corner)).findFirst().orElseThrow();
                 if (plot.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) return observePlot(c,plot);
                 inspect(c,plot); chopStrokes=0; saplingWaitUntil=-1;
@@ -160,7 +161,9 @@ public final class LoggingModule implements AutomationModule {
             case SETTLE -> {
                 c.actions().stopMovement();
                 if (c.world().tick()<settleUntil) return busy("벌목 후 잠시 대기");
-                stage=Stage.PLANT; return busy("빈 식재 칸 확인");
+                // A later tree may provide the seeds for an earlier empty plot.
+                // Re-enter the durable FIFO selector only after this fell has settled.
+                stage=Stage.PLOT; return busy("먼저 비워 둔 2x2 식재 구역 확인");
             }
             case PLANT -> {
                 if (plot.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) return observePlot(c,plot);
@@ -323,15 +326,106 @@ public final class LoggingModule implements AutomationModule {
         return inventory(c).stream().filter(s -> s.item().is(LoggingRules.SAPLING)
             && s.inventoryIndex()!=c.profile().hoeHotbarSlot && s.inventoryIndex()!=c.profile().loggingAxeHotbarSlot).toList();
     }
+    private Pos nextPlot(Context c) {
+        // Actual manual felling/planting is not an automation receipt. Save newly
+        // observed empty/sapling-only registered bases as obligations, never as success.
+        for (Pos corner:c.profile().loggingRemainingPlots) {
+            LoggingPlot candidate=registeredPlot(c,corner);
+            if (candidate.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) continue;
+            inspect(c,candidate);
+            long trunks=candidate.plantingPositions().stream().filter(p -> c.world().block(p).id().equals(LoggingRules.LOG)).count();
+            boolean chopped=candidate.plantingPositions().stream().anyMatch(p -> c.world().block(p).id().equals(LoggingRules.CHOPPED_LOG));
+            boolean sapling=candidate.plantingPositions().stream().anyMatch(p -> c.world().block(p).id().equals(LoggingRules.SAPLING));
+            if (c.profile().loggingReplantingPlots.contains(corner)) {
+                if (LoggingRules.partiallyGrown(c.world(),candidate) || chopped)
+                    throw new IllegalStateException("미완료 2x2 구역에 일부 나무나 밑동이 남았습니다. 자동 재벌목하지 않습니다.");
+            } else if (!chopped && trunks==0) markReplanting(c,corner);
+            else if (sapling || !chopped && trunks!=4)
+                throw new IllegalStateException("등록한 2x2 나무가 일부만 남거나 묘목과 섞였습니다. 건드리지 않고 확인을 기다립니다.");
+        }
+        int seeds=availableSaplings(c).stream().mapToInt(s -> s.item().count()).sum();
+        for (Pos corner:c.profile().loggingReplantingPlots) {
+            LoggingPlot candidate=registeredPlot(c,corner);
+            if (candidate.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) {
+                if (seeds>=4) return corner; // Observation, not a planting permission.
+            } else {
+                long missing=candidate.plantingPositions().stream().filter(p -> air(c.world().block(p))).count();
+                if (seeds>=missing) return corner;
+            }
+            break; // Strict oldest-first: a smaller newer obligation cannot spend its seeds.
+        }
+        // Only existing, unprocessed batch members are considered. Native tree
+        // footprint validation and the registered axe still guard every actual cut.
+        for (Pos corner:c.profile().loggingRemainingPlots)
+            if (!c.profile().loggingReplantingPlots.contains(corner)) return corner;
+        return c.profile().loggingReplantingPlots.get(0);
+    }
+    private static LoggingPlot registeredPlot(Context c,Pos corner) {
+        return c.profile().loggingPlots.stream().filter(p -> p.corner().equals(corner)).findFirst().orElseThrow();
+    }
     private WorkResult waitForSaplings(Context c,int available,int required) {
         c.actions().stopMovement();
+        saplingWaitRequired=required;
+        Pos next=nextPlot(c);
+        if (!next.equals(plot.corner())) {
+            stage=Stage.PLOT;
+            return busy("묘목이 부족한 2x2 구역은 남겨 두고 다음 등록 구역 확인");
+        }
         // Existing 80-tick falling animation delay is unchanged. This is a further
         // maximum 400 client ticks (20 seconds at 20 TPS) from first missing seed,
         // shared by the entire plot, not renewed per empty cell or partial pickup.
         if (saplingWaitUntil<0) saplingWaitUntil=Math.addExact(c.world().tick(),SAPLING_WAIT_TICKS);
-        if (c.world().tick()>=saplingWaitUntil)
-            return fail("재식재용 가문비나무 묘목이 부족합니다. 20초 추가 대기 후에도 도착하지 않아 미완료 구역을 보존하고 중단했습니다.");
+        if (c.world().tick()>=saplingWaitUntil) {
+            if (resourceReadiness(c)!=ResourceReadiness.WAITING)
+                return fail("재식재 재료 대기 상태를 안전하게 확인할 수 없습니다. 미완료 구역을 보존했습니다.");
+            return WorkResult.resourceWait("벌목 재식재 보류: 가문비나무 묘목 "+available+"/"+required
+                +"개. 2x2 미완료 구역을 보존하며 묘목 보충 후 다시 확인합니다.");
+        }
         return busy("가문비나무 묘목 도착 대기 ("+available+"/"+required+"개, "+((saplingWaitUntil-c.world().tick()+19)/20)+"초 남음)");
+    }
+    @Override public ResourceReadiness resourceReadiness(Context c) {
+        // No menu actions, world changes, saved deadlines or ground-item guesses here.
+        if (failure!=null || stage!=Stage.PLANT || pending!=null || ticket>=0 || plot==null
+            || !c.profile().loggingRunActive || c.profile().loggingHotbarLease!=null)
+            return ResourceReadiness.UNSAFE;
+        try { validateRemaining(c); }
+        catch (RuntimeException invalid) { return ResourceReadiness.UNSAFE; }
+        if (!c.profile().loggingPlots.contains(plot) || !c.profile().loggingRemainingPlots.contains(plot.corner())
+            || !c.profile().loggingReplantingPlots.contains(plot.corner())) return ResourceReadiness.UNSAFE;
+        boolean unprocessed=false;
+        for (Pos corner:c.profile().loggingRemainingPlots) {
+            LoggingPlot candidate=registeredPlot(c,corner);
+            if (candidate.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) continue;
+            try { inspect(c,candidate); }
+            catch (RuntimeException changed) { return ResourceReadiness.UNSAFE; }
+            long trunks=candidate.plantingPositions().stream().filter(p -> c.world().block(p).id().equals(LoggingRules.LOG)).count();
+            boolean chopped=candidate.plantingPositions().stream().anyMatch(p -> c.world().block(p).id().equals(LoggingRules.CHOPPED_LOG));
+            boolean sapling=candidate.plantingPositions().stream().anyMatch(p -> c.world().block(p).id().equals(LoggingRules.SAPLING));
+            if (c.profile().loggingReplantingPlots.contains(corner)) {
+                if (trunks>0 && trunks<4 || chopped) return ResourceReadiness.UNSAFE;
+            } else {
+                if (sapling && trunks>0 || !chopped && trunks>0 && trunks<4) return ResourceReadiness.UNSAFE;
+                unprocessed=true;
+            }
+        }
+        List<ItemSlot> stock=inventory(c).stream().sorted(Comparator.comparingInt(ItemSlot::inventoryIndex)).toList();
+        if (stock.size()!=36) return ResourceReadiness.UNSAFE;
+        for (int i=0;i<36;i++) if (stock.get(i).inventoryIndex()!=i || stock.get(i).item()==null) return ResourceReadiness.UNSAFE;
+        int seeds=availableSaplings(c).stream().mapToInt(s -> s.item().count()).sum();
+        if (unprocessed) return ResourceReadiness.READY;
+        // Other work can unload this site. Keep its existing obligation; the normal
+        // PLANT observation path revalidates every cell before any resumed use.
+        if (plot.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p)))
+            return saplingWaitRequired>0 && seeds>=saplingWaitRequired ? ResourceReadiness.READY : ResourceReadiness.WAITING;
+        if (LoggingRules.partiallyGrown(c.world(),plot)) return ResourceReadiness.UNSAFE;
+        int missing=0;
+        for (Pos cell:plot.plantingPositions()) {
+            BlockData block=c.world().block(cell);
+            if (air(block)) missing++;
+            else if (!block.id().equals(LoggingRules.SAPLING) && !block.id().equals(LoggingRules.LOG))
+                return ResourceReadiness.UNSAFE;
+        }
+        return seeds>=missing ? ResourceReadiness.READY : ResourceReadiness.WAITING;
     }
     private void submit(Context c,Action action,Pending kind) { pending=kind; ticket=c.actions().submit(action); }
     private static boolean once(Context c) { return c.session().oneShotFeature==Feature.LOGGING; }
@@ -474,7 +568,7 @@ public final class LoggingModule implements AutomationModule {
         stage=Stage.START; pending=null; ticket=-1; actionPos=null; plot=null; table=null; craftingMenu=-1;
         // Scheduler resets must not turn the bounded ALL_GROWN readiness poll into
         // a per-tick scan. Explicit one-shot and durable active resumes bypass it.
-        chopStrokes=trashOperations=craftOperations=0; settleUntil=0; saplingWaitUntil=-1; failure=null;
+        chopStrokes=trashOperations=craftOperations=0; settleUntil=0; saplingWaitUntil=-1; saplingWaitRequired=0; failure=null;
         plantingStanceReady=false; plantingOrder=List.of();
         approachResult=null; initialPlotObservations.clear(); initialObservationDay=Long.MIN_VALUE;
         observationWindow.clear();

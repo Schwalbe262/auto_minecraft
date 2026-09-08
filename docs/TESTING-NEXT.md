@@ -1505,3 +1505,45 @@ schedules. Subsequent fresh observations showed tomato harvesting, advancing
 action tickets and no navigation failure, action fence or pending output. This
 short resumed observation does not establish uninterrupted multi-hour acceptance
 or newly verify wine/preserves production and sleep.
+
+### Half-tread speed and queued spruce replanting — 2026-09-09 KST
+
+The stair controller now uses a freshly verified native half-tread fall horizon
+and observed grounded damping on ordinary straight bottom stairs. Verified onward
+continuation removes an intermediate center reserve without widening the active
+corridor. Unknown shapes, observation gaps, changed physics, turns and final
+landings retain conservative behavior. Airborne movement intent remains zero.
+The six-stair Y-first collision-order fixture improved from 165 to 126 ticks;
+this is a model comparison, not an installed-client timing.
+
+The stopped logging run was diagnosed as an actual shortage: two spruce saplings
+for four empty planting cells after the existing falling-tree and additional
+arrival waits. No unconfirmed action, borrowed hotbar or output obligation was
+cleared to resume it. The routine now retains replanting obligations in durable
+FIFO order, works another unprocessed registered tree from the current batch
+when necessary, and returns to the oldest empty plot when all of its missing
+cells can be supplied. Manually emptied current-batch plots are checkpointed as
+obligations, not action successes. Completed trees and new registrations outside
+that batch are not enrolled to obtain more saplings.
+
+If all such trees are exhausted, a validated inventory-only resource wait may
+yield to other modules and sleep in continuous mode. It does not complete the
+logging batch or waive uncertain actions, output ledgers, borrowed hotbar state,
+partial growth or changed blocks. One-shot mode waits only for its selected job.
+Re-supplied saplings regain priority at a safe module boundary, not during an
+active operation. Stop/restart discards the transient permission to yield and
+revalidates the durable unfinished work.
+
+Java 17 / Gradle `test build` passed **1,096 tests across 86 suites**, with zero
+failures, errors or skips. The focused logging/engine suite passed 118 tests.
+Regressions cover two saplings followed by six from another tree, exhausted
+trees with unfinished plots, strict oldest-first allocation, restart recovery,
+manual felling, checkpoint rollback and refusal of partially grown or changed
+plots. Stair fixtures include native Y-first collision order and opt-out cases.
+
+Candidate SHA-256:
+`4E91EF84BE4A1F197ED8D5FB73EEA88215FCBBAAE82F5117459910BB412D2950`.
+At this checkpoint the player is manually controlling the existing client, which
+still runs the preceding rolling-stair artifact. Restart coordination, native
+queued-replant acceptance and a matched new stair timing remain pending. Manual
+movement and inventory changes during development are not automation results.
