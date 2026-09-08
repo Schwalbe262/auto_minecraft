@@ -46,6 +46,7 @@ public final class MinecraftWorld implements WorldAccess {
     }
     @Override public boolean canStepUp(LoggingJumpEdge edge,Profile profile) { return NativeLoggingJump.mayStepUp(mc,this,edge,profile); }
     @Override public boolean canChainDescent(List<Pos> feet,Profile profile) { return NativeDescentChain.mayChain(mc,this,feet,profile); }
+    @Override public boolean straightDescentStair(Pos from,Pos to,Profile profile) { return NativeDescentChain.mayUseHalfSteps(mc,this,from,to,profile); }
     public boolean loggingAxe(int inventoryIndex) {
         return mc.player!=null && inventoryIndex>=0 && inventoryIndex<9
             && mc.player.getInventory().getItem(inventoryIndex).is(net.minecraft.world.item.Items.NETHERITE_AXE)

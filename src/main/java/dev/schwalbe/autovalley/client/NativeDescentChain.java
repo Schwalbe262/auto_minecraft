@@ -18,9 +18,15 @@ final class NativeDescentChain {
     private NativeDescentChain() { }
 
     static boolean mayChain(Minecraft mc,MinecraftWorld world,List<Pos> feet,Profile profile) {
+        return inspect(mc,world,feet,profile,false);
+    }
+    static boolean mayUseHalfSteps(Minecraft mc,MinecraftWorld world,Pos from,Pos to,Profile profile) {
+        return from!=null && to!=null && inspect(mc,world,List.of(from,to),profile,true);
+    }
+    private static boolean inspect(Minecraft mc,MinecraftWorld world,List<Pos> feet,Profile profile,boolean halfSteps) {
         try {
             if (mc==null || mc.level==null || profile==null || !NativeLoggingJump.normalPhysics(mc)
-                    || !shape(feet)) return false;
+                    || !shape(feet,halfSteps ? 2 : 3) || halfSteps && feet.size()!=2) return false;
             List<Double> heights=new ArrayList<>();
             for (int i=0;i<feet.size();i++) {
                 Pos p=feet.get(i);
@@ -35,7 +41,7 @@ final class NativeDescentChain {
                 return new NativeLoggingJump.Cell(true,true,
                     NativeLoggingJump.forbiddenBlock(state) || state.is(BlockTags.CLIMBABLE)
                         || NativeLoggingJump.protectedPlanting(profile,p),
-                    NativeLoggingJump.normalSurface(block.getJumpFactor(),block.getSpeedFactor(),block.getFriction()),
+                    NativeLoggingJump.normalSurface(block.getJumpFactor(),block.getSpeedFactor(),state.getFriction(mc.level,bp,mc.player)),
                     state.getCollisionShape(mc.level,bp,CollisionContext.of(mc.player)).toAabbs());
             };
             double width=mc.player.getBbWidth(),height=mc.player.getBbHeight();
@@ -47,7 +53,7 @@ final class NativeDescentChain {
                 var facing=state.getValue(StairBlock.FACING);
                 return facing.getStepX()==-dx && facing.getStepZ()==-dz;
             };
-            if (!geometry(feet,heights,width,height,cells,ordinaryStair)) return false;
+            if (!geometry(feet,heights,width,height,cells,ordinaryStair,halfSteps)) return false;
             for (int i=1;i<feet.size();i++) {
                 AABB sweep=sweep(feet.get(i-1),feet.get(i),heights.get(i-1),heights.get(i),width,height);
                 if (!world.insideBorder(sweep) || !mc.level.getEntityCollisions(mc.player,sweep).isEmpty()) return false;
@@ -57,7 +63,10 @@ final class NativeDescentChain {
     }
 
     static boolean shape(List<Pos> feet) {
-        if (feet==null || feet.size()<3 || feet.size()>4 || feet.stream().anyMatch(Objects::isNull)) return false;
+        return shape(feet,3);
+    }
+    private static boolean shape(List<Pos> feet,int minimum) {
+        if (feet==null || feet.size()<minimum || feet.size()>4 || feet.stream().anyMatch(Objects::isNull)) return false;
         int dx=feet.get(1).x()-feet.get(0).x(),dz=feet.get(1).z()-feet.get(0).z();
         if (Math.abs(dx)+Math.abs(dz)!=1) return false;
         for (int i=1;i<feet.size();i++) {
@@ -72,7 +81,15 @@ final class NativeDescentChain {
     }
     static boolean geometry(List<Pos> feet,List<Double> heights,double width,double height,NativeLoggingJump.Cells cells,
                             Predicate<Pos> ordinaryStair) {
-        if (!shape(feet) || heights==null || heights.size()!=feet.size() || cells==null
+        return geometry(feet,heights,width,height,cells,ordinaryStair,false);
+    }
+    static boolean halfStepGeometry(List<Pos> feet,List<Double> heights,double width,double height,NativeLoggingJump.Cells cells,
+                                    Predicate<Pos> ordinaryStair) {
+        return geometry(feet,heights,width,height,cells,ordinaryStair,true);
+    }
+    private static boolean geometry(List<Pos> feet,List<Double> heights,double width,double height,NativeLoggingJump.Cells cells,
+                                    Predicate<Pos> ordinaryStair,boolean halfSteps) {
+        if (!shape(feet,halfSteps ? 2 : 3) || halfSteps && feet.size()!=2 || heights==null || heights.size()!=feet.size() || cells==null
                 || ordinaryStair==null || !NativeLoggingJump.dimensions(width,height)) return false;
         int dx=feet.get(1).x()-feet.get(0).x(),dz=feet.get(1).z()-feet.get(0).z();
         for (int i=0;i<feet.size();i++) {
@@ -80,7 +97,10 @@ final class NativeDescentChain {
             if (y==null || !Double.isFinite(y)) return false;
             if (i>0 && (heights.get(i-1)-y<=.10001 || heights.get(i-1)-y>1+EPS)) return false;
             Pos floor=feet.get(i).offset(0,-1,0);
-            if (!support(cells.at(floor),floor,y,ordinaryStair.test(floor),dx,dz)) return false;
+            var cell=cells.at(floor);
+            boolean knownStair=ordinaryStair.test(floor);
+            if (!support(cell,floor,y,knownStair,dx,dz)) return false;
+            if (halfSteps && (!knownStair || !straightStairShape(cell.boxes(),dx,dz))) return false;
         }
         for (int i=1;i<feet.size();i++) {
             Pos from=feet.get(i-1),to=feet.get(i);

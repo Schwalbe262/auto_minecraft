@@ -20,6 +20,7 @@ final class DescentController {
     private double lastSpeed,observedDrag=Double.NaN;
     private double observedAcceleration=Double.NaN;
     private boolean usedStandardFallBound;
+    private boolean usedStairFallBound;
     private int completedEdges;
 
     DescentController(Pos from,Pos to,WorldAccess world) {
@@ -50,6 +51,7 @@ final class DescentController {
         if (now==lastTick) return Navigation.Result.MOVING;
         if (lastTick!=Long.MIN_VALUE && now<lastTick) return fail("내려가는 동안 시간이 되돌아갔습니다.");
         boolean measured=sample!=null && now-lastTick==1;
+        boolean sameGround=measured && sample.onGround() && p.onGround() && Math.abs(p.y()-sample.y())<.00001;
         double vx=measured ? p.x()-sample.x() : 0,vz=measured ? p.z()-sample.z() : 0;
         double speed=Math.hypot(vx,vz);
         if(measured && lastInput>0 && lastSpeed<=.002 && sample.onGround() && p.onGround() && Math.abs(p.y()-sample.y())<.00001) {
@@ -109,6 +111,7 @@ final class DescentController {
                 // straight run; they never survive a turn, cancellation or reset.
                 from=to;fromHeight=toHeight;to=preview.get(2);toHeight=world.standingY(to);
                 completedEdges++;quietSamples=0;firstTick=now;progressTick=now;progressSample=p;
+                continuation=preview.size()>=4;
             } else {
                 phase=Phase.LAND;quietSamples=0;progressTick=now;stop();return Navigation.Result.MOVING;
             }
@@ -116,6 +119,10 @@ final class DescentController {
         boolean standardPhysics=world.standardDescentPhysics();
         if (!p.onGround() && usedStandardFallBound && !standardPhysics)
             return fail("내려가는 도중 표준 낙하 조건이 바뀌어 이동을 중단합니다.");
+        boolean stairProof=standardPhysics && Math.abs(fromHeight-toHeight-1)<.00001
+            && world.straightDescentStair(from,to,c.profile());
+        if (!p.onGround() && usedStairFallBound && !stairProof)
+            return fail("내려가는 도중 검증된 반 칸 계단의 형태 또는 통행 조건이 바뀌었습니다.");
         if (!p.onGround() || !measured) {
             // No airborne acceleration: braking happens before crossing the edge.
             stop();return Navigation.Result.MOVING;
@@ -133,11 +140,25 @@ final class DescentController {
         // determines a conservative no-input fall horizon; reserve the final
         // center margin for grounded braking. This only chooses input strength:
         // observed support, corridor and landing checks remain authoritative.
-        double speedLimit=Math.min(.18,Math.max(0,horizontal(p,to)-CENTER)/fallCoastFactor(p.y()-toHeight,standardPhysics));
-        double accelerationRoom=speedLimit-.91*speed;
+        // A proven onward tread does not require a full stop .10m before this
+        // center. Still bound the complete passive coast BEFORE the same center;
+        // no airborne position beyond the active one-edge corridor is allowed.
+        double reserve=continuation ? 0 : CENTER;
+        // Only a native-verified bottom/straight stair has this intervening
+        // half-tread. The real grounded Y must agree with one of its two tops;
+        // generic drops, shallow farm holes and unknown shapes keep the full bound.
+        boolean halfFall=stairProof && (Math.abs(p.y()-fromHeight)<.00001 || Math.abs(p.y()-(fromHeight-.5))<.00001);
+        double fallHeight=halfFall ? .5 : p.y()-toHeight;
+        double speedLimit=Math.min(.18,Math.max(0,horizontal(p,to)-reserve)/fallCoastFactor(fallHeight,standardPhysics));
+        // A consecutive grounded observation on the same proven normal tread
+        // has already applied ground friction to the preceding displacement.
+        // Newly landed, airborne, missing or unknown samples retain the air bound.
+        double momentumDrag=passiveMomentumDrag(halfFall,sameGround,observedDrag);
+        double accelerationRoom=speedLimit-momentumDrag*speed;
         if(accelerationRoom<=0) stop();
         else {
             usedStandardFallBound=standardPhysics;
+            usedStairFallBound=halfFall;
             steer(p,to,(float)Math.min(.45,accelerationRoom/accelerationAllowance()));
         }
         return Navigation.Result.MOVING;
@@ -154,6 +175,10 @@ final class DescentController {
                 || closedDoor(c.world(),a) || closedDoor(c.world(),b)) return false;
         }
         return c.world().canChainDescent(preview,c.profile());
+    }
+    static double passiveMomentumDrag(boolean verifiedHalfTread,boolean consecutiveSameGround,double observedDrag) {
+        return verifiedHalfTread && consecutiveSameGround && Double.isFinite(observedDrag) && observedDrag>=0
+            ? Math.max(.65,observedDrag) : .91;
     }
     private boolean canHandOff(WorldAccess world,PlayerState p,Pos next,double vx,double vz) {
         int dx=to.x()-from.x(),dz=to.z()-from.z();

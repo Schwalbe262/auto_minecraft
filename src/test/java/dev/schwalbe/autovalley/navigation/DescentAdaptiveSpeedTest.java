@@ -52,11 +52,25 @@ class DescentAdaptiveSpeedTest {
         assertTrue(f.controller.airborne());assertNull(f.movement);
         assertEquals(0,f.airInputs);assertEquals(0,f.interactions);
     }
+    @Test void aShallowGenericDipOrUnknownPhysicsCannotAcquireTheHalfStairHorizon() {
+        Fixture ordinary=new Fixture(.375,.546);int baseline=ordinary.run(.13,0);
+        Fixture shallow=new Fixture(.375,.546);shallow.claimedStairProof=true;
+        assertEquals(baseline,shallow.run(.13,0));assertEquals(ordinary.maxInput,shallow.maxInput);
+        Fixture slow=new Fixture(1,.546);slow.standardPhysics=false;slow.gravity=.001;slow.claimedStairProof=true;slow.run(.13,0);
+        assertEquals(Navigation.Result.ARRIVED,slow.result,slow.debug());assertEquals(0,slow.airInputs);
+    }
+    @Test void onlyVerifiedConsecutiveSameGroundUsesMeasuredMomentumDamping() {
+        assertEquals(.65,DescentController.passiveMomentumDrag(true,true,.546));
+        assertEquals(.73,DescentController.passiveMomentumDrag(true,true,.73));
+        assertEquals(.91,DescentController.passiveMomentumDrag(true,false,.65),"New landing, airborne or missing-tick sample");
+        assertEquals(.91,DescentController.passiveMomentumDrag(false,true,.65),"Unknown or lost native tread proof");
+        assertEquals(.91,DescentController.passiveMomentumDrag(true,true,Double.NaN),"No fabricated damping estimate");
+    }
     private static final class Fixture implements WorldAccess,ActionPort {
         final Pos top=new Pos(1,1,0),low;
         final double drop,drag;final DescentController controller;
         final Profile profile=new Profile();final Context context=new Context(this,this,new LocalNavigator(),profile);
-        long now;double x=1.5,y=1,vx,vy,gravity=.08;boolean ground=true,standardPhysics=true;Movement movement;float maxInput;int airInputs,interactions;
+        long now;double x=1.5,y=1,vx,vy,gravity=.08;boolean ground=true,standardPhysics=true,claimedStairProof;Movement movement;float maxInput;int airInputs,interactions;
         Navigation.Result result=Navigation.Result.MOVING;
         Runnable beforeTick=()->{};
         final Deque<String> trail=new ArrayDeque<>();
@@ -84,6 +98,7 @@ class DescentAdaptiveSpeedTest {
         public double standingY(Pos p){return p.equals(top)?1:p.equals(low)?1-drop:Double.NaN;}
         public boolean canTraverse(Pos a,Pos b){return a.equals(top)&&b.equals(low);}
         public boolean standardDescentPhysics(){return standardPhysics;}
+        public boolean straightDescentStair(Pos from,Pos to,Profile p){return claimedStairProof;}
         public BlockData block(Pos p){return new BlockData(p,"minecraft:air",Map.of());}
         public List<BlockData> scan(Pos p,int h,int v){return List.of();}public List<ItemSlot> inventory(){return List.of();}
         public MenuData menu(){return new MenuData(0,0,List.of(),ItemData.EMPTY,false);}public boolean mayPlace(int slot,ItemData item){return false;}

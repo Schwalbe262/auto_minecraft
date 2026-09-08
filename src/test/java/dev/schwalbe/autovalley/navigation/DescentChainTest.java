@@ -126,8 +126,8 @@ class DescentChainTest {
     }
 
     @Test void bottomStraightStairHalfTreadsNeverCountAsTheNextPlannedLanding() {
-        for(int[] axis:new int[][]{{1,0},{-1,0},{0,1},{0,-1}})for(double acceleration:new double[]{.06,.13,.30}) {
-            Fixture f=new Fixture(6,axis[0],axis[1]);f.halfTreads=true;f.acceleration=acceleration;
+        for(boolean yFirst:new boolean[]{false,true})for(boolean shorter:new boolean[]{false,true})for(int[] axis:new int[][]{{1,0},{-1,0},{0,1},{0,-1}})for(double acceleration:shorter?new double[]{.06,.13,.30,.60}:new double[]{.06,.13,.30}) {
+            Fixture f=new Fixture(6,axis[0],axis[1]);f.halfTreads=true;f.stairProof=shorter;f.acceleration=acceleration;f.yFirst=yFirst;
             int halfTreadSamples=0;
             while(f.result==Navigation.Result.MOVING && f.now<1000) {
                 boolean middle=f.ground && Math.abs(f.y-Math.floor(f.y)-.5)<.00001;
@@ -143,7 +143,7 @@ class DescentChainTest {
                 if(!f.ground)assertNull(f.movement,"Each of the two half-falls has no airborne input");
                 if(f.result==Navigation.Result.MOVING)f.physics();
             }
-            assertEquals(Navigation.Result.ARRIVED,f.result,f.debug()+" acceleration="+acceleration);
+            assertEquals(Navigation.Result.ARRIVED,f.result,f.debug()+" acceleration="+acceleration+" yFirst="+yFirst+" shorter="+shorter);
             assertTrue(halfTreadSamples>=6,"All six intermediate supports are actually observed");
             assertEquals(List.of(5.5,5.0,4.5,4.0,3.5,3.0,2.5,2.0,1.5,1.0,.5,0.0),f.physicalLandings);
             assertEquals(List.of(5,4,3,2,1,0),f.actualLandings);assertEquals(0,f.submissions);
@@ -151,11 +151,41 @@ class DescentChainTest {
         }
     }
 
+    @Test void onlyTheNativeVerifiedHalfTreadUsesTheShorterFlightBound() {
+        Fixture known=new Fixture(6);known.halfTreads=true;known.stairProof=true;known.yFirst=true;known.run();
+        Fixture unknown=new Fixture(6);unknown.halfTreads=true;unknown.yFirst=true;unknown.run();
+        assertEquals(Navigation.Result.ARRIVED,known.result,known.debug());
+        assertEquals(Navigation.Result.ARRIVED,unknown.result,unknown.debug());
+        assertTrue(known.now<unknown.now,"Verified="+known.now+" unknown="+unknown.now);
+        assertEquals(unknown.physicalLandings,known.physicalLandings);
+        assertEquals(0,known.airInputs);assertEquals(0,known.submissions);
+        assertTrue(known.x>=.5 && known.x<=.60001,"Terminal landing still reserves the original stopping margin");
+    }
+
+    @Test void lossOfTheShortHalfTreadProofDuringFlightStopsWithoutReusingThatAssumption() {
+        Fixture f=new Fixture(3);f.halfTreads=true;f.stairProof=true;f.yFirst=true;DescentController controller=f.controller();
+        Navigation.Result result=Navigation.Result.MOVING;
+        for(int i=0;i<150 && result==Navigation.Result.MOVING;i++) {
+            if(!f.ground)f.stairProof=false;
+            result=controller.tick(f.context,f.path);
+            if(result==Navigation.Result.MOVING)f.physics();
+        }
+        assertEquals(Navigation.Result.BLOCKED,result,controller.failureReason());assertTrue(controller.airborne());
+        assertEquals(0,controller.completedEdges());assertNull(f.movement);assertEquals(0,f.submissions);
+    }
+
+    @Test void anUnverifiedLargeInputResponseCannotLoosenTheFinalLandingGuard() {
+        Fixture f=new Fixture(6);f.halfTreads=true;f.acceleration=.60;f.run();
+        assertEquals(Navigation.Result.BLOCKED,f.result,"The unchanged unknown-geometry path must not fake a quiet landing");
+        assertTrue(f.ground);assertEquals(0,f.y);assertTrue(f.x>=.5 && f.x<=.60001);
+        assertNull(f.movement);assertEquals(0,f.airInputs);assertEquals(0,f.submissions);
+    }
+
     private static final class Fixture implements WorldAccess,ActionPort {
         final int height,axisX,axisZ;final List<Pos> path;final Pos goal;final LocalNavigator nav=new LocalNavigator();
         final Profile profile=new Profile();final Context context=new Context(this,this,nav,profile);
         final List<Integer> actualLandings=new ArrayList<>();final List<Double> physicalLandings=new ArrayList<>();final Set<Pos> proofStarts=new HashSet<>();
-        long now;double x,y,vx,vy,acceleration=.13;boolean ground=true,flowProof=true,halfTreads;
+        long now;double x,y,vx,vy,acceleration=.13;boolean ground=true,flowProof=true,halfTreads,stairProof,yFirst;
         Pos unloaded,door,removed;Movement movement;int maxPreview,airInputs,submissions,preparations,fullLandings;
         String previousPhase="";Navigation.Result result=Navigation.Result.MOVING;
         Fixture(int height){this(height,1,0);}
@@ -167,22 +197,27 @@ class DescentChainTest {
         void physics(){
             boolean wasGround=ground;double oldY=y;
             if(movement!=null&&movement.forward())vx+=(-Math.sin(Math.toRadians(movement.yaw()))*axisX+Math.cos(Math.toRadians(movement.yaw()))*axisZ)*acceleration*movement.inputScale();
+            double previousFloor=supportHeight(x);
             x+=vx;
             // Bottom/straight native stairs facing upstream: a whole bottom
             // half plus the upstream upper half. The 0.6-wide body's rear is
             // supported by each half until it clears that half's boundary.
-            double support=halfTreads ? Math.floor(2*(x+.3))/2-.5 : Math.floor(x+.3);
-            double floor=Math.max(0,Math.min(height,support));
+            // The native Y-first variant clips gravity against the OLD footprint
+            // before horizontal motion. onGround may therefore remain true for
+            // one sample after moving off a ledge; the model does not erase it.
+            double floor=yFirst ? previousFloor : supportHeight(x);
             if(y+vy<=floor){y=floor;vy=0;ground=true;}else{y+=vy;ground=false;}
             if(ground&&y<oldY){physicalLandings.add(y);if(y==Math.floor(y))actualLandings.add((int)y);}
             vy=(vy-.08)*.98;vx*=wasGround?.546:.91;now++;
         }
+        double supportHeight(double at){double support=halfTreads ? Math.floor(2*(at+.3))/2-.5 : Math.floor(at+.3);return Math.max(0,Math.min(height,support));}
         public long tick(){return now;}public long dayTime(){return 5000;}
         public PlayerState player(){return new PlayerState(axisX*(x-.5)+.5,y,axisZ*(x-.5)+.5,0,0,ground,false,20,20,0,true,true);}
         public boolean loaded(Pos p){return !p.equals(unloaded);}public boolean canStand(Pos p){return path.contains(p)&&!p.equals(removed);}
         public double standingY(Pos p){return canStand(p)?p.y():Double.NaN;}
         public boolean canTraverse(Pos a,Pos b){return canStand(a)&&canStand(b)&&Math.abs(a.x()-b.x())+Math.abs(a.z()-b.z())==1;}
         public boolean standardDescentPhysics(){return true;}
+        public boolean straightDescentStair(Pos from,Pos to,Profile p){return halfTreads&&stairProof;}
         public boolean canChainDescent(List<Pos> steps,Profile p){maxPreview=Math.max(maxPreview,steps.size());proofStarts.add(steps.get(0));return flowProof;}
         public BlockData block(Pos p){return new BlockData(p,p.equals(door)?"minecraft:oak_door":"minecraft:air",Map.of());}
         public List<BlockData> scan(Pos p,int h,int v){return List.of();}public List<ItemSlot> inventory(){return List.of();}

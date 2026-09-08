@@ -109,4 +109,49 @@ class NativeDescentChainTest {
         assertFalse(NativeDescentChain.straightStairShape(List.of(CUBE),1,0));
         assertFalse(NativeDescentChain.straightStairShape(List.of(new AABB(0,0,0,1,.5,1),new AABB(0,.5,0,.49,1,1)),1,0));
     }
+    private static Map<Pos,NativeLoggingJump.Cell> halfStairs() {
+        var cells=stairs();
+        for (Pos p:FEET.subList(0,2)) cells.put(p.offset(0,-1,0),cell(true,false,true,stairBoxes(1,0)));
+        return cells;
+    }
+    private static boolean inspectHalf(Map<Pos,NativeLoggingJump.Cell> cells) {
+        return NativeDescentChain.halfStepGeometry(FEET.subList(0,2),HEIGHTS.subList(0,2),.6,1.8,
+            p -> cells.getOrDefault(p,AIR),p -> true);
+    }
+    @Test void exactNativeHalfTreadsHaveTheirOwnSingleEdgeProofWithoutRequiringAFollowingStair() {
+        assertTrue(inspectHalf(halfStairs()));
+        assertFalse(NativeDescentChain.shape(FEET.subList(0,2)),"A single half-tread edge cannot authorize a chained handoff");
+        var cells=halfStairs();
+        assertFalse(NativeDescentChain.halfStepGeometry(FEET,HEIGHTS,.6,1.8,p -> cells.getOrDefault(p,AIR),p -> true));
+    }
+    @Test void fullBlocksSlabsAndUnknownNativeStairIdentityNeverShortenTheFallHorizon() {
+        for (Pos floor:List.of(FEET.get(0).offset(0,-1,0),FEET.get(1).offset(0,-1,0))) {
+            var cells=halfStairs();cells.put(floor,cell(true,false,true,List.of(CUBE)));
+            assertFalse(inspectHalf(cells));
+            cells.put(floor,cell(true,false,true,List.of(new AABB(0,0,0,1,.5,1))));
+            assertFalse(inspectHalf(cells));
+            var exact=halfStairs();
+            assertFalse(NativeDescentChain.halfStepGeometry(FEET.subList(0,2),HEIGHTS.subList(0,2),.6,1.8,
+                p -> exact.getOrDefault(p,AIR),p -> !p.equals(floor)));
+        }
+    }
+    @Test void nativeHalfTreadProofKeepsLoadingNormalSurfaceAndFullFlightHeadroomChecks() {
+        var cells=halfStairs();Pos floor=FEET.get(0).offset(0,-1,0);
+        cells.put(floor,cell(false,false,true,stairBoxes(1,0)));assertFalse(inspectHalf(cells));
+        cells.put(floor,cell(true,false,false,stairBoxes(1,0)));assertFalse(inspectHalf(cells));
+        cells.put(floor,cell(true,true,true,stairBoxes(1,0)));assertFalse(inspectHalf(cells));
+        cells=halfStairs();cells.put(new Pos(1,73,0),cell(true,false,true,List.of(CUBE)));assertFalse(inspectHalf(cells));
+        cells=halfStairs();cells.put(FEET.get(1),cell(true,true,true,List.of()));assertFalse(inspectHalf(cells));
+    }
+    @Test void halfTreadNativeProofHasTheSameDirectionAndHeightChecksOnEveryAxis() {
+        for (int[] d:List.of(new int[]{1,0},new int[]{-1,0},new int[]{0,1},new int[]{0,-1})) {
+            List<Pos> feet=List.of(new Pos(0,72,0),new Pos(d[0],71,d[1]));
+            var cells=new HashMap<Pos,NativeLoggingJump.Cell>();
+            for (Pos p:feet) cells.put(p.offset(0,-1,0),cell(true,false,true,stairBoxes(d[0],d[1])));
+            assertTrue(NativeDescentChain.halfStepGeometry(feet,List.of(72d,71d),.6,1.8,p -> cells.getOrDefault(p,AIR),p -> true));
+            assertFalse(NativeDescentChain.halfStepGeometry(feet,List.of(72d,71.5d),.6,1.8,p -> cells.getOrDefault(p,AIR),p -> true));
+            cells.put(feet.get(1).offset(0,-1,0),cell(true,false,true,stairBoxes(-d[0],-d[1])));
+            assertFalse(NativeDescentChain.halfStepGeometry(feet,List.of(72d,71d),.6,1.8,p -> cells.getOrDefault(p,AIR),p -> true));
+        }
+    }
 }
