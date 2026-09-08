@@ -825,3 +825,37 @@ verification. No new inventory interruption was induced in the running soak test
   **2026-09-08 04:18:16 UTC**. The first observed ON sample is at
   **04:18:16.904 UTC**. Post-restart cycles and uninterrupted endurance must be
   assessed from this new window, not concatenated with the prior run.
+
+### Post-restart full cycle, harvest handoff and new wine year
+
+- The next due harvest initially contained all 800 ripe tomatoes. Four later
+  one-second samples reported a direct-input pause before continuous mode
+  resumed. Existing harvest outputs were stored/shipped first, then the 719
+  remaining ripe plants were rescanned. Across both portions, **1,600 tomatoes
+  were stored, 90 rotten tomatoes deleted and 34 pine tar shipped**. A subsequent
+  complete field inspection found all 800 plants at age 0 and both next harvest
+  dates two days later. No action failed in this observed handoff. The trace
+  does not identify the input sender or exact sub-second toggle count; this is
+  not a guarantee about arbitrary manual inventory edits during consolidation.
+- The full **384-keg wine batch** consumed 1,152 tomatoes of the selected grade
+  after one 32-container survey. All 384 new wines were then stored through
+  seven confirmed transfers totaling 384, not sold. The actual opened menu and
+  navigation destination matched the registration for the new native wine year.
+  The preceding audited batch used native year 10; this batch used year 11 and
+  a different registered destination. The exact year rollover instant and an
+  initially empty pre-transfer menu were not directly captured. The common next
+  wine date advanced by six days, with no unfinished machines.
+- The following **144-jar preserves batch** consumed 720 tomatoes, returned 48
+  unused ingredients, and shipped all 144 products. It surveyed the 32 sources
+  once. Its next dates advanced by three days. With work complete, the engine
+  entered bed, five sleeping samples were observed, and the next day appeared
+  with no tracked products/ingredients or unresolved production obligation.
+- The latest uninterrupted ON window begins **04:32:44.354 UTC**, after the
+  direct-input handoff. Through **04:45:57.793 UTC**, its 794 samples and 1,483
+  consecutive action receipts show no OFF/disconnect, missing/unresolved action,
+  failure fence, navigation failure or trace loss. This is only **13 minutes
+  13.439 seconds**, not three hours. Earlier ON intervals are not added to it.
+- This preserves pass started after harvest and wine, well past dawn. It proves
+  full-cycle operation on the new build, but the new dawn snapshot wait still
+  requires a live due morning without those preceding jobs. Its unit regressions
+  and that future in-game verification are separate evidence.
