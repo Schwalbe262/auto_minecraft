@@ -6,7 +6,7 @@ public final class AutomationEngine {
     public enum State { OFF, RUNNING, WAITING, PAUSED, COMPLETE, ERROR }
     private final List<AutomationModule> modules;
     private final Map<AutomationModule,String> blockedThisSweep=new LinkedHashMap<>();
-    private record DeferredRetry(int failures,long at,String message) { }
+    private record DeferredRetry(int failures,long at,String message,boolean sleepSafe) { }
     private final Map<AutomationModule,DeferredRetry> deferred=new LinkedHashMap<>();
     private AutomationModule resourceWaiting;
     private String resourceWaitMessage;
@@ -141,7 +141,9 @@ public final class AutomationEngine {
                 if (blockedThisSweep.containsKey(module)) continue;
                 DeferredRetry retry=deferred.get(module);
                 if (retry!=null && c.world().tick()<retry.at()) continue;
-                if (module.feature()==Feature.SLEEP && blocked!=null) continue;
+                if (module.feature()==Feature.SLEEP && (!blockedThisSweep.isEmpty()
+                    || deferred.values().stream().anyMatch(wait->!wait.sleepSafe())
+                    || !deferred.isEmpty() && (!resourceBoundary(c) || c.actions().pauseReason()!=null))) continue;
                 if (module.feature()==Feature.PRESERVES && wineBlocked) continue;
                 WorkResult result=module.tick(c);
                 if (pauseForActions(c)) return;
@@ -200,11 +202,11 @@ public final class AutomationEngine {
     private boolean grantResourceWait(Context c,AutomationModule module,WorkResult result) {
         if (module.feature()!=Feature.LOGGING || !c.profile().loggingRunActive || !resourceBoundary(c)
             || module.resourceReadiness(c)!=AutomationModule.ResourceReadiness.WAITING) {
-            stop(c,State.PAUSED,"재식재 재료 보류 조건이 불확실해 미완료 작업을 보존했습니다: "+result.message()); return false;
+            stop(c,State.PAUSED,"벌목 대기 조건이 불확실해 미완료 작업을 보존했습니다: "+result.message()); return false;
         }
         resourceWaiting=module; resourceWaitMessage=result.message(); resourceCheckAt=c.world().tick()+1200;
         c.actions().stopMovement(); c.navigation().reset();
-        // Keep the module's confirmed PLANT phase, not an action ticket or an outcome.
+        // Keep the module's confirmed PLANT/visibility-wait phase, never an action ticket or outcome.
         return true;
     }
     private boolean refreshLoggingOwnership(Context c) {
@@ -250,11 +252,11 @@ public final class AutomationEngine {
     private boolean refreshResourceWait(Context c) {
         if (resourceWaiting==null || active!=null && active!=resourceWaiting) return true;
         if (!c.profile().loggingRunActive || !resourceBoundary(c)) {
-            stop(c,State.PAUSED,"재식재 재료 대기 중 조작 상태가 바뀌었습니다. 미완료 벌목을 확인하세요."); return false;
+            stop(c,State.PAUSED,"벌목 대기 중 조작 상태가 바뀌었습니다. 미완료 작업을 확인하세요."); return false;
         }
         AutomationModule.ResourceReadiness readiness=resourceWaiting.resourceReadiness(c);
         if (readiness==AutomationModule.ResourceReadiness.UNSAFE) {
-            stop(c,State.PAUSED,"재식재 구역이나 임시 아이템이 바뀌었습니다. 미완료 벌목을 보존했습니다."); return false;
+            stop(c,State.PAUSED,"벌목 구역이나 임시 아이템이 바뀌었습니다. 미완료 벌목을 보존했습니다."); return false;
         }
         if (readiness==AutomationModule.ResourceReadiness.READY || c.world().tick()>=resourceCheckAt) {
             active=resourceWaiting; clearResourceWait();
@@ -286,8 +288,9 @@ public final class AutomationEngine {
         DeferredRetry old=deferred.get(module);
         int failures=old==null ? 1 : Math.min(5,old.failures()+1);
         long delay=1200L*failures;
-        String message=module.feature()+" 이동 보류 ("+delay+"틱 후 재확인): "+result.message();
-        deferred.put(module,new DeferredRetry(failures,c.world().tick()+delay,message));
+        boolean sleepSafe=module.sleepSafeDeferred(c);
+        String message=module.feature()+(sleepSafe ? " 재료·응답 보류 (" : " 이동 보류 (")+delay+"틱 후 재확인): "+result.message();
+        deferred.put(module,new DeferredRetry(failures,c.world().tick()+delay,message,sleepSafe));
         c.actions().stopMovement(); c.navigation().reset(); module.reset();
         return true;
     }

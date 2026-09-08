@@ -25,6 +25,9 @@ public final class MinecraftActions implements ActionPort {
     private List<ItemSlot> beforeInventory;
     private BlockData beforeBlock;
     private PlayerState beforePlayer;
+    private net.minecraft.world.item.ItemStack artisanIngredient;
+    private final ArtisanAttemptFence<NativeArtisanReceipt.Attempt> artisanAttempts=new ArtisanAttemptFence<>(128);
+    private NativeArtisanReceipt.Attempt artisanAttempt;
     private Movement movement;
     private long movementAt;
     private long movementLookAt=Long.MIN_VALUE;
@@ -54,6 +57,10 @@ public final class MinecraftActions implements ActionPort {
     public void context(Context context) { this.context=context; }
     public void enabled(boolean enabled) { if (!enabled) stopMovement(); this.enabled=enabled; }
     public boolean busy() { return pending!=null; }
+    @Override public String artisanRejection(Pos target) {
+        return artisanAttempts.blocked(target,observations.generation(),attempt->attempt.confirmed(observations))
+            ? "이 가공 기계의 이전 서버 응답이 아직 불확실합니다. 재클릭하지 않고 다른 작업을 진행합니다." : null;
+    }
     @Override public boolean supportsMovingHarvest() { return true; }
     @Override public boolean supportsInventoryTrash() { return NativeTrashSlot.available(); }
     @Override public String recoveryStatus() {
@@ -79,11 +86,16 @@ public final class MinecraftActions implements ActionPort {
         String paused=pauseReason();
         if (paused!=null) { put(ticket,ActionOutcome.State.FAILED,paused); return ticket; }
         String rejection=SafetyPolicy.rejection(action,context);
+        if(rejection==null && action instanceof Action.UseBlock use && use.purpose()==Action.Use.ARTISAN)
+            rejection=artisanRejection(use.pos());
         ContainerShape requestedShape=null;
         if (rejection==null && action instanceof Action.UseBlock use && (use.purpose()==Action.Use.OPEN_CONTAINER || use.purpose()==Action.Use.OPEN_CRAFTING)) {
             requestedShape=containerShape(use.pos());
             if (requestedShape==null || !requestedShape.canonical().equals(use.pos()))
                 rejection="Container is unloaded, incomplete, or no longer the registered chest pair";
+            else if (use.purpose()==Action.Use.OPEN_CONTAINER && CommodityStorageRules.openAllowed(context,use.pos())
+                && !CommodityStorageRules.unreservedContainer(context.profile(),physicalContainerCells(requestedShape)))
+                rejection="Generic storage cannot open a physical chest half reserved for another role";
         }
         if (rejection==null && action instanceof Action.QuickMove transfer) rejection=transferRejection(transfer);
         if (rejection==null && action instanceof Action.CraftFireLogs craft && (!ownsContainer() || !craft.table().equals(ownedContainer)))
@@ -95,6 +107,8 @@ public final class MinecraftActions implements ActionPort {
         beforeMenu=world.menu(); beforeInventory=world.inventory();
         beforePlayer=world.player();
         beforeBlock=action instanceof Action.UseBlock use ? world.block(use.pos()) : null;
+        artisanIngredient=action instanceof Action.UseBlock use && use.purpose()==Action.Use.ARTISAN ? mc.player.getMainHandItem().copy() : null;
+        artisanAttempt=null;
         put(ticket,ActionOutcome.State.PENDING,"");
         try { execute(action); }
         catch (RuntimeException e) { finish(ActionOutcome.State.FAILED,"Game rejected the action: " + e.getClass().getSimpleName()); }
@@ -104,10 +118,14 @@ public final class MinecraftActions implements ActionPort {
         if (context.session().oneShotFeature==Feature.STORAGE_SURVEY) return "Storage survey cannot transfer items";
         if (!ownsContainer() || ownedContainer==null) return "This container was not opened by automation";
         Poi poi=context.profile().pois.stream().filter(p -> p.pos().equals(ownedContainer)).findFirst().orElse(null);
-        if (poi==null) return "Container registration changed";
         ItemSlot source=world.menu().slot(transfer.slot());
         ItemData item=source.item();
-        boolean kindMatches=switch (poi.kind()) {
+        boolean commodity=source.player() ? CommodityStorageRules.depositAllowed(context,ownedContainer,item)
+            : CommodityStorageRules.withdrawalAllowed(context,ownedContainer,item);
+        commodity &= StorageSurveyRules.ordinaryStorage(world.block(ownedContainer))
+            && CommodityStorageRules.unreservedContainer(context.profile(),physicalContainerCells(ownedShape));
+        if (poi==null && !commodity) return "Container registration changed or commodity transfer is outside its job";
+        boolean kindMatches=commodity || poi!=null && switch (poi.kind()) {
             case TOMATO_CHEST -> TomatoStorageRules.permitsTransfer(item,world.menu());
             case WINE_CHEST -> source.player() && item.is(ItemData.WINE) && item.year()!=null && item.year().equals(poi.classifier());
             case WOOD_CHEST -> LoggingRules.allowed(context) && source.player() && LoggingRules.wood(item);
@@ -127,6 +145,13 @@ public final class MinecraftActions implements ActionPort {
             var hit=world.hit(use.pos(),mc.player.getEyePosition());
             if (hit==null) { finish(ActionOutcome.State.FAILED,"Target no longer visible"); return; }
             lookAt(hit.getLocation());
+            if(use.purpose()==Action.Use.ARTISAN) {
+                artisanAttempt=new NativeArtisanReceipt.Attempt(ArtisanRules.at(context.profile(),use.pos()),use.pos(),beforeBlock,
+                    artisanIngredient,beforePlayer.selectedSlot(),beforeMenu.id(),beforeMenu,beforeSequence,observations.generation());
+                if(!artisanAttempts.sent(use.pos(),observations.generation(),artisanAttempt)) {
+                    artisanAttempt=null;finish(ActionOutcome.State.FAILED,"Unconfirmed artisan attempt prevents another send");return;
+                }
+            }
             var result=mc.gameMode.useItemOn(mc.player,InteractionHand.MAIN_HAND,hit);
             if (result.consumesAction()) mc.player.swing(InteractionHand.MAIN_HAND);
             // PASS does not trigger useItem(): eating/air-use is never a fallback.
@@ -207,7 +232,12 @@ public final class MinecraftActions implements ActionPort {
                     }
                 }
                 case SLEEP -> { if (mc.player.isSleeping()) { finish(ActionOutcome.State.SUCCEEDED,"Entered bed"); return; } }
-                case HARVEST, MACHINE, DOOR -> {
+                case ARTISAN -> {
+                    if(artisanAttempt!=null && artisanAttempt.confirmed(observations)) {
+                        finish(ActionOutcome.State.SUCCEEDED,"Server confirmed artisan state and participating slot");return;
+                    }
+                }
+                case HARVEST, MACHINE, FRUIT, DOOR -> {
                     boolean blockChanged=!world.block(use.pos()).equals(beforeBlock);
                     boolean inventoryChanged=!world.inventory().equals(beforeInventory);
                     if ((blockChanged && observations.blockSince(use.pos(),beforeSequence))
@@ -448,6 +478,10 @@ public final class MinecraftActions implements ActionPort {
             return chestSlots==0 || menu.slots().stream().filter(s -> !s.player()).count()==chestSlots;
         }
     }
+    private static java.util.Collection<Pos> physicalContainerCells(ContainerShape shape) {
+        if (shape==null || shape.canonical()==null) return java.util.List.of();
+        return shape.chestStates().isEmpty() ? java.util.List.of(shape.canonical()) : shape.chestStates().keySet();
+    }
     private ContainerShape containerShape(Pos pos) {
         if (pos==null || mc.level==null || !world.loaded(pos)) return null;
         BlockData block=world.block(pos);
@@ -583,11 +617,16 @@ public final class MinecraftActions implements ActionPort {
         }
         loggingAction=null; loggingRecipe=null; loggingSwap=null;
     }
-    private void finish(ActionOutcome.State state,String message) { finishConsolidation(state,message); finishTrash(state,message); finishLogging(state,message); put(pendingTicket,state,message); pending=null; }
+    private void finishArtisan(ActionOutcome.State state) {
+        if(artisanAttempt!=null && state==ActionOutcome.State.SUCCEEDED)artisanAttempts.confirmed(artisanAttempt.target(),artisanAttempt);
+        artisanAttempt=null; // Failed/cancelled sent attempts remain in their target-scoped RAM fence.
+    }
+    private void finish(ActionOutcome.State state,String message) { finishConsolidation(state,message); finishTrash(state,message); finishLogging(state,message); finishArtisan(state); put(pendingTicket,state,message); pending=null; }
     private void finish(ActionOutcome.State state,String message,int quantity) {
         finishConsolidation(state,message);
         finishTrash(state,message);
         finishLogging(state,message);
+        finishArtisan(state);
         outcomes.put(pendingTicket,new ActionOutcome(state,message,quantity)); pending=null;
         if (outcomes.size()>512) outcomes.remove(outcomes.keySet().iterator().next());
     }

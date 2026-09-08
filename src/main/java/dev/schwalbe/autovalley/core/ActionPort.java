@@ -16,6 +16,8 @@ public interface ActionPort {
     default String startRejection() { return pauseReason(); }
     /** Informational bounded same-ticket recovery; null does not clear any action fence. */
     default String recoveryStatus() { return null; }
+    /** Target-scoped unconfirmed artisan use; does not stop unrelated automation. */
+    default String artisanRejection(Pos target) { return null; }
     /** Moving/aiming separation must be supported before a module overlaps harvest and walking. */
     default boolean supportsMovingHarvest() { return false; }
     /** Requires a supported server-side TrashSlot single-slot deletion channel. */

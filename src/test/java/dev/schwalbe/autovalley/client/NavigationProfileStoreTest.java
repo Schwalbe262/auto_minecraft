@@ -14,7 +14,7 @@ class NavigationProfileStoreTest {
 
     @Test void newProfilesUseTerrainAndRetainWaypointHintsWithoutEnablingLogging() {
         Profile profile = new Profile();
-        assertEquals(4, profile.schemaVersion); assertEquals(NavigationMode.TERRAIN, profile.navigationMode);
+        assertEquals(5, profile.schemaVersion); assertEquals(NavigationMode.TERRAIN, profile.navigationMode);
         assertTrue(profile.useWaypointHints); assertTrue(profile.coordinateDestinations.isEmpty());
         assertFalse(profile.enabled(Feature.LOGGING));
     }
@@ -26,13 +26,13 @@ class NavigationProfileStoreTest {
             Path file = directory.resolve(key + ".json");
             String old = "{\"schemaVersion\":" + schema + ",\"pois\":[{\"pos\":{\"x\":1,\"y\":64,\"z\":2},\"kind\":\"WAYPOINT\",\"label\":\"Keep\"}]}";
             Files.writeString(file, old); Profile loaded = store.load(key);
-            assertEquals(4, loaded.schemaVersion); assertEquals(NavigationMode.TERRAIN, loaded.navigationMode);
+            assertEquals(5, loaded.schemaVersion); assertEquals(NavigationMode.TERRAIN, loaded.navigationMode);
             assertTrue(loaded.useWaypointHints); assertTrue(loaded.coordinateDestinations.isEmpty());
             assertEquals(1, loaded.pois.size()); assertEquals(PoiKind.WAYPOINT, loaded.pois.get(0).kind());
             assertEquals(old, Files.readString(file));
             store.save(key, loaded);
             assertEquals(old, Files.readString(directory.resolve(key + ".json.bak")));
-            assertTrue(Files.readString(file).contains("\"schemaVersion\": 4"));
+            assertTrue(Files.readString(file).contains("\"schemaVersion\": 5"));
         }
     }
 
@@ -104,7 +104,7 @@ class NavigationProfileStoreTest {
 
     @Test void UnknownModeNullDraftCollectionAndFutureSchemaAreRejectedReadOnly() throws Exception {
         String key = ProfileStore.key("broken coordinate format"); Path file = directory.resolve(key + ".json");
-        for (String json : List.of("{\"schemaVersion\":5}", "{\"schemaVersion\":4,\"navigationMode\":\"UNKNOWN\"}",
+        for (String json : List.of("{\"schemaVersion\":6}", "{\"schemaVersion\":4,\"navigationMode\":\"UNKNOWN\"}",
                 "{\"schemaVersion\":3,\"coordinateDestinations\":null}")) {
             Files.writeString(file, json);
             assertThrows(IOException.class, () -> new ProfileStore(directory).load(key));

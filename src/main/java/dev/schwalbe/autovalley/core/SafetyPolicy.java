@@ -30,11 +30,13 @@ public final class SafetyPolicy {
             return switch (use.purpose()) {
                 case HARVEST -> {
                     ItemData held = held(world);
-                    boolean inFarm = profile.farms.stream().anyMatch(f -> f.contains(use.pos()));
-                    yield !context.session().allows(profile,Feature.HARVEST) || !inFarm || !block.matureTomato() || !held.hoe()
+                    CropDefinition crop=CropRules.registeredCrop(profile,use.pos());
+                    yield !context.session().allows(profile,Feature.HARVEST) || !CropRules.mature(crop,block) || !held.hoe()
                         || held.durability()<=1 || player.selectedSlot()!=profile.hoeHotbarSlot
-                        ? "Harvest requires a mature registered tomato and the selected usable hoe" : HarvestSafety.rejection(context,use.pos());
+                        ? "Harvest requires a mature registered crop and the selected usable hoe" : HarvestSafety.rejection(context,use.pos());
                 }
+                case ARTISAN -> ArtisanRules.rejection(context,use.pos(),block,held(world));
+                case FRUIT -> FruitRules.rejection(context,use.pos(),block,held(world));
                 case MACHINE -> {
                     boolean wine = block.id().equals("society:wine_keg");
                     PoiKind kind = wine ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR;
@@ -47,7 +49,7 @@ public final class SafetyPolicy {
                     yield !known || !context.session().allows(profile,feature) || !registered(profile,use.pos(),kind)
                         || block.flag("working") && !block.flag("mature") || !validHand ? "Machine, ingredient, or batch is not ready" : null;
                 }
-                case OPEN_CONTAINER -> profile.pois.stream().noneMatch(p -> p.pos().equals(use.pos())
+                case OPEN_CONTAINER -> !(CommodityStorageRules.openAllowed(context,use.pos()) && StorageSurveyRules.ordinaryStorage(block)) && profile.pois.stream().noneMatch(p -> p.pos().equals(use.pos())
                     && (p.kind()==PoiKind.TOMATO_CHEST || p.kind()==PoiKind.WINE_CHEST || !surveying && p.kind()==PoiKind.SHIPPING_BIN
                         || surveying && p.kind()==PoiKind.STORAGE_CANDIDATE
                         || LoggingRules.allowed(context) && p.kind()==PoiKind.WOOD_CHEST))
@@ -95,8 +97,9 @@ public final class SafetyPolicy {
             if (slot==null || slot.item().empty()) return "Transfer slot is empty";
             String id=slot.item().id();
             boolean loggingItem=LoggingRules.wood(slot.item()) || LoggingRules.byproduct(slot.item());
-            if (!id.equals(ItemData.TOMATO) && !id.equals(ItemData.WINE) && !slot.item().standardShippingProduct() && !loggingItem) return "Item is outside automation scope";
-            if (!slot.player() && !id.equals(ItemData.TOMATO)) return "Only tomatoes may be withdrawn from storage";
+            boolean commodity=CommodityStorageRules.knownItem(context,slot.item());
+            if (!id.equals(ItemData.TOMATO) && !id.equals(ItemData.WINE) && !slot.item().standardShippingProduct() && !loggingItem && !commodity) return "Item is outside automation scope";
+            if (!slot.player() && !id.equals(ItemData.TOMATO) && !commodity) return "Only registered production ingredients may be withdrawn";
             if (loggingItem && (!LoggingRules.allowed(context) || !slot.player() || slot.inventoryIndex()<0 || slot.inventoryIndex()>=36))
                 return "Logging transfers require normal player inventory and the selected logging job";
             if (slot.item().standardShippingProduct() && (slot.inventoryIndex()<0 || slot.inventoryIndex()>=36))

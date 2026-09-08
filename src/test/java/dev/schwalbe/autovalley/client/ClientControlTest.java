@@ -12,6 +12,16 @@ class ClientControlTest {
         assertEquals("pause",parse(" \n { \"command\" : \"pause\" } \t "));
     }
 
+    @Test void workImportIsExplicitAndCannotSupplyPathsOrEnableSwitchesThroughTheControlChannel() throws Exception {
+        assertEquals("import_work",parse("{\"command\":\"import_work\"}"));
+        for (String input : new String[]{
+                "{\"command\":\"import_work\",\"name\":\"work-import.json\"}",
+                "{\"command\":\"import_work\",\"path\":\"elsewhere.json\"}",
+                "{\"command\":\"import_work\",\"feature\":\"SEED_MAKER\"}",
+                "{\"command\":\"import_work\",\"command\":\"start\"}"})
+            assertThrows(Exception.class,()->parse(input));
+    }
+
     @Test void rejectsMalformedJsonWithoutLenientParsing() {
         for (String input : new String[]{"", "{", "{\"command\":\"start\"", "{'command':'start'}",
                 "{command:\"start\"}", "{\"command\":\"start\",}", "/*comment*/{\"command\":\"start\"}",

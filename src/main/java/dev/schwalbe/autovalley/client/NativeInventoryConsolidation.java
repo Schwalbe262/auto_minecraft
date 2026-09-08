@@ -3,6 +3,8 @@ package dev.schwalbe.autovalley.client;
 import dev.schwalbe.autovalley.core.InventoryConsolidation;
 import dev.schwalbe.autovalley.core.ItemData;
 import dev.schwalbe.autovalley.core.ProductionMergePlanner;
+import dev.schwalbe.autovalley.core.CropRules;
+import dev.schwalbe.autovalley.core.FruitRules;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
@@ -127,7 +129,8 @@ final class NativeInventoryConsolidation {
         if (after.empty() || after.count()<=before.count()) return false;
         try {
             String id=TagParser.parseTag(after.identity()).getString("id");
-            if (!Set.of(ItemData.TOMATO,ItemData.WINE,ItemData.PRESERVES).contains(id)) return false;
+            if (!Set.of(ItemData.TOMATO,ItemData.WINE,ItemData.PRESERVES,CropRules.ANCIENT_FRUIT_ITEM,
+                "society:ancient_fruit_seed","society:jade",FruitRules.ITEM).contains(id)) return false;
             return before.empty() || before.limit()==after.limit() && before.identity().equals(after.identity());
         } catch (com.mojang.brigadier.exceptions.CommandSyntaxException failure) { return false; }
     }

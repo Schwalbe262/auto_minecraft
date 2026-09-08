@@ -3,14 +3,19 @@ package dev.schwalbe.autovalley.core;
 import java.util.*;
 
 public final class Profile {
-    public int schemaVersion = 4;
+    public int schemaVersion = 5;
     public NavigationMode navigationMode = NavigationMode.TERRAIN;
     public boolean useWaypointHints = true;
     /** Coordinate drafts remain separate from registered, authorized work locations. */
     public List<CoordinateDestination> coordinateDestinations = new ArrayList<>();
     public List<Poi> pois = new ArrayList<>();
     public Map<String,MachineGroup> machineGroups = new LinkedHashMap<>();
+    public Map<String,ArtisanJob> artisanJobs = new LinkedHashMap<>();
     public List<Farm> farms = new ArrayList<>();
+    public Map<String,CommodityStore> commodityStores = new LinkedHashMap<>();
+    public Map<String,String> cropStores = new LinkedHashMap<>();
+    public List<FruitPatch> fruitPatches = new ArrayList<>();
+    public Map<String,CropDefinition> crops = CropRules.defaults();
     public List<LoggingPlot> loggingPlots = new ArrayList<>();
     public boolean loggingRunActive = false;
     public List<Pos> loggingRemainingPlots = new ArrayList<>();
@@ -52,6 +57,7 @@ public final class Profile {
     public boolean inWorkArea(Pos p) {
         if (farms.stream().anyMatch(f -> f.contains(p) || f.contains(p.offset(0,1,0)) || f.contains(p.offset(0,-1,0)) )) return true;
         for (Poi poi : pois) if (poi.pos().distanceSquared(p) <= corridorRadius * corridorRadius) return true;
+        for (Pos site:AdditionalWorkRules.sites(this)) if(site.distanceSquared(p)<=corridorRadius*corridorRadius)return true;
         return false;
     }
 }

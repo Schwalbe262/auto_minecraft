@@ -13,6 +13,7 @@ abstract class DepositModule implements AutomationModule {
     private int candidate, containerId = -1, before, beforeDestination;
     protected abstract String itemId();
     protected boolean accepts(ItemData item) { return item.is(itemId()); }
+    protected boolean requiresKnownQuality() { return destinationKind()!=PoiKind.TOMATO_CHEST; }
     protected abstract PoiKind destinationKind();
     protected abstract Integer classifier(ItemData item);
     protected List<Poi> destinations(Context c,ItemData item) {
@@ -53,7 +54,7 @@ abstract class DepositModule implements AutomationModule {
                     return WorkResult.idle();
                 }
                 selected = slot.item();
-                if (destinationKind()!=PoiKind.TOMATO_CHEST && (selected.quality() < 0 || selected.quality() > 3)) return fail("Unknown product quality; inspect the item");
+                if (requiresKnownQuality() && (selected.quality() < 0 || selected.quality() > 3)) return fail("Unknown product quality; inspect the item");
                 Integer group = classifier(selected);
                 if (destinationKind() == PoiKind.WINE_CHEST && group == null) {
                     if (unknownSince < 0) unknownSince = c.world().tick();

@@ -24,7 +24,9 @@ public final class ClientRuntime {
     private final LocalNavigator navigator=new LocalNavigator();
     private final HarvestModule harvest=new HarvestModule();
     private final AutomationEngine engine=new AutomationEngine(List.of(new StorageSurveyModule(),new DisposalModule(),new TomatoStorageModule(),
-        new WineStorageModule(),new WineSurplusShippingModule(),new ShippingModule(),harvest,new MachineModule(Feature.WINE),new MachineModule(Feature.PRESERVES),new LoggingModule(),new SleepModule()));
+        new WineStorageModule(),new WineSurplusShippingModule(),new ShippingModule(),new CommodityStorageModule(),new HarvestAndStorageModule(harvest),
+        new MachineModule(Feature.WINE),new MachineModule(Feature.PRESERVES),new ArtisanModule(Feature.SEED_MAKER),new ArtisanModule(Feature.CRYSTAL_COPY),
+        new StarfruitModule(),new LoggingModule(),new SleepModule()));
     private final ProfileStore store=new ProfileStore(FMLPaths.CONFIGDIR.get().resolve("autovalley"));
     private Profile profile=new Profile();
     private Context context=new Context(world,actions,navigator,profile);
@@ -134,6 +136,10 @@ public final class ClientRuntime {
             default -> null;
         };
         if (feature==null || feature==Feature.HARVEST && profile.farms.isEmpty()
+            || feature==Feature.COMMODITY_STORAGE && profile.commodityStores.isEmpty()
+            || feature==Feature.STARFRUIT && profile.fruitPatches.isEmpty()
+            || (feature==Feature.SEED_MAKER || feature==Feature.CRYSTAL_COPY)
+                && profile.artisanJobs.values().stream().noneMatch(job->job.recipe().feature()==feature)
             || feature==Feature.LOGGING && (profile.loggingPlots.isEmpty() || profile.loggingAxeHotbarSlot<0
                 || profile.pois(PoiKind.WOOD_CHEST).isEmpty() || profile.pois(PoiKind.LOGGING_CRAFTING_TABLE).isEmpty()
                 || profile.pois(PoiKind.SHIPPING_BIN).isEmpty())
@@ -189,6 +195,30 @@ public final class ClientRuntime {
         if (persistenceError!=null) throw new IllegalStateException(persistenceError);
         try { store.save(profileKey,profile); savedScheduleHash=scheduleHash(); }
         catch (IOException | RuntimeException e) { throw new IllegalStateException("설정을 저장하지 못했습니다. 기존 파일은 보존됩니다.",e); }
+    }
+    public boolean importWorkDefinitions() {
+        if(running() || recording() || actions.busy() || profileKey==null || persistenceError!=null || actions.startRejection()!=null) {
+            notifyUser("자동화와 기록을 멈추고 진행 중인 조작을 확인한 뒤 설정을 가져오세요.");return false;
+        }
+        try {
+            var file=FMLPaths.CONFIGDIR.get().toAbsolutePath().normalize().resolve("autovalley/work-import.json");
+            if(!java.nio.file.Files.isRegularFile(file,java.nio.file.LinkOption.NOFOLLOW_LINKS) || java.nio.file.Files.size(file)>200_000)
+                throw new IOException("Missing or oversized work import");
+            byte[] content;
+            try(var input=java.nio.file.Files.newInputStream(file,java.nio.file.LinkOption.NOFOLLOW_LINKS)) { content=input.readNBytes(200_001); }
+            if(content.length>200_000)throw new IOException("Work import grew beyond the size limit");
+            String json=java.nio.charset.StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(content)).toString();
+            Profile candidate=WorkRegistrationImport.merge(profile,json);
+            // Save before replacing the live profile; an invalid import cannot
+            // erase schedules or partially enable newly registered work.
+            store.save(profileKey,candidate);
+            engine.stop(context,AutomationEngine.State.OFF,"작업 설정 가져오기 완료 — F8로 시작");
+            profile=candidate;context=new Context(world,actions,navigator,profile,new SessionState(),this::checkpointMachineState);
+            actions.context(context);actions.enabled(false);savedScheduleHash=scheduleHash();
+            notifyUser("작물·저장소·기계 묶음 설정을 가져왔습니다. 기존 일정은 유지했습니다.");return true;
+        } catch(IOException | RuntimeException invalid) {
+            notifyUser("설정을 가져오지 못했습니다: "+invalid.getMessage());return false;
+        }
     }
     public void startCalibration() {
         pause("수확 속도 측정을 예약했습니다.");

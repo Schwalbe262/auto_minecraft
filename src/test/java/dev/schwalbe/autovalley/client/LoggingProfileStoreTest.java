@@ -14,9 +14,11 @@ class LoggingProfileStoreTest {
 
     @Test void newProfileKeepsLoggingOffAndAllExistingDefaultsUnchanged() {
         Profile p = new Profile();
-        assertEquals(4, p.schemaVersion);
+        assertEquals(5, p.schemaVersion);
         assertFalse(p.enabled(Feature.LOGGING));
-        for (Feature feature : Feature.values()) if (feature != Feature.LOGGING) assertTrue(p.enabled(feature));
+        Set<Feature> optIn = Set.of(Feature.LOGGING, Feature.COMMODITY_STORAGE, Feature.SEED_MAKER,
+                Feature.CRYSTAL_COPY, Feature.STARFRUIT);
+        for (Feature feature : Feature.values()) assertEquals(!optIn.contains(feature), p.enabled(feature), feature.name());
         assertTrue(p.loggingPlots.isEmpty()); assertEquals(-1, p.loggingAxeHotbarSlot);
         assertEquals(0, p.loggingSaplingReserve); assertEquals(LoggingMode.ALL_GROWN, p.loggingMode);
         assertEquals(1200, p.loggingCheckTicks); assertEquals(1, p.loggingCycleDays);
@@ -29,7 +31,7 @@ class LoggingProfileStoreTest {
         String json = "{\"schemaVersion\":2,\"enabled\":{\"WINE\":false}}";
         Path file = directory.resolve(key + ".json"); Files.writeString(file, json);
         Profile loaded = new ProfileStore(directory).load(key);
-        assertEquals(4, loaded.schemaVersion);
+        assertEquals(5, loaded.schemaVersion);
         assertFalse(loaded.enabled(Feature.LOGGING)); assertFalse(loaded.enabled(Feature.WINE));
         assertTrue(loaded.enabled(Feature.HARVEST)); assertEquals(-1, loaded.loggingAxeHotbarSlot);
         assertTrue(loaded.loggingPlots.isEmpty()); assertTrue(loaded.loggingRemainingPlots.isEmpty());
@@ -136,14 +138,14 @@ class LoggingProfileStoreTest {
     @Test void legacySchemaTwoUpgradesOnlyOnExplicitSaveAndGuardsLoggingProgressFromOldClients() throws Exception {
         ProfileStore store = new ProfileStore(directory); String key = ProfileStore.key("schema two logging upgrade");
         Path file = directory.resolve(key + ".json"); String old = "{\"schemaVersion\":2}"; Files.writeString(file, old);
-        Profile p = store.load(key); assertEquals(4, p.schemaVersion); assertEquals(old, Files.readString(file));
+        Profile p = store.load(key); assertEquals(5, p.schemaVersion); assertEquals(old, Files.readString(file));
         p.loggingPlots.add(new LoggingPlot("remaining", new Pos(0, 64, 0)));
         p.loggingRunActive = true; p.loggingRemainingPlots.add(p.loggingPlots.get(0).corner());
         p.loggingReplantingPlots.add(p.loggingPlots.get(0).corner());
         store.save(key, p);
-        assertTrue(Files.readString(file).contains("\"schemaVersion\": 4"));
+        assertTrue(Files.readString(file).contains("\"schemaVersion\": 5"));
         assertEquals(old, Files.readString(directory.resolve(key + ".json.bak")));
-        Profile loaded = store.load(key); assertEquals(4, loaded.schemaVersion); assertTrue(loaded.loggingRunActive);
+        Profile loaded = store.load(key); assertEquals(5, loaded.schemaVersion); assertTrue(loaded.loggingRunActive);
         assertEquals(p.loggingRemainingPlots, loaded.loggingRemainingPlots);
         assertEquals(p.loggingReplantingPlots, loaded.loggingReplantingPlots);
     }

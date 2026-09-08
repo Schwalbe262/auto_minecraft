@@ -5,7 +5,7 @@ import dev.schwalbe.autovalley.navigation.LocalNavigator;
 import dev.schwalbe.autovalley.navigation.HarvestRoutePlanner;
 import java.util.*;
 
-/** Right-click-only tomato harvest confirmed by the native acknowledgement and crop state. */
+/** One registered-crop harvest engine, confirmed by native acknowledgement and observed crop state. */
 public final class HarvestModule implements AutomationModule {
     private enum Stage { PREPARE, APPROACH, USING, PICKUP }
     private Stage stage = Stage.PREPARE;
@@ -14,6 +14,7 @@ public final class HarvestModule implements AutomationModule {
     private final Set<String> harvestedThisPass = new HashSet<>();
     private final Set<String> completedFields = new HashSet<>();
     private Farm observingFarm;
+    private CropDefinition observingCrop;
     private final ModuleSupport.ObservationWindow observationWindow=new ModuleSupport.ObservationWindow();
     private Pos target;
     private Pos continuation;
@@ -80,14 +81,19 @@ public final class HarvestModule implements AutomationModule {
         // Dew Drop performs daily growth around day tick 5..14; inspect after that morning update.
         if (!active && observingFarm==null && completedFields.isEmpty() && Math.floorMod(world.dayTime(),24000L) < 20) return WorkResult.idle();
         if (!active && observingFarm==null && completedFields.isEmpty() && world.tick() < cooldownUntil && gameDay(world) == cooldownDay) return WorkResult.idle();
-        if (profile.farms.isEmpty()) return fail(context, "토마토밭의 두 모서리를 먼저 등록하세요.");
+        if (profile.farms.isEmpty()) return fail(context, "수확할 밭의 작물과 두 모서리를 먼저 등록하세요.");
         if (world.menu() != null && (world.menu().container() || !world.menu().carried().empty()))
             return fail(context, "수확을 시작하려면 열린 상자와 커서의 아이템을 정리하세요.");
+        if(observingFarm!=null && (!profile.farms.contains(observingFarm)
+                || observingCrop!=null && !observingCrop.equals(CropRules.definition(profile,observingFarm))))
+            return fail(context,"수확 중 밭 또는 작물 정의가 바뀌었습니다. 등록 내용을 다시 확인하세요.");
         if (!active) {
             if (observingFarm==null) observingFarm=profile.farms.stream()
                 .filter(f -> !completedFields.contains(farmKey(f)) && profile.nextEligibleDay.getOrDefault(farmKey(f),Long.MIN_VALUE)<=gameDay(world))
                 .min(Comparator.comparingDouble(f -> world.player().distance(f.first()))).orElse(null);
             if (observingFarm==null) return finish(context);
+            observingCrop=CropRules.definition(profile,observingFarm);
+            if(observingCrop==null)return fail(context,"등록된 밭의 작물 정의가 없거나 올바르지 않습니다: "+observingFarm.cropId());
             WorkResult observing=observeFarm(context);
             if (observing!=null) return observing;
             String error = scan(context);
@@ -131,7 +137,7 @@ public final class HarvestModule implements AutomationModule {
                     Pos candidate = pending.peekFirst();
                     if (!world.loaded(candidate)) return ModuleSupport.observe(context,candidate,8,"수확 대상 청크 확인");
                     pending.removeFirst();
-                    if (isMature(world, candidate)) { target = candidate; break; }
+                    if (isMature(context, candidate)) { target = candidate; break; }
                 }
                 if (target == null) {
                     if (sweep++ == 0) {
@@ -140,7 +146,7 @@ public final class HarvestModule implements AutomationModule {
                         String error = scan(context);
                         if (error != null) return fail(context, error);
                         orderPending(context);
-                        if (!pending.isEmpty()) return WorkResult.busy("남아 있는 익은 토마토를 다시 확인합니다.");
+                        if (!pending.isEmpty()) return WorkResult.busy("남아 있는 익은 작물을 다시 확인합니다.");
                     }
                     return finishField(context);
                 }
@@ -152,16 +158,16 @@ public final class HarvestModule implements AutomationModule {
                     navigator.setSprint(sampleSprint);
                 }
             }
-            if (!profile.continueHarvestWhenFull && !hasHarvestRoom(world.inventory()))
-                return fail(context, "토마토와 썩은 토마토를 담을 공간이 부족합니다.");
+            if (!profile.continueHarvestWhenFull && !hasHarvestRoom(world.inventory(),observingCrop))
+                return fail(context, "선택한 작물의 수확물을 담을 공간이 부족합니다.");
             if (!world.loaded(target)) return ModuleSupport.observe(context,target,8,"수확 대상 청크 확인");
-            if (!isMature(world, target)) { target = null; return WorkResult.busy("이미 수확된 작물을 건너뜁니다."); }
+            if (!isMature(context, target)) { target = null; return WorkResult.busy("이미 수확된 작물을 건너뜁니다."); }
             ItemSlot held = inventorySlot(world, profile.hoeHotbarSlot);
             if (world.player().selectedSlot() != profile.hoeHotbarSlot || held == null || !usableHoe(held.item()))
                 return fail(context, "주 손의 괭이 또는 내구도가 바뀌었습니다.");
             Navigation.Result arrival = context.navigation().moveTo(target, calibration ? 1.6 : 2.15, context);
             if (arrival == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(context,navigationFailure(context));
-            if (arrival == Navigation.Result.MOVING) return WorkResult.busy(sampleSprint ? "달리며 익은 토마토에 접근합니다." : "익은 토마토에 접근합니다.");
+            if (arrival == Navigation.Result.MOVING) return WorkResult.busy(sampleSprint ? "달리며 익은 작물에 접근합니다." : "익은 작물에 접근합니다.");
             if (actions.busy()) return WorkResult.busy("이전 조작을 기다립니다.");
             String footprintRejection = HarvestSafety.rejection(context,target);
             if (footprintRejection != null) return fail(context,footprintRejection);
@@ -182,17 +188,18 @@ public final class HarvestModule implements AutomationModule {
             ActionOutcome outcome = actions.outcome(ticket);
             if (!outcome.done()) {
                 continueHarvestMovement(context);
-                return WorkResult.busy("토마토 성장 상태 변경을 기다립니다.");
+                return WorkResult.busy("작물 성장 상태 변경을 기다립니다.");
             }
+            if(!world.loaded(target)) {stopContinuation(context);return ModuleSupport.observe(context,target,8,"수확한 작물 상태 확인");}
             ticket = -1;
-            if (!outcome.success() || isMature(world, target)) {
-                if (useAttempts < 2 && isMature(world, target)) {
+            if (!outcome.success() || isMature(context, target)) {
+                if (useAttempts < 2 && isMature(context, target)) {
                     stopContinuation(context);
                     stage = Stage.APPROACH;
                     return WorkResult.busy("우클릭 수확을 한 번 다시 확인합니다.");
                 }
                 recordSample(context, true);
-                if (!isMature(world,target)) unresolvedOutput = "작물은 바뀌었지만 수확 응답이 확인되지 않았습니다. 수확물을 확인한 뒤 F8로 다시 시작하세요.";
+                if (!isMature(context,target)) unresolvedOutput = "작물은 바뀌었지만 수확 응답이 확인되지 않았습니다. 수확물을 확인한 뒤 F8로 다시 시작하세요.";
                 return fail(context, unresolvedOutput != null ? unresolvedOutput : "우클릭 수확이 확인되지 않았습니다: " + outcome.message());
             }
             pickupStarted = world.tick();
@@ -231,7 +238,7 @@ public final class HarvestModule implements AutomationModule {
         WorldAccess world = context.world();
         List<Pos> nearby = pending.stream()
             .filter(p -> HarvestRoutePlanner.withinFootprint(target,p,harvestRadius))
-            .filter(world::loaded).filter(p -> isMature(world,p)).toList();
+            .filter(world::loaded).filter(p -> isMature(context,p)).toList();
         Pos best = null;
         int bestCoverage = 0;
         double bestDistance = Double.POSITIVE_INFINITY;
@@ -264,7 +271,7 @@ public final class HarvestModule implements AutomationModule {
         // APPROACH rechecks after the current use has actually been confirmed.
         Pos next=null;
         for (Pos candidate:pending) {
-            if (!world.loaded(candidate) || isMature(world,candidate)) { next=candidate; break; }
+            if (!world.loaded(candidate) || isMature(context,candidate)) { next=candidate; break; }
         }
         Integer lane=primaryLanes.get(target);
         boolean sameLane=lane!=null && next!=null && lane.equals(primaryLanes.get(next));
@@ -302,8 +309,11 @@ public final class HarvestModule implements AutomationModule {
                     int x = reverse ? maxX - (xi - minX) : xi;
                     for (int y = minY; y <= maxY; y++) {
                         Pos p = new Pos(x,y,z);
-                        if (!context.world().loaded(p)) return "토마토밭 일부가 로드되지 않았습니다. 밭 근처에서 다시 시작하세요.";
-                        if (isMature(context.world(), p)) {
+                        if (!context.world().loaded(p)) return "밭 일부가 로드되지 않았습니다. 밭 근처에서 다시 시작하세요.";
+                        if(CropRules.matches(observingCrop,context.world().block(p))
+                                && !observingCrop.equals(CropRules.registeredCrop(context.profile(),p)))
+                            return "서로 다른 작물의 밭 등록이 겹칩니다. 수확 범위를 다시 확인하세요.";
+                        if (isMature(context, p)) {
                             matureCount++;
                             if (seen.add(p)) pending.addLast(p);
                         }
@@ -311,7 +321,7 @@ public final class HarvestModule implements AutomationModule {
                 }
             }
             if (matureCount == 0) context.profile().nextEligibleDay.put(farmKey(farm),gameDay(context.world())
-                + (harvestedThisPass.contains(farmKey(farm)) ? Math.max(1,context.profile().harvestCycleDays) : 1));
+                + (harvestedThisPass.contains(farmKey(farm)) ? CropRules.cycleDays(context.profile(),farm) : 1));
         }
         return null;
     }
@@ -324,19 +334,19 @@ public final class HarvestModule implements AutomationModule {
             for(int y=Math.min(farm.first().y(),farm.second().y());y<=Math.max(farm.first().y(),farm.second().y());y++)
                 for(int z=Math.min(farm.first().z(),farm.second().z());z<=Math.max(farm.first().z(),farm.second().z());z++) {
                     Pos cell=new Pos(x,y,z);
-                    if (!c.world().loaded(cell)) return observationWindow.observe(c,cell,8,"토마토밭 "+farm.name()+" 관측");
+                    if (!c.world().loaded(cell)) return observationWindow.observe(c,cell,8,"밭 "+farm.name()+" 관측");
                 }
         return null;
     }
 
     private WorkResult finishField(Context c) {
-        completedFields.add(farmKey(observingFarm)); observingFarm=null;
+        completedFields.add(farmKey(observingFarm)); observingFarm=null; observingCrop=null;
         observationWindow.clear();
         active=false; target=null; routeOrdered=false; sweep=0; stage=Stage.PREPARE;
         pending.clear(); primaryLanes.clear(); c.actions().stopMovement(); c.navigation().reset();
         if (c.profile().farms.stream().noneMatch(f -> !completedFields.contains(farmKey(f))
             && c.profile().nextEligibleDay.getOrDefault(farmKey(f),Long.MIN_VALUE)<=gameDay(c.world()))) return finish(c);
-        return WorkResult.busy("확인한 토마토밭을 마치고 다음 작업장 확인");
+        return WorkResult.busy("확인한 밭을 마치고 다음 작업장 확인");
     }
 
     private void orderPending(Context context) {
@@ -350,6 +360,8 @@ public final class HarvestModule implements AutomationModule {
         pending.clear();
         int nextLane=0;
         for (Farm farm:context.profile().farms) {
+            CropDefinition crop=CropRules.definition(context.profile(),farm);
+            if(crop==null || !crop.equals(observingCrop))continue;
             List<Pos> sector = remaining.stream().filter(farm::contains).toList();
             if (sector.isEmpty()) continue;
             List<Pos> layout=new ArrayList<>();
@@ -359,7 +371,7 @@ public final class HarvestModule implements AutomationModule {
                         Pos position=new Pos(x,y,z);
                         if (!context.world().loaded(position)) continue;
                         BlockData block=context.world().block(position);
-                        if (block!=null && block.tomato()) layout.add(position);
+                        if (CropRules.matches(crop,block)) layout.add(position);
                     }
             HarvestRoutePlanner.Route route=HarvestRoutePlanner.plan(sector,layout,footprint.radius());
             Map<String,Integer> lanes=new HashMap<>();
@@ -377,7 +389,8 @@ public final class HarvestModule implements AutomationModule {
 
     private void markCompletedFarm(Context context, Pos harvested) {
         for (Farm farm : context.profile().farms) {
-            if (!farm.contains(harvested) || farm.volume() > 32768) continue;
+            if (!farm.contains(harvested) || farm.volume() > 32768
+                    || !Objects.equals(observingCrop,CropRules.definition(context.profile(),farm))) continue;
             harvestedThisPass.add(farmKey(farm));
             if (pending.stream().anyMatch(farm::contains)) continue;
             boolean remaining = false;
@@ -385,30 +398,38 @@ public final class HarvestModule implements AutomationModule {
                 for (int y = Math.min(farm.first().y(),farm.second().y()); y <= Math.max(farm.first().y(),farm.second().y()) && !remaining; y++) {
                     for (int z = Math.min(farm.first().z(),farm.second().z()); z <= Math.max(farm.first().z(),farm.second().z()); z++) {
                         Pos p = new Pos(x,y,z);
-                        if (!context.world().loaded(p) || isMature(context.world(),p)) { remaining = true; break; }
+                        if (!context.world().loaded(p) || isMature(context,p)) { remaining = true; break; }
                     }
                 }
             }
-            if (!remaining) context.profile().nextEligibleDay.put(farmKey(farm),gameDay(context.world()) + Math.max(1,context.profile().harvestCycleDays));
+            if (!remaining) context.profile().nextEligibleDay.put(farmKey(farm),gameDay(context.world()) + CropRules.cycleDays(context.profile(),farm));
         }
     }
 
-    private static String farmKey(Farm farm) { return "harvest:" + farm.name(); }
+    private static String farmKey(Farm farm) { return CropRules.farmKey(farm); }
     private static long gameDay(WorldAccess world) { return Math.floorDiv(world.dayTime(),24000L); }
 
     /** Reserve capacity for a normal quality roll and rotten output before every click. */
     public static boolean hasHarvestRoom(List<ItemSlot> inventory) {
+        return hasHarvestRoom(inventory,CropRules.defaults().get(CropRules.TOMATO));
+    }
+    public static boolean hasHarvestRoom(List<ItemSlot> inventory,CropDefinition crop) {
+        if(!CropRules.valid(crop))return false;
         int empty = 0, rottenSpace = 0;
-        int[] tomatoSpace = new int[4];
+        int[] productSpace = new int[4];
         for (ItemSlot slot : inventory) {
             if (!slot.player() || slot.inventoryIndex() < 0 || slot.inventoryIndex() > 35) continue;
             ItemData item = slot.item();
             if (item.empty()) empty++;
             else if (item.is(ItemData.ROTTEN)) rottenSpace += Math.max(0, 64 - item.count());
-            else if (item.is(ItemData.TOMATO) && item.quality() >= 0 && item.quality() < 4)
-                tomatoSpace[item.quality()] += Math.max(0, 64 - item.count());
+            else if (item.is(crop.itemId()) && item.quality() >= 0 && item.quality() < 4)
+                productSpace[item.quality()] += Math.max(0, 64 - item.count());
         }
-        boolean everyQualityFits = Arrays.stream(tomatoSpace).allMatch(space -> space >= 4);
+        boolean everyQualityFits = Arrays.stream(productSpace).allMatch(space -> space >= 4);
+        // Only tomatoes have the existing proven rotten-tomato reserve. Other
+        // crop definitions keep a spare slot for secondary native output rather
+        // than borrowing capacity from an unrelated tomato/rotten stack.
+        if(!ItemData.TOMATO.equals(crop.itemId()))return empty>=2 || everyQualityFits && empty>=1;
         return empty >= 2 || empty >= 1 && rottenSpace >= 4 || everyQualityFits && (empty >= 1 || rottenSpace >= 4);
     }
 
@@ -465,7 +486,7 @@ public final class HarvestModule implements AutomationModule {
         pending.clear();
         primaryLanes.clear();
         harvestedThisPass.clear();
-        completedFields.clear(); observingFarm=null;
+        completedFields.clear(); observingFarm=null; observingCrop=null;
         observationWindow.clear();
         target = null;
         continuation = null;
@@ -480,8 +501,11 @@ public final class HarvestModule implements AutomationModule {
 
     private static boolean usableHoe(ItemData item) { return item.hoe() && !item.empty() && item.durability() > 1; }
     private static ItemSlot inventorySlot(WorldAccess world, int index) { return world.inventory().stream().filter(s -> s.inventoryIndex() == index).findFirst().orElse(null); }
-    private static boolean isMature(WorldAccess world, Pos p) { BlockData b = world.block(p); return b != null && b.matureTomato(); }
+    private boolean isMature(Context context,Pos p) {
+        return observingCrop!=null && observingCrop.equals(CropRules.registeredCrop(context.profile(),p))
+            && CropRules.mature(observingCrop,context.world().block(p));
+    }
     private static String navigationFailure(Context context) {
-        return context.navigation() instanceof LocalNavigator navigator ? navigator.failureReason() : "익은 토마토로 가는 경로가 막혔습니다.";
+        return context.navigation() instanceof LocalNavigator navigator ? navigator.failureReason() : "익은 작물로 가는 경로가 막혔습니다.";
     }
 }

@@ -75,6 +75,7 @@ public final class ClientControl {
                         yield !runtime.running();
                     }
                     case "once" -> runtime.runOnce(parsed.feature());
+                    case "import_work" -> runtime.importWorkDefinitions();
                     case "move_once" -> runtime.runMoveOnce(parsed.position());
                     case "observe_once" -> {
                         var draft=runtime.profile().coordinateDestinations.stream().filter(d -> d.name().equals(parsed.name())).findFirst().orElse(null);
@@ -136,7 +137,7 @@ public final class ClientControl {
             String command = fields.get("command");
             if (command == null) throw new IOException("Missing command");
             return switch (command) {
-                case "start", "pause", "record_start" -> {
+                case "start", "pause", "record_start", "import_work" -> {
                     if (!fields.keySet().equals(Set.of("command"))) throw new IOException("Unexpected command arguments");
                     yield new Request(command,null,null);
                 }

@@ -15,7 +15,7 @@ class EngineSafetyTest {
         assertEquals(Set.of(Action.UseBlock.class,Action.SelectHotbar.class,Action.SwapHotbar.class,
             Action.QuickMove.class,Action.ThrowRotten.class,Action.TrashRotten.class,Action.CloseContainer.class,Action.ConsolidateInventory.class,
             Action.ChopTree.class,Action.PlantSapling.class,Action.CraftFireLogs.class,Action.TrashLogging.class),Set.of(Action.class.getPermittedSubclasses()));
-        assertEquals(Set.of("HARVEST","MACHINE","OPEN_CONTAINER","OPEN_CRAFTING","SLEEP","DOOR"),
+        assertEquals(Set.of("HARVEST","MACHINE","ARTISAN","FRUIT","OPEN_CONTAINER","OPEN_CRAFTING","SLEEP","DOOR"),
             new HashSet<>(Arrays.stream(Action.Use.values()).map(Enum::name).toList()));
     }
 

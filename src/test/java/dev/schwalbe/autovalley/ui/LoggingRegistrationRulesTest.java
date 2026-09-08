@@ -73,14 +73,15 @@ class LoggingRegistrationRulesTest {
             assertThrows(IllegalArgumentException.class, () -> RegistrationRules.loggingCheckTicks(text));
     }
 
-    @Test void tenModuleButtonsKeepFooterAboveCloseAt240AndOneShotFitsThreeRows() {
+    @Test void allModuleButtonsKeepFooterAboveCloseAt240AndOneShotFitsThreeRows() {
         int moduleCount = (int) Arrays.stream(Feature.values()).filter(f -> f != Feature.STORAGE_SURVEY).count();
-        assertEquals(10, moduleCount);
+        assertEquals(14, moduleCount);
         int columns = RegistrationRules.moduleColumns(moduleCount);
-        assertEquals(4, columns); assertEquals(3, RegistrationRules.moduleColumns(9));
+        assertEquals(5, columns); assertEquals(3, RegistrationRules.moduleColumns(9));
         int lastControlY = 54 + ((moduleCount + columns - 1) / columns) * 23 + 4 + 41 + 24;
         assertTrue(lastControlY + 20 <= 240 - 25);
-        int onceBackY = 92 + ((Feature.values().length + 3) / 4) * 24 + 14;
+        int onceColumns = RegistrationRules.moduleColumns(Feature.values().length);
+        int onceBackY = 92 + ((Feature.values().length + onceColumns - 1) / onceColumns) * 24 + 14;
         assertTrue(onceBackY + 20 <= 240 - 25);
     }
 

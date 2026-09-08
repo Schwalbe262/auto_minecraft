@@ -29,6 +29,7 @@ public final class ValleyScreen extends Screen {
     private static Pos draftFirst;
     private static Pos draftSecond;
     private static String draftName = "";
+    private static String draftCropId=CropRules.TOMATO;
     private static Farm draftOriginal;
     private static boolean rememberedLoggingAreas;
     private static Pos loggingDraftCorner;
@@ -206,7 +207,9 @@ public final class ValleyScreen extends Screen {
         button(left, 144, panelWidth, tr("coordinates.open"), () -> minecraft.setScreen(new CoordinateScreen()));
         text(169, tr("record.local").copy().append(" ").append(tr("record.contents")));
         text(180, tr("record.no_replay"));
-        button(left, 190, panelWidth, tr("back"), () -> { toolsEditor = false; rebuild(); });
+        button(left,190,half,tr("work.import"),()->{runtime.importWorkDefinitions();rebuild();})
+            .setTooltip(Tooltip.create(tr("work.import_hint")));
+        button(left+half+6, 190, half, tr("back"), () -> { toolsEditor = false; rebuild(); });
     }
 
     private void recordingName() {
@@ -235,7 +238,7 @@ public final class ValleyScreen extends Screen {
     private void runOnceChooser() {
         text(55, tr("once.title"));
         text(73, tr("once.hint"));
-        int columns = Feature.values().length > 9 ? 4 : 3;
+        int columns = RegistrationRules.moduleColumns(Feature.values().length);
         int featureWidth = (panelWidth - (columns - 1) * 6) / columns;
         Feature[] features = Feature.values();
         for (int i = 0; i < features.length; i++) {
@@ -423,8 +426,11 @@ public final class ValleyScreen extends Screen {
         coordinatePromotion = null;
         if (!chestPairReady(original)) { error("error.chest_pair"); return; }
         BlockData block = canonicalBlock(original);
-        if (block.tomato()) {
-            if (draftFirst == null) draftFirst = block.pos(); else draftSecond = block.pos();
+        CropDefinition crop=cropForBlock(block);
+        if (crop!=null) {
+            if (draftFirst == null) { draftFirst = block.pos();draftCropId=crop.key(); }
+            else if(draftCropId.equals(crop.key()))draftSecond = block.pos();
+            else { error("error.crop_mismatch");return; }
             tab = Tab.FARMS; rememberedTab = tab; loggingAreas = false; rememberedLoggingAreas = false; farmEditor = true; selected = null;
             rebuild(); return;
         }
@@ -622,9 +628,9 @@ public final class ValleyScreen extends Screen {
         for (int i = start; i < Math.min(start + rows, fields.size()); i++) {
             Farm farm = fields.get(i);
             int y = listTop + (i - start) * 23;
-            Component caption = Component.literal(farm.name() + "  " + coords(farm.first()) + " → " + coords(farm.second()));
+            Component caption = Component.literal(farm.name() + " ["+farm.cropId()+"]  " + coords(farm.first()) + " → " + coords(farm.second()));
             button(left, y, panelWidth - 58, clipped(caption, panelWidth - 70), () -> {
-                draftFirst = farm.first(); draftSecond = farm.second(); draftName = farm.name(); draftOriginal = farm; farmEditor = true; rebuild();
+                draftFirst = farm.first(); draftSecond = farm.second(); draftName = farm.name(); draftCropId=farm.cropId(); draftOriginal = farm; farmEditor = true; rebuild();
             }).setTooltip(Tooltip.create(caption.copy().append("\n").append(tr("farms.replace_hint"))));
             button(left + panelWidth - 54, y, 54, tr("remove"), () -> {
                 List<Farm> before = new ArrayList<>(runtime.profile().farms);
@@ -828,7 +834,7 @@ public final class ValleyScreen extends Screen {
     }
 
     private void farmEditor() {
-        text(55, tr("farms.corners_hint"));
+        text(55, tr("farms.corners_hint").copy().append(" ["+draftCropId+"]"));
         int half = (panelWidth - 6) / 2;
         button(left, 68, half, tr("farms.corner", "A"), () -> captureCorner(true));
         button(left + half + 6, 68, half, tr("farms.corner", "B"), () -> captureCorner(false));
@@ -850,17 +856,26 @@ public final class ValleyScreen extends Screen {
 
     private void captureCorner(boolean first) {
         BlockData block = lookedBlock();
-        if (block == null || !block.tomato()) { error("error.tomato_target"); return; }
+        CropDefinition crop=cropForBlock(block);
+        if (crop==null) { error("error.crop_target"); return; }
+        if((first ? draftSecond!=null : draftFirst!=null) && !draftCropId.equals(crop.key())) { error("error.crop_mismatch");return; }
+        draftCropId=crop.key();
         rememberDraft();
         if (first) draftFirst = block.pos(); else draftSecond = block.pos();
         rebuild(); success("farms.corner_captured");
+    }
+    private CropDefinition cropForBlock(BlockData block) {
+        if(block==null || runtime.profile().crops==null)return null;
+        List<CropDefinition> candidates=runtime.profile().crops.values().stream().filter(CropRules::valid)
+            .filter(crop->CropRules.matches(crop,block)).toList();
+        return candidates.size()==1 ? candidates.get(0) : null;
     }
 
     private void saveFarm() {
         if (!RegistrationRules.validBounds(draftFirst, draftSecond)) { error("error.farm_bounds"); return; }
         String label = nameInput.getValue().trim();
         if (label.isEmpty()) { error("error.label"); return; }
-        Farm candidate = new Farm(label, draftFirst, draftSecond);
+        Farm candidate = new Farm(label, draftFirst, draftSecond,draftCropId);
         List<Farm> before = new ArrayList<>(runtime.profile().farms);
         Farm replaced = before.contains(draftOriginal) ? draftOriginal : null;
         if (before.stream().anyMatch(f -> f != replaced && f.name().equals(label))) { error("error.label_used"); return; }
@@ -895,7 +910,7 @@ public final class ValleyScreen extends Screen {
             if (partialSuggestions.contains(farm)) caption = tr("farms.partial_prefix").copy().append(caption);
             button(left, listTop + (i - start) * 23, panelWidth,
                     clipped(caption, panelWidth - 12), () -> {
-                        draftFirst = farm.first(); draftSecond = farm.second(); draftName = ""; draftOriginal = null; farmEditor = true; rebuild();
+                        draftFirst = farm.first(); draftSecond = farm.second(); draftName = ""; draftCropId=farm.cropId(); draftOriginal = null; farmEditor = true; rebuild();
                     }).setTooltip(Tooltip.create(partialSuggestions.contains(farm)
                             ? caption.copy().append("\n").append(tr("farms.boundary_hint")) : caption));
         }

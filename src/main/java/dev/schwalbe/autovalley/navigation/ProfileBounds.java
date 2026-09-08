@@ -7,10 +7,12 @@ import java.util.List;
 public final class ProfileBounds {
     private final Profile profile;
     private final List<Poi> waypoints;
+    private final List<Pos> additionalSites;
 
     public ProfileBounds(Profile profile) {
         this.profile = profile;
         this.waypoints = profile.pois(PoiKind.WAYPOINT);
+        this.additionalSites=AdditionalWorkRules.sites(profile);
     }
 
     public static boolean contains(Profile profile, Pos feet) {
@@ -29,6 +31,7 @@ public final class ProfileBounds {
         double radius = Math.max(1, Math.min(8, profile.corridorRadius));
         double squared = radius * radius;
         for (Poi poi : profile.pois) if (poi.pos().distanceSquared(p) <= squared) return true;
+        for (Pos site:additionalSites) if(site.distanceSquared(p)<=squared)return true;
         for (int i = 1; i < waypoints.size(); i++) {
             if (segmentDistanceSquared(p, waypoints.get(i - 1).pos(), waypoints.get(i).pos()) <= squared) return true;
         }

@@ -1688,3 +1688,52 @@ TCP endpoint, but the server rejected login with an invalid-session message.
 No wine start/once request was sent while disconnected. Launcher session renewal
 and an authenticated connection are required before native wine acceptance can
 continue; installation must not be reported as successful production execution.
+
+### Stair flow, production overlap and additional routines — 2026-09-09 KST
+
+The next development candidate adds narrowly verified continuous descent through
+two or three straight ordinary stair edges. Native support, shape, friction,
+clearance, entity and border checks are required. Unknown drops, farmland holes
+and unverified geometry retain the cautious path. The controller never assigns
+position/velocity or drives while airborne; it retires passed treads only on a
+real matching grounded landing. The remaining endpoint still requires two quiet
+grounded samples. Ground-drag learning now needs three grounded same-height
+samples so a just-landed air-damping sample is not mistaken for ground friction.
+
+The normalized six-edge physics fixture improved from **123 to 74 ticks**
+(about 39.8% less time). This is a deterministic model result, **not** native
+timing and **not** evidence of the requested twofold improvement. Native stair
+acceptance and comparison remain pending.
+
+Production preparation now overlaps the existing two-tick stationary guard with
+hotbar preparation acknowledgements. Preserves can leave a verified pickup
+location immediately without a redundant five-tick wait. Existing input,
+machine-state and server-response checks remain required; wine gains no new
+output-debt gate. The initial combined stair/production suite passed 1,185 tests.
+
+Read-only logging evidence distinguished `SEARCH_LIMIT` from a JVM crash and
+confirmed that passable foliage still blocks outline interaction rays. The new
+bounded visibility preflight and clean scheduler yield preserve unfinished
+cut/replant plots and allow other work / sleep, with a fresh check after 1,200
+ticks. This does not claim the currently occluded tree can now be chopped. See
+[logging visibility recovery](LOGGING-VISIBILITY.md).
+
+The shared crop/storage model and seed, jade and starfruit routines are described
+in [the implementation note](CROP-AND-ARTISAN-WORK.md). A private import candidate
+was merged twice into a read-only copy of the real profile, preserving existing
+flags, registrations and schedules; the live profile stayed byte-identical.
+Native tests must still establish real harvesting, collect/refill and destination
+receipts. No client restart, profile import, feature start or OS input was
+performed for this candidate.
+
+Final offline Java 17 Gradle `test build` passed **1,341 tests / 104 suites**,
+zero failures, errors or skips. This includes 12 commodity-authority tests
+(including the opposite half of a reserved double chest), 16 pure native artisan
+receipt tests, 8 target-attempt fence tests, 9 real harvest/storage one-shot
+integration tests, and the scheduler's explicit clean artisan wait/sleep gates.
+Native wrappers were compiled, but fixture success is not live-server acceptance.
+
+The diagnostic workflow was also restricted to PID / instance-match projections
+after one internal tool result accidentally included the process launch arguments.
+Those arguments were not copied into repository files or GitHub. Authentication
+data and local coordinates are not part of these verification documents.

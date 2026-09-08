@@ -59,7 +59,7 @@ public final class RegistrationRules {
     }
 
     /** Keep the main module controls within the same three rows as features grow. */
-    public static int moduleColumns(int count) { return count > 9 ? 4 : 3; }
+    public static int moduleColumns(int count) { return Math.max(3,(count+2)/3); }
 
     /** Only an explicitly aimed spruce planting/trunk block can seed a plot draft. */
     public static boolean loggingCorner(BlockData block) {
