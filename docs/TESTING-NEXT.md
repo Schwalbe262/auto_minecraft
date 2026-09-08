@@ -1027,3 +1027,25 @@ Java 17 / Gradle 8.8 `test build` passed: 70 suites, 868 tests, zero failures,
 errors or skips. The new tests cover the translated live trajectory and bounded
 ground-motion models. The correction still requires deployment and live retest;
 neither these models nor the earlier ascent establish full-routine acceptance.
+
+#### Shrinking TreeChop stump aiming after six confirmed chops
+
+The next supervised run completed two separate one-block ascents and selected
+the configured axe. Six native chopping actions were acknowledged before the
+remaining stump approach failed; the tree had not fallen and the six-plot
+checkpoint was preserved. This is partial progress, not logging acceptance.
+
+Installed TreeChop changes the chopped log's outline size and offset as cutting
+progresses. Fixed quarter/center rays can miss that remaining shape. Only
+`treechop:chopped_log` now uses candidates strictly inside its current native
+outline boxes and chooses the closest validated native OUTLINE hit. The first
+world hit must still be that block, within native reach and the four-block cap;
+walls, invalid shapes and inside hits grant no interaction permission. Ordinary
+block targeting is unchanged.
+
+Java 17 / Gradle 8.8 `test build` passed: 71 suites, 880 tests, zero failures,
+errors or skips. Coverage includes a corner-offset shape missed by the old
+sampler, occlusion and reach rejection, shape changes, and module restart after
+six of twenty-four acknowledgements. Another fixture needs thirty-one chops:
+completion follows the observed fallen tree, not a fixed count of twenty-four.
+These are code/fixture results; the new aiming change still needs live retest.

@@ -86,6 +86,28 @@ class LoggingModuleTest {
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(2,f.chops); assertEquals(4,f.plants);
     }
 
+    @Test void restartingAtSixOfTwentyFourChopsResumesUntilTheTreeActuallyFalls() {
+        Fixture f=new Fixture(1); f.strokesPerTree=24;
+        f.until(() -> f.chops==6);
+        Pos tree=f.profile.loggingPlots.get(0).corner();
+        assertEquals(LoggingRules.CHOPPED_LOG,f.id(tree)); assertEquals(0,f.plants);
+        assertTrue(f.profile.loggingRunActive); assertEquals(List.of(tree),f.profile.loggingRemainingPlots);
+        assertTrue(f.profile.loggingReplantingPlots.isEmpty()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        f.restart();
+        assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertEquals(24,f.chops); assertEquals(4,f.plants);
+        assertFalse(f.profile.loggingRunActive); assertTrue(f.profile.loggingRemainingPlots.isEmpty());
+    }
+
+    @Test void twentyFourIsNotAHardcodedCompletionLimitForLargerTrees() {
+        Fixture f=new Fixture(1); f.strokesPerTree=31;
+        f.until(() -> f.chops==24);
+        assertEquals(LoggingRules.CHOPPED_LOG,f.id(f.profile.loggingPlots.get(0).corner()));
+        assertEquals(0,f.plants); assertTrue(f.profile.loggingRunActive);
+        assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertEquals(31,f.chops); assertEquals(4,f.plants);
+    }
+
     @Test void restartAfterPartialReplantKeepsReplantPhaseEvenIfThePlantedSaplingAlreadyRegrew() {
         Fixture f=new Fixture(2); f.until(() -> f.plants==1);
         Pos first=f.profile.loggingPlots.get(0).corner();
@@ -277,6 +299,7 @@ class LoggingModuleTest {
         final List<Action> actions=new ArrayList<>(); final List<String> events=new ArrayList<>();
         final List<Double> plantingReaches=new ArrayList<>();
         final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
+        final Map<Pos,Integer> nativeChops=new HashMap<>(); int strokesPerTree=2;
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
         int containerId,nextContainer=1; Pos opened;
         Action pending; ActionOutcome outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
@@ -323,9 +346,10 @@ class LoggingModuleTest {
                 assertTrue(profile.loggingRunActive); assertTrue(profile.loggingRemainingPlots.stream().anyMatch(p -> profile.loggingPlots.stream()
                     .anyMatch(plot -> plot.corner().equals(p) && plot.plantingPositions().contains(chop.pos()))));
                 assertEquals(2,selected); assertEquals(LoggingRules.AXE,inventory[selected].id());
-                if(id(chop.pos()).equals(LoggingRules.LOG)) blocks.put(chop.pos(),LoggingRules.CHOPPED_LOG);
+                LoggingPlot plot=profile.loggingPlots.stream().filter(p -> p.plantingPositions().contains(chop.pos())).findFirst().orElseThrow();
+                if(nativeChops.merge(plot.corner(),1,Integer::sum)<strokesPerTree) blocks.put(chop.pos(),LoggingRules.CHOPPED_LOG);
                 else {
-                    LoggingPlot plot=profile.loggingPlots.stream().filter(p -> p.plantingPositions().contains(chop.pos())).findFirst().orElseThrow();
+                    nativeChops.remove(plot.corner());
                     for(Pos p:plot.plantingPositions()) blocks.put(p,"minecraft:air");
                     add(LoggingRules.LOG,12); add(LoggingRules.FIRE_LOG,2); add(LoggingRules.SAPLING,saplingDrops); add(LoggingRules.TWIG,3); add(LoggingRules.BERRY,1);
                 }

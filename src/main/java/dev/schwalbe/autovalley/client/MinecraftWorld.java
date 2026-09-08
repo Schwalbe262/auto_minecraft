@@ -232,6 +232,13 @@ public final class MinecraftWorld implements WorldAccess {
     public BlockHitResult hit(Pos target, Vec3 eye) {
         if (mc.level==null || mc.player==null) return null;
         BlockPos bp=nativePos(target);
+        BlockState state=mc.level.getBlockState(bp);
+        if (LoggingRules.CHOPPED_LOG.equals(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString())) {
+            if (mc.gameMode==null) return null;
+            return NativeChoppedLogHit.nearest(bp,eye,state.getShape(mc.level,bp,CollisionContext.of(mc.player)).toAabbs(),
+                Math.min(4,mc.gameMode.getPickRange()),end -> mc.level.clip(
+                    new ClipContext(eye,end,ClipContext.Block.OUTLINE,ClipContext.Fluid.NONE,mc.player)));
+        }
         // Try exposed surfaces, including thin tomato stems and inset artisan machine models.
         for (double y : new double[]{0.5,0.8,0.25})
             for (double x : new double[]{0.5,0.25,0.75})
