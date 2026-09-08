@@ -1121,3 +1121,39 @@ This base pattern is not a claim to identify a particular generated canopy.
 Java 17 / Gradle 8.8 `test build` passed after integration: 74 suites, 920
 tests, zero failures, errors or skips. The new native ACK and coherent-pattern
 regressions do not replace the pending full-routine live retest.
+
+The next supervised same-instance run resumed the three missing cells and
+completed the remaining registered felling/replanting batch. Both durable
+remaining-plot and replant-obligation lists reached zero after acknowledged
+placements, without recutting the operator-repaired plot. Cleanup then stopped
+on an unconfirmed single-stack sapling TrashSlot request. The last tree's
+inventory arrivals overlapped that cleanup transition. The source stack was
+subsequently empty, but that alone is not an exact deletion receipt; the request
+was not resent or marked successful. The borrowed-hotbar lease remained
+protected. Crafting, storage and byproduct shipping are not yet established by
+this run, and this short test is not multi-hour acceptance.
+
+A bounded read-only inspection subsequently identified the specific mismatch:
+the trash request began with 28 saplings, retained raw source-slot replies rose
+to 34 before an EMPTY reply, and the current TrashSlot recovery buffer held 34
+saplings. Other changed slots were independently server-proven log/twig pickups.
+The original exact-28 quantity proof was therefore correctly rejected; the
+source-empty reply was present. Earlier ring entries had been evicted, so no
+claim is made about the missing intermediate history. Destructive acknowledgement
+rules are not relaxed to turn this into an exact-28 success.
+
+Logging cleanup now waits for twenty consecutive unchanged client inventory
+ticks before waste disposal, borrowed-hotbar restoration and crafting. Changed
+counts or missed samples restart the quiet count without extending that wait's
+four-hundred-tick deadline. Normal inventory mapping must contain exactly slots
+0 through 35; available native fingerprints are compared at window endpoints,
+not hashed every tick. A continuously changing inventory pauses without sending
+a destructive request and retains the unfinished run and hotbar lease. An
+explicit resume establishes a fresh quiet window from the current inventory.
+This is an inventory settling delay, not dropped-entity tracking, and does not
+resend or retroactively acknowledge the earlier failed trash request.
+
+Java 17 / Gradle 8.8 integrated `test build`: 74 suites, 928 tests, zero
+failures, errors or skips. Regressions cover the observed 28-to-34 pickup,
+unextended timeout, duplicate/gapped samples, interrupted cleanup, subsequent
+inventory changes, fingerprint endpoints and malformed normal-slot mappings.

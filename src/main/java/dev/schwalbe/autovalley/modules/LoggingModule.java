@@ -6,6 +6,7 @@ import java.util.*;
 /** The registered spruce routine; one acknowledged native operation at a time. */
 public final class LoggingModule implements AutomationModule {
     private static final int SAPLING_WAIT_TICKS=400;
+    private static final int CLEANUP_QUIET_TICKS=20,CLEANUP_QUIET_TIMEOUT=400;
     private enum Stage { START, PLOT, CHOP, SETTLE, PLANT, WASTE, RESTORE, CRAFT_OPEN, CRAFT, CRAFT_CLOSE, WOOD, BERRIES, FINISH }
     private enum Pending { SELECT, SWAP, BORROW, RESTORE, CHOP, PLANT, TRASH, OPEN, CRAFT, CLOSE }
     private Stage stage=Stage.START;
@@ -14,6 +15,11 @@ public final class LoggingModule implements AutomationModule {
     private long saplingWaitUntil=-1;
     private boolean plantingStanceReady;
     private List<Pos> plantingOrder=List.of();
+    private List<ItemData> cleanupInventory;
+    private Map<Integer,String> cleanupFingerprints=Map.of();
+    private long cleanupWindowStart=-1,cleanupSampleTick=-1;
+    private int cleanupQuietTicks;
+    private boolean cleanupQuietApproved;
     private Pos actionPos;
     private LoggingPlot plot;
     private Poi table;
@@ -28,7 +34,7 @@ public final class LoggingModule implements AutomationModule {
         if (!LoggingRules.allowed(c)) return WorkResult.idle();
         if (failure!=null) return WorkResult.blocked(failure);
         if (!c.world().player().connected()) return fail("벌목 중 연결이 끊겼습니다. 재접속 후 다시 실행하세요.");
-        if (lastTick>c.world().tick()) { nextCheckTick=-1; saplingWaitUntil=-1; }
+        if (lastTick>c.world().tick()) { nextCheckTick=-1; saplingWaitUntil=-1; clearCleanupQuiet(); }
         lastTick=c.world().tick();
         try {
             if (ticket>=0) {
@@ -196,6 +202,7 @@ public final class LoggingModule implements AutomationModule {
             case WASTE -> {
                 for (LoggingPlot registered:c.profile().loggingPlots)
                     if (!LoggingRules.completePlanting(c.world(),registered)) return fail("모든 등록 구역의 2x2 묘목 또는 네 기둥을 확인해야 합니다. 묘목과 가지는 폐기하지 않았습니다.");
+                WorkResult quiet=awaitCleanupQuiet(c); if (quiet!=null) return quiet;
                 ItemSlot trash=inventory(c).stream()
                     .filter(s -> c.profile().loggingHotbarLease==null || s.inventoryIndex()!=c.profile().loggingHotbarLease.sourceIndex())
                     .filter(s -> s.item().is(LoggingRules.TWIG)
@@ -214,6 +221,7 @@ public final class LoggingModule implements AutomationModule {
                 if (lease==null) { stage=nextAfterWaste(c); return busy("단축바 복원 완료"); }
                 if (lease.stage()!=LoggingHotbarLease.Stage.PARKED || !parked(c,lease))
                     return fail("빌린 단축바나 보관한 원래 아이템이 바뀌었습니다. 임의로 교환하지 않습니다.");
+                WorkResult quiet=awaitCleanupQuiet(c); if (quiet!=null) return quiet;
                 saveLease(c,lease.withStage(LoggingHotbarLease.Stage.RESTORING));
                 submit(c,new Action.SwapHotbar(lease.sourceIndex(),lease.hotbarSlot()),Pending.RESTORE);
                 return busy("잠시 옮긴 원래 단축바 아이템 복원");
@@ -222,12 +230,14 @@ public final class LoggingModule implements AutomationModule {
                 if (table==null) table=ModuleSupport.nearest(c,c.profile().pois(PoiKind.LOGGING_CRAFTING_TABLE)).stream().findFirst().orElse(null);
                 if (table==null) return fail("장작을 제작할 3x3 제작대를 먼저 등록하세요.");
                 if (!approach(c,table.pos(),2.5)) return currentProgress();
+                WorkResult quiet=awaitCleanupQuiet(c); if (quiet!=null) return quiet;
                 submit(c,new Action.UseBlock(table.pos(),Action.Use.OPEN_CRAFTING),Pending.OPEN);
                 return busy("등록한 장작 제작대 열기");
             }
             case CRAFT -> {
                 if (!c.world().menu().container() || c.world().menu().id()!=craftingMenu || !c.world().loggingCraftingMenu()
                     || !c.world().menu().carried().empty() || !c.world().loggingCraftingGridEmpty()) return fail("제작대 소유권 또는 빈 제작 격자가 바뀌었습니다.");
+                WorkResult quiet=awaitCleanupQuiet(c); if (quiet!=null) return quiet;
                 if (LoggingRules.count(c.world(),LoggingRules.LOG)<6) {
                     stage=Stage.CRAFT_CLOSE; submit(c,new Action.CloseContainer(craftingMenu),Pending.CLOSE);
                 } else {
@@ -305,6 +315,53 @@ public final class LoggingModule implements AutomationModule {
     private static ItemData item(Context c,int index) { return inventory(c).stream().filter(s -> s.inventoryIndex()==index).map(ItemSlot::item).findFirst().orElse(ItemData.EMPTY); }
     private static boolean air(BlockData block) { return block.id().equals("minecraft:air") || block.id().equals("minecraft:cave_air") || block.id().equals("minecraft:void_air"); }
     private static boolean occupied(Context c,Pos p) { return c.world().loaded(p) && (c.world().block(p).id().equals(LoggingRules.SAPLING) || c.world().block(p).id().equals(LoggingRules.LOG)); }
+    private WorkResult awaitCleanupQuiet(Context c) {
+        long now=c.world().tick();
+        if (c.world().menu()==null || !c.world().menu().carried().empty()) return fail("벌목 정리 전 커서의 아이템을 확인하세요.");
+        List<ItemSlot> slots=inventory(c).stream().sorted(Comparator.comparingInt(ItemSlot::inventoryIndex)).toList();
+        if (slots.size()!=36) return fail("벌목 정리 전 일반 인벤토리 36칸을 정확히 확인할 수 없습니다.");
+        for(int i=0;i<36;i++) if (slots.get(i).inventoryIndex()!=i || slots.get(i).item()==null)
+            return fail("벌목 정리 전 인벤토리 슬롯 대응이 바뀌었습니다.");
+        List<ItemData> snapshot=slots.stream().map(ItemSlot::item).toList();
+        if (cleanupWindowStart<0 && !cleanupQuietApproved) cleanupWindowStart=now;
+        if (cleanupWindowStart>=0 && now-cleanupWindowStart>=CLEANUP_QUIET_TIMEOUT)
+            return fail("벌목 정리 전 재고가 20초 동안 안정되지 않았습니다. 폐기·복원·제작을 보내지 않고 미완료 작업을 보존합니다.");
+        boolean same=snapshot.equals(cleanupInventory);
+        boolean consecutive=cleanupSampleTick>=0 && now-cleanupSampleTick==1;
+        if (!same || cleanupSampleTick!=now && !consecutive) {
+            if (cleanupWindowStart<0) cleanupWindowStart=now;
+            cleanupInventory=snapshot; cleanupFingerprints=cleanupFingerprints(c,snapshot);
+            cleanupQuietTicks=0; cleanupQuietApproved=false;
+        } else if (consecutive && !cleanupQuietApproved) cleanupQuietTicks++;
+        cleanupSampleTick=now;
+        if (cleanupQuietApproved) return null;
+        if (cleanupQuietTicks>=CLEANUP_QUIET_TICKS) {
+            // Hash only at the baseline and quiet-window boundary, not 36 slots
+            // every tick. Unknown adapters still verify the reduced item/count map.
+            Map<Integer,String> fingerprints=cleanupFingerprints(c,snapshot);
+            if (fingerprints.equals(cleanupFingerprints)) {
+                cleanupQuietApproved=true; cleanupWindowStart=-1; return null;
+            }
+            cleanupFingerprints=fingerprints; cleanupQuietTicks=0;
+        }
+        c.actions().stopMovement();
+        return busy("정리 전 인벤토리 안정화 확인 ("+cleanupQuietTicks+"/20틱)");
+    }
+    private static Map<Integer,String> cleanupFingerprints(Context c,List<ItemData> inventory) {
+        Map<Integer,String> result=new HashMap<>();
+        for(int i=0;i<inventory.size();i++) if (!inventory.get(i).empty()) {
+            String fingerprint=c.world().loggingItemFingerprint(i);
+            if (fingerprint!=null) {
+                if (!fingerprint.matches("[0-9a-fA-F]{64}")) throw new IllegalStateException("인벤토리 상태 지문을 확인할 수 없습니다.");
+                result.put(i,fingerprint);
+            }
+        }
+        return Map.copyOf(result);
+    }
+    private void clearCleanupQuiet() {
+        cleanupInventory=null; cleanupFingerprints=Map.of(); cleanupWindowStart=cleanupSampleTick=-1;
+        cleanupQuietTicks=0; cleanupQuietApproved=false;
+    }
     private static void inspect(Context c,LoggingPlot p) {
         for (Pos cell:p.plantingPositions()) {
             if (!c.world().loaded(cell)) throw new IllegalStateException("벌목 구역 청크가 로드되지 않았습니다.");
@@ -394,6 +451,7 @@ public final class LoggingModule implements AutomationModule {
         // a per-tick scan. Explicit one-shot and durable active resumes bypass it.
         chopStrokes=trashOperations=craftOperations=0; settleUntil=0; saplingWaitUntil=-1; failure=null;
         plantingStanceReady=false; plantingOrder=List.of();
+        clearCleanupQuiet();
         // Explicit stop/reconnect may start a fresh bounded seed wait. The durable
         // replant phase, remaining plots and hotbar lease are never cleared here.
         wood.reset(); berries.reset();

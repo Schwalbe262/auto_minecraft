@@ -71,6 +71,29 @@ class InventoryTrashPickupProofTest {
             assertNull(evidence(List.of(proof(24072,3,changed),proof(24074,3,EMPTY))));
         }
     }
+    @Test void loggingSaplingsGrowingFromTwentyEightToThirtyFourBeforeDeletionCannotConfirmOriginalQuantity() {
+        // Captured trash request 135: all three other changes have independent
+        // server pickup proof. The source itself still changed before EMPTY, so
+        // neither those proofs nor the empty cursor establish deletion of 28.
+        var originalSource=new InventoryConsolidation.Stack(LoggingRules.SAPLING,28,64);
+        var twig=new InventoryConsolidation.Stack(LoggingRules.TWIG,45,64);
+        var fullLogs=new InventoryConsolidation.Stack(LoggingRules.LOG,64,64);
+        var newLogs=new InventoryConsolidation.Stack(LoggingRules.LOG,21,64);
+        var otherPickups=List.of(proof(1906,19,fullLogs),proof(1923,11,twig),proof(1929,20,newLogs));
+        List<InventoryTrashAcknowledgement.SlotProof> captured=new ArrayList<>(otherPickups);
+        long[] sequences={1870,1879,1880,1881,1920};
+        int[] counts={30,31,32,33,34};
+        for(int index=0;index<sequences.length;index++)
+            captured.add(proof(sequences[index],36,new InventoryConsolidation.Stack(LoggingRules.SAPLING,counts[index],64)));
+        captured.add(proof(1930,36,EMPTY));
+        assertTrue(otherPickups.stream().allMatch(p -> p.sequence()>1848 && p.sequence()<1930));
+        assertEquals(Set.of(11,19,20),otherPickups.stream().map(InventoryTrashAcknowledgement.SlotProof::slot).collect(java.util.stream.Collectors.toSet()));
+        assertNull(InventoryTrashAcknowledgement.precedingSlotProofs(1,1,0,1848,1930,36,originalSource,captured),
+            "Source 28 -> 30 -> 31 -> 32 -> 33 -> 34 -> EMPTY must not be acknowledged as the original 28-item deletion");
+        Collections.reverse(captured);
+        assertNull(InventoryTrashAcknowledgement.precedingSlotProofs(1,1,0,1848,1930,36,originalSource,captured),
+            "Collection order must not hide earlier source pickups from the sequence-ordered proof");
+    }
     @Test void sourceReappearingAfterAnEmptyObservationIsNotOriginalDeletion() {
         assertNull(evidence(List.of(proof(24072,3,EMPTY),proof(24073,3,ROTTEN),proof(24074,3,EMPTY))));
     }

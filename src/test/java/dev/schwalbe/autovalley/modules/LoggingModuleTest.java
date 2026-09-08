@@ -460,6 +460,96 @@ class LoggingModuleTest {
         assertEquals(WorkResult.State.BLOCKED,foreign.step().state()); assertTrue(foreign.actions.isEmpty());
     }
 
+    @Test void cleanupWaitsForTwentyUnchangedTicksAndUsesTheLateThirtyFourSaplings() {
+        Fixture f=cleanupFixture(); f.add(LoggingRules.SAPLING,28); enterCleanup(f);
+        quietTicks(f,19); assertTrue(f.actions.isEmpty());
+        f.add(LoggingRules.SAPLING,6); f.advance(); assertEquals(WorkResult.State.BUSY,f.step().state());
+        quietTicks(f,19); assertTrue(f.actions.isEmpty());
+        f.advance(); f.step();
+        Action.TrashLogging trash=assertInstanceOf(Action.TrashLogging.class,f.pending);
+        assertEquals(34,trash.expected().count()); assertEquals(1,f.actions.size());
+        // Waiting for this real request must never dispatch another deletion.
+        for(int i=0;i<30;i++) { f.ticks++; assertEquals(WorkResult.State.BUSY,f.step().state()); }
+        assertEquals(1,f.actions.size()); assertTrue(f.profile.loggingRunActive);
+    }
+
+    @Test void continuouslyChangingCleanupInventoryTimesOutWithoutTrashRestoreOrCraft() {
+        Fixture f=cleanupFixture(); f.inventory[9]=item("minecraft:torch",55);
+        LoggingHotbarLease lease=new LoggingHotbarLease(9,0,f.inventory[9],f.loggingItemFingerprint(9),LoggingHotbarLease.Stage.PARKED);
+        f.profile.loggingHotbarLease=lease; f.inventory[10]=item(LoggingRules.SAPLING,28); enterCleanup(f);
+        WorkResult result=null;
+        for(int i=1;i<=400;i++) {
+            f.ticks++; f.inventory[10]=item(LoggingRules.SAPLING,i%2==0 ? 28 : 34); result=f.step();
+            assertEquals(i<400 ? WorkResult.State.BUSY : WorkResult.State.BLOCKED,result.state(),result.message());
+        }
+        assertTrue(result.message().contains("20초")); assertTrue(f.actions.isEmpty());
+        assertSame(lease,f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+        assertTrue(f.profile.nextEligibleDay.isEmpty()); assertEquals(item("minecraft:torch",55),f.inventory[9]);
+    }
+
+    @Test void cleanupResetTickGapAndRepeatedTickCannotBorrowEarlierQuietTime() {
+        Fixture f=cleanupFixture(); f.add(LoggingRules.TWIG,3); enterCleanup(f); quietTicks(f,10);
+        f.restart(); enterCleanup(f);
+        for(int i=0;i<30;i++) assertEquals(WorkResult.State.BUSY,f.step().state());
+        quietTicks(f,19); assertTrue(f.actions.isEmpty());
+        f.ticks+=2; f.step(); quietTicks(f,19); assertTrue(f.actions.isEmpty());
+        f.advance(); f.step(); assertInstanceOf(Action.TrashLogging.class,f.pending);
+    }
+
+    @Test void aConfirmedTrashChangeRequiresANewQuietWindowBeforeAnotherStack() {
+        Fixture f=cleanupFixture(); f.add(LoggingRules.SAPLING,28); f.add(LoggingRules.TWIG,3); enterCleanup(f);
+        quietTicks(f,20); assertInstanceOf(Action.TrashLogging.class,f.pending);
+        f.advance(); f.step(); assertEquals(1,f.actions.size());
+        quietTicks(f,19); assertEquals(1,f.actions.size());
+        f.advance(); f.step(); assertEquals(2,f.actions.size());
+        assertInstanceOf(Action.TrashLogging.class,f.pending);
+    }
+
+    @Test void quietFingerprintsAreSampledAtEndpointsAndUnsupportedBackendsUseReducedInventory() {
+        Fixture f=cleanupFixture(); f.add(LoggingRules.TWIG,3); enterCleanup(f);
+        int baselineCalls=f.fingerprintCalls;
+        quietTicks(f,19); assertEquals(baselineCalls,f.fingerprintCalls,"Do not hash 36 slots every tick");
+        f.fingerprintEpoch++; f.advance(); f.step(); assertTrue(f.actions.isEmpty());
+        quietTicks(f,19); assertTrue(f.actions.isEmpty());
+        f.advance(); f.step(); assertInstanceOf(Action.TrashLogging.class,f.pending);
+        Fixture fallback=cleanupFixture(); fallback.fingerprintSupported=false; fallback.add(LoggingRules.TWIG,3);
+        enterCleanup(fallback); quietTicks(fallback,20); assertInstanceOf(Action.TrashLogging.class,fallback.pending);
+    }
+
+    @Test void incompleteOrDuplicateNormalInventoryMappingBlocksCleanupWithoutActions() {
+        Fixture missing=cleanupFixture(); missing.add(LoggingRules.TWIG,3); missing.omittedInventorySlot=35;
+        assertEquals(WorkResult.State.BLOCKED,missing.finish().state()); assertTrue(missing.actions.isEmpty());
+        Fixture duplicate=cleanupFixture(); duplicate.add(LoggingRules.TWIG,3); duplicate.duplicateInventorySlot=true;
+        assertEquals(WorkResult.State.BLOCKED,duplicate.finish().state()); assertTrue(duplicate.actions.isEmpty());
+    }
+
+    @Test void newPickupsBeforeRestoreAndInsideTheCraftingMenuRequireFreshQuietWindows() {
+        Fixture f=cleanupFixture(); f.inventory[9]=item("minecraft:torch",55); f.inventory[10]=item(LoggingRules.LOG,6);
+        f.profile.loggingHotbarLease=new LoggingHotbarLease(9,0,f.inventory[9],f.loggingItemFingerprint(9),LoggingHotbarLease.Stage.PARKED);
+        enterCleanup(f); quietTicks(f,20); assertNull(f.pending); // WASTE -> RESTORE, no mutation.
+        f.add(LoggingRules.LOG,6); f.advance(); f.step(); quietTicks(f,19);
+        assertTrue(f.actions.isEmpty()); assertEquals(LoggingHotbarLease.Stage.PARKED,f.profile.loggingHotbarLease.stage());
+        f.advance(); f.step(); assertInstanceOf(Action.SwapHotbar.class,f.pending);
+        f.advance(); f.step(); assertNull(f.profile.loggingHotbarLease); assertEquals(item("minecraft:torch",55),f.inventory[0]);
+        f.until(() -> f.pending instanceof Action.UseBlock); f.advance(); f.add(LoggingRules.LOG,6); f.step();
+        int actionsBeforeCraft=f.actions.size(); quietTicks(f,19); assertEquals(actionsBeforeCraft,f.actions.size());
+        f.advance(); f.step(); assertInstanceOf(Action.CraftFireLogs.class,f.pending);
+        assertEquals(0,f.crafted,"Preparing a request is not a native crafting acknowledgement");
+    }
+
+    private static Fixture cleanupFixture() {
+        Fixture f=new Fixture(1); f.setPlot(0,LoggingRules.SAPLING); f.profile.loggingRunActive=true;
+        return f;
+    }
+    private static void enterCleanup(Fixture f) {
+        assertEquals(WorkResult.State.BUSY,f.step().state()); f.advance(); // START -> PLOT.
+        assertEquals(WorkResult.State.BUSY,f.step().state()); f.advance(); // PLOT -> WASTE.
+        assertEquals(WorkResult.State.BUSY,f.step().state()); assertNull(f.pending); // First quiet sample.
+    }
+    private static void quietTicks(Fixture f,int count) {
+        for(int i=0;i<count;i++) { f.advance(); WorkResult result=f.step(); assertEquals(WorkResult.State.BUSY,result.state(),result.message()); }
+    }
+
     private static ItemData item(String id,int count) { return count==0 ? ItemData.EMPTY : new ItemData(id,count,0,null,false,1000); }
 
     private static final class Fixture implements WorldAccess,ActionPort,Navigation {
@@ -475,6 +565,8 @@ class LoggingModuleTest {
         final Map<Pos,Integer> nativeChops=new HashMap<>(); int strokesPerTree=2;
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
         double playerX=.5;
+        int fingerprintCalls,fingerprintEpoch,omittedInventorySlot=-1;
+        boolean fingerprintSupported=true,duplicateInventorySlot;
         int containerId,nextContainer=1; Pos opened;
         Action pending; ActionOutcome outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
         boolean craftingGridEmpty=true,failNextCheckpoint,failCompletionCheckpoint,blockPlantingApproach,keepPlantingOccluded;
@@ -594,10 +686,15 @@ class LoggingModuleTest {
         public boolean loggingCraftingMenu() { return Objects.equals(opened,tablePos); }
         public boolean loggingCraftingGridEmpty() { return craftingGridEmpty; }
         public String loggingItemFingerprint(int index) {
-            try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(inventory[index].toString().getBytes(StandardCharsets.UTF_8))); }
+            fingerprintCalls++; if(!fingerprintSupported) return null;
+            try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest((inventory[index].toString()+fingerprintEpoch).getBytes(StandardCharsets.UTF_8))); }
             catch (Exception e) { throw new AssertionError(e); }
         }
-        public List<ItemSlot> inventory() { List<ItemSlot> slots=new ArrayList<>(); for(int i=0;i<36;i++) slots.add(new ItemSlot(i,i,true,inventory[i])); return slots; }
+        public List<ItemSlot> inventory() {
+            List<ItemSlot> slots=new ArrayList<>();
+            for(int i=0;i<36;i++) if(i!=omittedInventorySlot) slots.add(new ItemSlot(i,duplicateInventorySlot && i==35 ? 34 : i,true,inventory[i]));
+            return slots;
+        }
         public MenuData menu() {
             List<ItemSlot> slots=new ArrayList<>(); int size=opened==null ? 0 : Objects.equals(opened,tablePos) ? 10 : chests.get(opened).length;
             for(int i=0;i<size;i++) slots.add(new ItemSlot(i,-1,false,Objects.equals(opened,tablePos) ? ItemData.EMPTY : chests.get(opened)[i]));
