@@ -90,17 +90,21 @@ final class NativeInventoryConsolidation {
         Set<Integer> changed=matchingServerSlotUpdates(expectedMenu,live,latestServerItems);
         if (changed==null || changed.isEmpty()) return false;
         Set<Integer> verifiedInventoryIndices=new HashSet<>();
+        Set<Integer> verifiedProductionAdditions=new HashSet<>();
         for (int slot:changed) {
             int index=-1;
             for (int candidate=0;candidate<menuSlots.length;candidate++) if (menuSlots[candidate]==slot) { index=candidate; break; }
             if (index<0 || index==protectedHotbar) return false;
             var old=expectedMenu.get(slot); var now=live.get(slot);
-            if (!productionAddition(old,now) && !NativeWineMetadata.passiveChange(old,now,level,wineYear)) return false;
+            if (productionAddition(old,now)) verifiedProductionAdditions.add(index);
+            else if (!NativeWineMetadata.passiveChange(old,now,level,wineYear)) return false;
             verifiedInventoryIndices.add(index);
         }
         // This cannot acknowledge a click or change the next primitive. The
-        // core additionally excludes the source, scratch and implicit receivers.
-        if (!transaction.rebaseVerifiedUpdates(inventory(live),verifiedInventoryIndices)) return false;
+        // core excludes the source and implicit receivers. Only after an exact
+        // MERGE may a verified pickup fill the EMPTY borrowed scratch: the next
+        // exact inverse SWAP preserves that pickup and restores the borrowed item.
+        if (!transaction.rebaseVerifiedUpdates(inventory(live),verifiedInventoryIndices,verifiedProductionAdditions)) return false;
         expectedMenu=live;
         return true;
     }

@@ -71,11 +71,33 @@ public final class InventoryConsolidation {
      * A rejected refresh leaves both the baseline and progress untouched.
      */
     public boolean rebaseVerifiedUpdates(Snapshot after,Set<Integer> verifiedUpdates) {
-        if (after==null || verifiedUpdates==null || acknowledgedPrimitives==0
+        return rebaseVerifiedUpdates(after,verifiedUpdates,Set.of());
+    }
+
+    /**
+     * In addition to ordinary untouched-slot refreshes, a separately proven
+     * production pickup may fill an EMPTY borrowed slot after the merge ACK.
+     * Both earlier primitives must already be confirmed, and the original source
+     * must still contain the exact borrowed item. The next click remains the same
+     * exact inverse SWAP, returning that item and retaining the new pickup in the
+     * original source slot. No in-flight click is acknowledged by this method.
+     * Native callers must prove the positive additions' item whitelist and raw
+     * packet provenance; the legacy overload never permits this scratch exception.
+     */
+    public boolean rebaseVerifiedUpdates(Snapshot after,Set<Integer> verifiedUpdates,
+                                         Set<Integer> verifiedProductionAdditions) {
+        if (after==null || verifiedUpdates==null || verifiedProductionAdditions==null || acknowledgedPrimitives==0
                 || stage!=Stage.MERGE && stage!=Stage.RESTORE) return false;
+        for (Integer index:verifiedProductionAdditions) {
+            if (index==null || index<0 || index>=36 || !verifiedUpdates.contains(index)) return false;
+            Stack old=before.items().get(index),now=after.items().get(index);
+            if (now.empty() || now.count()<=old.count() || !old.empty() && !old.sameKind(now)) return false;
+        }
         for (Integer index:verifiedUpdates) {
             if (index==null || index<0 || index>=36
-                    || index==plan.sourceIndex() || index==plan.scratchHotbar()) return false;
+                    || index==plan.sourceIndex()) return false;
+            if (index==plan.scratchHotbar() && (!allowsRestoreScratchPickup()
+                    || !verifiedProductionAdditions.contains(index) || after.items().get(index).limit()>64)) return false;
             if (stage==Stage.MERGE && (index==plan.quickMoveIndex()
                     || (index<9)!=(plan.quickMoveIndex()<9))) return false;
         }
@@ -85,6 +107,13 @@ public final class InventoryConsolidation {
         }
         before=after;
         return true;
+    }
+
+    private boolean allowsRestoreScratchPickup() {
+        return stage==Stage.RESTORE && acknowledgedPrimitives>=2 && !plan.direct()
+                && !initial.items().get(plan.scratchHotbar()).empty()
+                && before.items().get(plan.scratchHotbar()).empty()
+                && before.items().get(plan.sourceIndex()).equals(initial.items().get(plan.scratchHotbar()));
     }
 
     /** An unrelated/unchanged refresh never authorizes a subsequent primitive. */

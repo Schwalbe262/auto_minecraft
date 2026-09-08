@@ -604,3 +604,44 @@ verification. No new inventory interruption was induced in the running soak test
   a test of the unresolved mid-transaction handoff limitation. The existing
   three-hour window remains incomplete, with earliest qualifying end still
   **2026-09-08 02:54:25 UTC**; this successful cycle does not reset that clock.
+
+### Fifth observation interruption: pickup before borrowed-slot restoration
+
+- The user-started window stopped after **2 hours 5 minutes 47.918 seconds**,
+  before the required three uninterrupted hours. This supersedes the earlier
+  positive two-hour checkpoint: **3,630 actions succeeded and one failed**.
+  Earlier interrupted windows and the subsequent OFF period do not count toward
+  uninterrupted operation.
+- Before this stop, the run completed one full 384-keg wine batch, four full
+  144-jar preserves cycles and 12 observed bed-entry/sleep transitions. The
+  second wine batch had 324 confirmed refills and 60 remaining. Player inventory
+  contained **323 wine bottles, not 324**. A nearby bottle with unknown cohort
+  does not by itself prove its origin or explain the interruption.
+- A separate read-only native audit established the actual failure sequence.
+  The server completed the exact planned wine merge, changing only its source
+  and receiver and leaving the borrowed temporary slot empty. A later server
+  update placed a newly received wine bottle into that empty slot, followed by
+  initialization of its production cohort, before the remaining inverse SWAP.
+  This was a **post-MERGE, pre-RESTORE pickup**, distinct from the earlier
+  same-full-reply pickup case.
+- The previous inventory-rebase guard rejected changes to the borrowed slot
+  regardless of transaction stage. It therefore stopped before sending the
+  restoration step, despite the already confirmed merge. The correction permits
+  only an exact raw-server-proven, whitelisted positive pickup into a previously
+  EMPTY borrowed slot after both the initial SWAP and MERGE are acknowledged.
+  The original borrowed item must remain exact and the next action is still the
+  exact inverse SWAP. Earlier stages, source changes, implicit receivers, full-
+  reply validation and menu/cursor safeguards retain their existing restrictions.
+  This is not permission to accept arbitrary inventory changes,
+  blindly swap a newly received product or replay a completed merge.
+- The corrected build passes **694 tests**, including eight new core and five
+  detached-native regressions. Missing/stale packets, non-production items,
+  changed source identity/count, earlier stages and inexact restoration still
+  fail closed. A newly filled slot is not falsely reported as freed space.
+- The stopped live inventory was separately recovered using one guarded inverse
+  SWAP, after all 46 native slots matched the audited evidence. A genuine full
+  server reply confirmed exact restoration and preservation of every other slot;
+  the completed merge was not replayed and the original failure fence remained.
+  This is recovery evidence, **not a post-fix endurance pass**. The 681-test build
+  failed this live window. The separate mid-transaction manual-handoff limitation
+  above remains unverified; the corrected build needs a new uninterrupted run.
