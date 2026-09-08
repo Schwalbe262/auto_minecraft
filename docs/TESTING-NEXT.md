@@ -1405,3 +1405,30 @@ unconfirmed preserves pickup, so it is not uninterrupted multi-hour acceptance.
 The existing live ledger subsequently reconciled the pickup without a manual
 loss acknowledgement. The private trace stopped appending after a write error;
 fresh latest snapshots continued, but missing history is not reconstructed.
+
+### Deployed adaptive movement retest — 2026-09-08
+
+This result supersedes the adaptive candidate's pending-installation status.
+The same Society instance was normally restarted with the above
+`0571C60E…F5EBECCD` JAR. Coordinate-only retests completed and returned to OFF
+without interaction or inventory action tickets.
+
+The cellar descent took 17.068 seconds versus the preceding 21.118-second trip.
+Both began with a 22-node path and completed six one-block descents; their starting
+positions differed by about four centimetres. This single pair is not a general
+or causal speed benchmark. Of 343 client ticks, 333 were observed, with ten missing
+ticks and five duplicate samples. All 33 observed airborne samples had no movement
+intent, all six landings directly showed two quiet ticks, and the native
+normal-physics gate was true throughout the captured samples.
+
+A required 0.375-block dip completed its descent controller in approximately
+2.20 seconds. The earlier fifteen-dip average of 2.82 seconds used different
+starting poses and work contexts, so no improvement percentage is inferred.
+A separate level detour completed in approximately 0.80 seconds: sampled native
+height stayed constant while the path moved sideways by about one block. The
+two-minute posture recording contained 599 samples with no crouching or Shift;
+its 200 ms sampling does not reconstruct every intervening physics frame.
+
+Continuous automation resumed at 13:57:34 UTC and remains under observation.
+These movement retests do not establish three-hour uninterrupted acceptance or
+close the separate coordinate-UI acceptance requirement.
