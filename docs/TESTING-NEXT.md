@@ -1475,3 +1475,33 @@ candidate. Installation and a matched real-cellar retest remain pending operator
 coordination. Earlier live timings belong to the previous artifact, not this
 rolling-preview implementation. No registrations, cooldowns or action ledgers
 were edited, and no live movement was initiated during this change.
+
+### Deployed rolling stair retest — 2026-09-08
+
+This supersedes the candidate's pending-installation status. The same existing
+Society instance was normally closed, backed up and restarted with
+`07AE3E54…55696B64`. Quick Play initially failed hostname resolution; a DNS/TCP
+check and normal reconnect in that same client succeeded. No second game client,
+system input hook, global DNS change or registration/cooldown reset was used.
+
+Two cellar descents completed in **13.828 and 13.882 seconds**. The second used
+the same initial 22-node path as the previous 17.068-second result, with starting
+positions approximately four centimetres apart. This is a matched single-pair
+observation, not a general throughput or causal benchmark. Both return ascents
+also completed. Movement-only testing ended with zero interaction/inventory
+action tickets, no navigation failure and unchanged full health.
+
+The second descent directly observed all four handoffs between the five straight
+stairs, each grounded at the planned support height with consecutive-tick
+evidence. Intermediate half-height treads did not advance the path. All 33
+observed airborne ticks had no movement intent. The final landing directly
+showed two quiet ticks; two missing observations at the earlier turning landing
+prevent the same complete claim there. Overall, 266 of 279 ticks were observed,
+with 13 missing ticks and nine duplicate samples. The native normal-physics gate
+was true throughout the 275 captured samples, with no reported failure.
+
+Normal continuous mode was resumed at 14:59:04 UTC without altering module
+schedules. Subsequent fresh observations showed tomato harvesting, advancing
+action tickets and no navigation failure, action fence or pending output. This
+short resumed observation does not establish uninterrupted multi-hour acceptance
+or newly verify wine/preserves production and sleep.
