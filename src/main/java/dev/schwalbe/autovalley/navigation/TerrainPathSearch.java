@@ -111,6 +111,11 @@ public final class TerrainPathSearch {
             }
             if (!traversable && !jump) continue;
             double cost=current.cost()+(jump ? 3 : diagonal ? Math.sqrt(2) : offset[1]==0 ? 1 : 1.5);
+            // Integer feet Y hides partial-height dips (for example a sprinkler
+            // support below farmland). Prefer a short level detour to avoid
+            // repeated descent/step-up work, but never remove the only safe path.
+            if (domain.terrain() && !jump && !diagonal)
+                cost+=surfaceTransitionPenalty(world.standingY(current.pos()),world.standingY(next));
             if (cost>=costs.getOrDefault(next,Double.POSITIVE_INFINITY)) continue;
             costs.put(next,cost);parent.put(next,current.pos());
             open.add(new Node(next,cost,cost+heuristic(next,target,reach),domain.hintDistance(next),order++));
@@ -153,6 +158,14 @@ public final class TerrainPathSearch {
             || z<Integer.MIN_VALUE || z>Integer.MAX_VALUE ? null : new Pos((int)x,(int)y,(int)z);
     }
     private static double heuristic(Pos from,Pos target,double reach) { return Math.max(0,Math.sqrt(TravelDomain.distanceSquared(from,target))-reach-2); }
+    static double surfaceTransitionPenalty(double fromHeight,double toHeight) {
+        // A preference only, after native traversal approval. Missing height
+        // data cannot create a new edge or a NaN priority-queue score.
+        if (!Double.isFinite(fromHeight) || !Double.isFinite(toHeight)) return 0;
+        double change=toHeight-fromHeight;
+        if (Math.abs(change)<=.10001) return 0; // Ordinary farmland lip is not a drop.
+        return change<0 ? 2+2*Math.min(1,-change) : 2*Math.min(1,change);
+    }
     private static List<Pos> unwind(Pos last,Map<Pos,Pos> parent) {
         LinkedList<Pos> path=new LinkedList<>();for (Pos p=last;p!=null;p=parent.get(p)) path.addFirst(p);return List.copyOf(path);
     }
