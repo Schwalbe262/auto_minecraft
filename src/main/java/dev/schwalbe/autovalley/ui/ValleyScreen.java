@@ -43,7 +43,7 @@ public final class ValleyScreen extends Screen {
     private List<BlockData> candidates = List.of();
     private List<Farm> suggestions = List.of();
     private Set<Farm> partialSuggestions = Set.of();
-    private int scannedTomatoBlocks;
+    private int scannedCropBlocks;
     private Pos lastScanCenter;
     private int lastScanRadius = 32;
     private boolean machineBatchEditor;
@@ -400,14 +400,14 @@ public final class ValleyScreen extends Screen {
         button(left, 54, third, tr("scan"), () -> scan(false));
         button(left + third + 6, 54, third, tr("use_target"), () -> {
             BlockData target = lookedBlock();
-            if (target == null || RegistrationRules.group(target) == null) { error("error.target"); return; }
+            if (target == null || RegistrationRules.group(runtime.profile(),target) == null) { error("error.target"); return; }
             selectCandidate(target);
         });
         button(left + 2 * (third + 6), 54, panelWidth - 2 * (third + 6), tr("coordinates.open"), () -> minecraft.setScreen(new CoordinateScreen()));
         button(left, 78, panelWidth, tr("filter", tr("group." + filter.name().toLowerCase(Locale.ROOT))), () -> {
             filter = RegistrationRules.Group.values()[(filter.ordinal() + 1) % RegistrationRules.Group.values().length]; page = 0; rebuild();
         });
-        List<BlockData> visible = candidates.stream().filter(b -> filter == RegistrationRules.Group.ALL || RegistrationRules.group(b) == filter).toList();
+        List<BlockData> visible = candidates.stream().filter(b -> filter == RegistrationRules.Group.ALL || RegistrationRules.group(runtime.profile(),b) == filter).toList();
         int rows = rowsFrom(104);
         int start = pageStart(visible.size(), rows);
         if (visible.isEmpty()) text(110, tr(candidates.isEmpty() ? "scan.hint" : "scan.empty_filter"));
@@ -521,7 +521,7 @@ public final class ValleyScreen extends Screen {
                 lastScanCenter = runtime.world().player().feet();
                 lastScanRadius = Math.max(1, Math.min(32, runtime.profile().scanRadius));
                 candidates = runtime.world().scan(lastScanCenter, lastScanRadius, 16).stream()
-                        .filter(b -> RegistrationRules.group(b) != null).map(this::canonicalBlock).distinct().toList();
+                        .filter(b -> RegistrationRules.group(runtime.profile(),b) != null).map(this::canonicalBlock).distinct().toList();
             }
             List<BlockData> group = RegistrationRules.connectedMachines(candidates, selected);
             if (group.isEmpty()) { error("error.changed"); return; }
@@ -865,10 +865,7 @@ public final class ValleyScreen extends Screen {
         rebuild(); success("farms.corner_captured");
     }
     private CropDefinition cropForBlock(BlockData block) {
-        if(block==null || runtime.profile().crops==null)return null;
-        List<CropDefinition> candidates=runtime.profile().crops.values().stream().filter(CropRules::valid)
-            .filter(crop->CropRules.matches(crop,block)).toList();
-        return candidates.size()==1 ? candidates.get(0) : null;
+        return RegistrationRules.crop(runtime.profile(),block);
     }
 
     private void saveFarm() {
@@ -899,14 +896,14 @@ public final class ValleyScreen extends Screen {
 
     private void suggestionList() {
         button(left, 54, panelWidth, tr("farms.suggestions_back"), () -> { showSuggestions = false; rebuild(); });
-        text(80, tr("farms.scan_summary", suggestions.size(), scannedTomatoBlocks));
+        text(80, tr("farms.scan_summary", suggestions.size(), scannedCropBlocks));
         text(95, tr(partialSuggestions.isEmpty() ? "farms.suggestions_hint" : "farms.boundary_hint"));
         int listTop = 110;
         int rows = rowsFrom(listTop), start = pageStart(suggestions.size(), rows);
         if (suggestions.isEmpty()) text(117, tr("farms.no_suggestions"));
         for (int i = start; i < Math.min(start + rows, suggestions.size()); i++) {
             Farm farm = suggestions.get(i);
-            Component caption = tr("farms.suggestion", i + 1, coords(farm.first()), coords(farm.second()));
+            Component caption = tr("farms.suggestion", i + 1, coords(farm.first()), coords(farm.second())).copy().append(" ["+farm.cropId()+"]");
             if (partialSuggestions.contains(farm)) caption = tr("farms.partial_prefix").copy().append(caption);
             button(left, listTop + (i - start) * 23, panelWidth,
                     clipped(caption, panelWidth - 12), () -> {
@@ -1129,20 +1126,20 @@ public final class ValleyScreen extends Screen {
             int horizontalRadius = Math.max(1, Math.min(32, runtime.profile().scanRadius));
             int verticalRadius = 16;
             lastScanCenter = feet; lastScanRadius = horizontalRadius;
-            candidates = runtime.world().scan(feet, horizontalRadius, verticalRadius).stream()
-                    .filter(b -> RegistrationRules.group(b) != null).map(this::canonicalBlock).distinct()
+            candidates = runtime.world().scan(feet, horizontalRadius, verticalRadius,CropRules.scanBlockIds(runtime.profile())).stream()
+                    .filter(b -> RegistrationRules.group(runtime.profile(),b) != null).map(this::canonicalBlock).distinct()
                     .sorted(Comparator.comparingDouble(b -> b.pos().distanceSquared(feet))).toList();
             page = 0;
             if (farmsOnly) {
-                List<BlockData> tomatoes = candidates.stream().filter(BlockData::tomato).toList();
-                scannedTomatoBlocks = tomatoes.size();
-                suggestions = RegistrationRules.suggestFarms(tomatoes);
+                List<BlockData> crops = candidates.stream().filter(b->cropForBlock(b)!=null).toList();
+                scannedCropBlocks = crops.size();
+                suggestions = RegistrationRules.suggestFarms(crops,runtime.profile());
                 partialSuggestions = new HashSet<>();
                 for (Farm farm : suggestions) {
                     if (RegistrationRules.mayBePartial(farm, feet, horizontalRadius, verticalRadius, runtime.world()::loaded)) partialSuggestions.add(farm);
                 }
                 showSuggestions = true;
-                feedback = tr("farms.scan_done", suggestions.size(), scannedTomatoBlocks).getString();
+                feedback = tr("farms.scan_done", suggestions.size(), scannedCropBlocks).getString();
                 if (!partialSuggestions.isEmpty()) feedback += " " + tr("farms.boundary_hint").getString();
             } else feedback = tr("scan.done", candidates.size()).getString();
             feedbackError = false; rebuild();
@@ -1271,9 +1268,9 @@ public final class ValleyScreen extends Screen {
         String text = value.getString();
         return font.width(text) <= width ? value : Component.literal(font.plainSubstrByWidth(text, Math.max(1, width - font.width("…"))) + "…");
     }
-    private static Component candidateName(BlockData block) {
+    private Component candidateName(BlockData block) {
         List<PoiKind> kinds = RegistrationRules.kinds(block);
-        if (block.tomato()) return tr("group.farms");
+        if (cropForBlock(block)!=null) return Component.literal(block.id());
         if (block.flag("container") && kinds.size() > 1) return tr("group.containers");
         return kinds.isEmpty() ? Component.literal(block.id()) : poiName(kinds.get(0));
     }

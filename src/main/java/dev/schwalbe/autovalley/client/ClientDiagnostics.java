@@ -27,7 +27,7 @@ public final class ClientDiagnostics {
     private record CandidateGroup(int count, boolean truncated, List<Candidate> candidates) { }
     private record AimedBlock(Pos pos, String id, Map<String,String> properties, double distance) { }
     private record CropCluster(Pos first, Pos second, int blocks, int matureBlocks) { }
-    private record UiFieldSuggestion(Pos first, Pos second, boolean partial) { }
+    private record UiFieldSuggestion(Pos first, Pos second, boolean partial,String cropId) { }
 
     private ClientDiagnostics() { }
 
@@ -95,7 +95,7 @@ public final class ClientDiagnostics {
                 menuReport.put("truncated",menu.slots().size() > MAX_MENU_SLOTS);
             }
             report.put("menu",menu == null ? null : menuReport);
-            report.put("nearby",nearby(world,player.feet()));
+            report.put("nearby",nearby(world,player.feet(),runtime.profile()));
         } else {
             report.put("player",null);
             report.put("aimedBlock",null);
@@ -107,6 +107,12 @@ public final class ClientDiagnostics {
         Map<String,Object> registration = new LinkedHashMap<>();
         registration.put("farmCount",profile.farms.size());
         registration.put("poiCount",profile.pois.size());
+        Map<String,Long> farmsByCrop=new TreeMap<>();
+        for(Farm farm:profile.farms)farmsByCrop.merge(farm.cropId(),1L,Long::sum);
+        registration.put("farmsByCrop",farmsByCrop);
+        registration.put("commodityStoreCount",profile.commodityStores.size());
+        registration.put("artisanJobCount",profile.artisanJobs.size());
+        registration.put("fruitPatchCount",profile.fruitPatches.size());
         Map<String,Integer> byKind = new LinkedHashMap<>();
         for (PoiKind kind : PoiKind.values()) byKind.put(kind.name(),profile.pois(kind).size());
         registration.put("poisByKind",byKind);
@@ -122,16 +128,18 @@ public final class ClientDiagnostics {
         return new AimedBlock(pos,block.id(),new TreeMap<>(block.properties()),mc.player.getEyePosition().distanceTo(hit.getLocation()));
     }
 
-    private static Map<String,Object> nearby(WorldAccess world, Pos center) {
+    private static Map<String,Object> nearby(WorldAccess world, Pos center,Profile profile) {
         List<Candidate> recognized = new ArrayList<>();
         Map<Pos,BlockData> crops = new HashMap<>();
+        List<BlockData> farmCrops=new ArrayList<>();
         Map<String,Integer> blockCounts = new TreeMap<>();
-        for (BlockData block : world.scan(center,RADIUS,VERTICAL)) {
-            String kind = kind(block);
+        for (BlockData block : world.scan(center,RADIUS,VERTICAL,CropRules.scanBlockIds(profile))) {
+            String kind = kind(block,profile);
             if (kind == null) continue;
             recognized.add(new Candidate(kind,block.pos(),block.id(),new TreeMap<>(block.properties())));
             blockCounts.merge(block.id(),1,Integer::sum);
             if (block.tomato()) crops.put(block.pos(),block);
+            if (RegistrationRules.crop(profile,block)!=null)farmCrops.add(block);
         }
         // Preserve machine/container details first; crop cluster bounds summarize large fields.
         recognized.sort(Comparator.comparingInt((Candidate c) -> c.kind().equals("tomato") ? 1 : 0)
@@ -158,16 +166,20 @@ public final class ClientDiagnostics {
         scan.put("tomatoClusterCount",clusters.size());
         scan.put("tomatoClusters",clusters.stream().limit(32).toList());
         scan.put("tomatoClustersTruncated",clusters.size() > 32);
-        List<Farm> uiFields = RegistrationRules.suggestFarms(new ArrayList<>(crops.values()));
+        List<Farm> uiFields = RegistrationRules.suggestFarms(farmCrops,profile);
         scan.put("uiFieldSuggestionCount",uiFields.size());
         scan.put("uiFieldSuggestions",uiFields.stream().limit(32).map(farm -> new UiFieldSuggestion(farm.first(),farm.second(),
-            RegistrationRules.mayBePartial(farm,center,RADIUS,VERTICAL,world::loaded))).toList());
+            RegistrationRules.mayBePartial(farm,center,RADIUS,VERTICAL,world::loaded),farm.cropId())).toList());
         scan.put("uiFieldSuggestionsTruncated",uiFields.size() > 32);
         return scan;
     }
 
-    private static String kind(BlockData block) {
-        if (block.tomato()) return "tomato";
+    private static String kind(BlockData block,Profile profile) {
+        CropDefinition crop=RegistrationRules.crop(profile,block);
+        if (crop!=null) return crop.key();
+        if (block.id().equals(ArtisanRecipe.ANCIENT_SEED.machineId()))return "seed_maker";
+        if (block.id().equals(ArtisanRecipe.JADE_CRYSTAL.machineId()))return "crystalarium";
+        if (block.id().equals(FruitRules.BLOCK))return "starfruit";
         if (block.id().contains("wine_keg")) return "wine_keg";
         if (block.id().contains("preserves_jar")) return "preserves_jar";
         if (block.id().contains("shipping_bin")) return "shipping_bin";

@@ -25,6 +25,10 @@ public interface WorldAccess {
     /** Opt-in native collision proof for a single flat diagonal; unknown adapters remain cardinal-only. */
     default boolean canTraverseDiagonal(Pos from, Pos to) { return false; }
     List<BlockData> scan(Pos center, int horizontalRadius, int verticalRadius);
+    /** Read-only candidate scan that can include explicitly defined non-vanilla crops. */
+    default List<BlockData> scan(Pos center,int horizontalRadius,int verticalRadius,java.util.Set<String> requestedIds) {
+        return scan(center,horizontalRadius,verticalRadius);
+    }
     List<ItemSlot> inventory();
     default List<GroundItem> groundItems() { return List.of(); }
     /** Vinery's live clock, not Minecraft's sleep-skipping dayTime. Null means unavailable. */

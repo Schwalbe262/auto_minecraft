@@ -209,6 +209,10 @@ public final class MinecraftWorld implements WorldAccess {
         return true;
     }
     public List<BlockData> scan(Pos center,int radius,int vertical) {
+        return scan(center,radius,vertical,Set.of());
+    }
+    @Override public List<BlockData> scan(Pos center,int radius,int vertical,Set<String> requestedIds) {
+        if(requestedIds==null || requestedIds.size()>4096)throw new IllegalArgumentException("Invalid crop scan filter");
         radius=Math.max(1,Math.min(32,radius)); vertical=Math.max(1,Math.min(16,vertical));
         List<BlockData> result=new ArrayList<>();
         for (int x=center.x()-radius;x<=center.x()+radius;x++)
@@ -220,7 +224,8 @@ public final class MinecraftWorld implements WorldAccess {
                     if (state.isAir()) continue;
                     // Do not allocate snapshots for terrain during a user-triggered scan.
                     String id=BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-                    if (id.contains("tomato") || id.contains("wine_keg") || id.contains("preserves_jar")
+                    if (requestedIds.contains(id) || state.getBlock() instanceof CropBlock || id.equals(FruitRules.BLOCK)
+                        || id.contains("tomato") || id.contains("wine_keg") || id.contains("preserves_jar")
                         || id.contains("shipping_bin") || state.getBlock() instanceof BedBlock || state.hasBlockEntity()) result.add(block(p));
                 }
         return result;

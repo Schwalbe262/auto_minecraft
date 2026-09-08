@@ -8,6 +8,7 @@ import java.util.function.Function;
 /** Pure registration checks, independent of the game client. */
 public final class RegistrationRules {
     private RegistrationRules() {}
+    private static final Map<String,CropDefinition> DEFAULT_CROPS=CropRules.defaults();
 
     public enum Group { ALL, FARMS, MACHINES, CONTAINERS, BEDS }
     public enum CoordinateState { MOVE_ONLY, UNLOADED, TYPE_MISMATCH, READY_TO_CONFIRM }
@@ -31,7 +32,23 @@ public final class RegistrationRules {
     }
 
     public static Group group(BlockData block) {
-        if (block.tomato()) return Group.FARMS;
+        return group(null,block);
+    }
+    public static CropDefinition crop(Profile profile,BlockData block) {
+        if(block==null)return null;
+        Map<String,CropDefinition> definitions=profile==null || profile.crops==null ? DEFAULT_CROPS : profile.crops;
+        CropDefinition selected=null;
+        for(var entry:definitions.entrySet()) {
+            CropDefinition candidate=entry.getValue();
+            if(!CropRules.valid(candidate) || !candidate.key().equals(entry.getKey()) || !CropRules.matches(candidate,block))continue;
+            if(selected!=null)return null;
+            selected=candidate;
+        }
+        return selected;
+    }
+    public static Group group(Profile profile,BlockData block) {
+        if(block==null)return null;
+        if (crop(profile,block)!=null) return Group.FARMS;
         if (block.id().equals("society:wine_keg") || block.id().equals("society:preserves_jar")
                 || block.id().equals("shippingbin:smart_shipping_bin") || block.id().equals("minecraft:crafting_table")) return Group.MACHINES;
         if (block.id().endsWith("_bed")) return Group.BEDS;
@@ -168,8 +185,23 @@ public final class RegistrationRules {
 
     /** Adjacent vines and crop rows separated by one block form a suggestion, never a registration. */
     public static List<Farm> suggestFarms(List<BlockData> scan) {
+        return suggestFarms(scan,null);
+    }
+    public static List<Farm> suggestFarms(List<BlockData> scan,Profile profile) {
+        Map<String,Set<Pos>> crops=new TreeMap<>();
+        for(BlockData block:scan) {
+            CropDefinition crop=crop(profile,block);
+            if(crop!=null)crops.computeIfAbsent(crop.key(),ignored->new HashSet<>()).add(block.pos());
+        }
+        List<Farm> result=new ArrayList<>();
+        crops.forEach((crop,positions)->result.addAll(suggestCropFarms(positions,crop)));
+        result.sort(Comparator.comparingInt((Farm f)->f.first().x()).thenComparingInt(f->f.first().z())
+            .thenComparingInt(f->f.first().y()).thenComparing(Farm::cropId));
+        return result;
+    }
+    private static List<Farm> suggestCropFarms(Set<Pos> positions,String cropId) {
         Set<Pos> remaining = new HashSet<>();
-        scan.stream().filter(BlockData::tomato).forEach(b -> remaining.add(b.pos()));
+        remaining.addAll(positions);
         List<Farm> result = new ArrayList<>();
         while (!remaining.isEmpty()) {
             Pos seed = remaining.iterator().next();
@@ -190,7 +222,7 @@ public final class RegistrationRules {
                     }
                 }
             }
-            result.add(new Farm("", new Pos(minX, minY, minZ), new Pos(maxX, maxY, maxZ)));
+            result.add(new Farm("", new Pos(minX, minY, minZ), new Pos(maxX, maxY, maxZ),cropId));
         }
         result.sort(Comparator.comparingInt((Farm f) -> f.first().x()).thenComparingInt(f -> f.first().z()));
         return result;

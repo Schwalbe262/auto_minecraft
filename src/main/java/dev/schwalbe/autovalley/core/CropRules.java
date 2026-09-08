@@ -21,6 +21,14 @@ public final class CropRules {
         Map<String,CropDefinition> result=new LinkedHashMap<>();
         result.put(TOMATO,BUILTINS.get(TOMATO));result.put(ANCIENT_FRUIT,BUILTINS.get(ANCIENT_FRUIT));return result;
     }
+    /** Explicit scan filter, constructed once per user scan rather than for each terrain cell. */
+    public static Set<String> scanBlockIds(Profile profile) {
+        Map<String,CropDefinition> definitions=profile==null || profile.crops==null ? BUILTINS : profile.crops;
+        Set<String> ids=new HashSet<>();
+        for(var entry:definitions.entrySet())if(valid(entry.getValue()) && entry.getValue().key().equals(entry.getKey()))
+            ids.addAll(entry.getValue().blockIds());
+        return Set.copyOf(ids);
+    }
     public static CropDefinition definition(Profile profile,Farm farm) {
         return farm==null ? null : definition(profile,farm.cropId());
     }
