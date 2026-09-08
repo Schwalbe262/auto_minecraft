@@ -100,7 +100,8 @@ public final class ClientEvents {
         MovementAxes axes=MovementAxes.from(intent,event.getEntity().getYRot());
         input.forwardImpulse=axes.forward(); input.leftImpulse=axes.left();
         input.up=axes.forward()>0; input.down=axes.forward()<0; input.left=axes.left()>0; input.right=axes.left()<0;
-        input.jumping=false; input.shiftKeyDown=intent!=null && intent.sneak();
+        input.jumping=NativeLoggingJump.consumePulse(intent,runtime().world().tick());
+        input.shiftKeyDown=intent!=null && intent.sneak();
     }
     @SubscribeEvent public void hud(RenderGuiEvent.Post event) {
         var mc=Minecraft.getInstance();

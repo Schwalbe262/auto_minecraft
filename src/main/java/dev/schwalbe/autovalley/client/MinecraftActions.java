@@ -29,6 +29,8 @@ public final class MinecraftActions implements ActionPort {
     private Movement movement;
     private long movementAt;
     private long movementLookAt=Long.MIN_VALUE;
+    private LoggingJumpEdge loggingJumpEdge;
+    private long loggingJumpGeneration,loggingJumpStarted;
     private Pos ownedContainer;
     private ContainerShape openingShape, ownedShape;
     private int ownedMenu=-1;
@@ -406,6 +408,7 @@ public final class MinecraftActions implements ActionPort {
         mc.player.setXRot((float)-Math.toDegrees(Math.atan2(delta.y,Math.sqrt(delta.x*delta.x+delta.z*delta.z))));
     }
     public void move(Movement intent) {
+        clearLoggingJump();
         boolean harvesting=pending instanceof Action.UseBlock use && use.purpose()==Action.Use.HARVEST;
         if (!enabled || intent==null || !Float.isFinite(intent.yaw()) || !Float.isFinite(intent.pitch())
             || pending!=null && !harvesting || pauseReason()!=null || mc.player==null || world.menu().container()
@@ -430,7 +433,51 @@ public final class MinecraftActions implements ActionPort {
         }
         mc.player.setSprinting(intent.sprint() && intent.forward() && MovementAxes.from(intent,mc.player.getYRot()).forward()>.8f);
     }
-    public void stopMovement() { movement=null; if (mc.player!=null && enabled) mc.player.setSprinting(false); }
+    @Override public boolean moveLoggingJump(LoggingJumpEdge edge,boolean launch) {
+        if (!loggingJumpReady(edge) || !launch && (loggingJumpEdge==null || !loggingJumpEdge.equals(edge)
+                || loggingJumpGeneration!=observations.generation() || world.tick()-loggingJumpStarted>40)) {
+            stopMovement(); return false;
+        }
+        double from=world.standingY(edge.from());
+        if (launch) {
+            if (loggingJumpEdge!=null || !stationaryLoggingLaunch()
+                    || !LoggingJumpRules.standingAt(world.player(),edge.from(),from,LoggingJumpRules.SOURCE_CENTER)) {
+                stopMovement(); return false;
+            }
+            loggingJumpEdge=edge; loggingJumpGeneration=observations.generation(); loggingJumpStarted=world.tick();
+        } else if (!LoggingJumpRules.insideFlight(edge,world.player(),from)) { stopMovement(); return false; }
+        else if (movementAt==world.tick()) return true; // Do not overwrite this tick's one-use launch input.
+        double dx=edge.to().x()+.5-mc.player.getX(),dz=edge.to().z()+.5-mc.player.getZ();
+        float yaw=(float)(Math.toDegrees(Math.atan2(dz,dx))-90);
+        if (!Float.isFinite(yaw) || !Float.isFinite(mc.player.getYRot()) || !Float.isFinite(mc.player.getXRot())) {
+            stopMovement(); return false;
+        }
+        // Lift vertically first. Only after native physics clears the full-block
+        // riser do we steer toward its top; never assign velocity or player position.
+        boolean forward=NativeLoggingJump.advanceAfterLift(launch,mc.player.getY(),world.standingY(edge.to()),Math.hypot(dx,dz));
+        movement=new Movement(yaw,0,forward,false,launch,false); movementAt=world.tick();
+        mc.player.setSprinting(false);
+        if (movementLookAt!=world.tick()) {
+            mc.player.setYRot(MovementLook.yaw(mc.player.getYRot(),yaw));
+            mc.player.setXRot(MovementLook.pitch(mc.player.getXRot(),0));
+            movementLookAt=world.tick();
+        }
+        if (launch) NativeLoggingJump.permitPulse(movement,world.tick(),() -> loggingJumpEdge!=null
+            && loggingJumpEdge.equals(edge) && loggingJumpGeneration==observations.generation()
+            && loggingJumpReady(edge) && stationaryLoggingLaunch()
+            && LoggingJumpRules.standingAt(world.player(),edge.from(),world.standingY(edge.from()),LoggingJumpRules.SOURCE_CENTER));
+        return true;
+    }
+    private boolean stationaryLoggingLaunch() {
+        return mc.player!=null && NativeLoggingJump.stationaryForLaunch(mc.player.getDeltaMovement().x,mc.player.getDeltaMovement().z);
+    }
+    private boolean loggingJumpReady(LoggingJumpEdge edge) {
+        return enabled && context!=null && pending==null && mc.player!=null && mc.level!=null && mc.screen==null
+            && pauseReason()==null && LoggingJumpRules.authorised(context) && LoggingRules.allowed(context)
+            && !MachineOutputLedger.hasPending(context) && world.canLoggingJump(edge,context.profile());
+    }
+    private void clearLoggingJump() { loggingJumpEdge=null; NativeLoggingJump.clearPulse(); }
+    public void stopMovement() { movement=null; clearLoggingJump(); if (mc.player!=null && enabled) mc.player.setSprinting(false); }
     public void cancel() {
         stopMovement();
         if (pending!=null) finish(ActionOutcome.State.CANCELLED,"Cancelled without additional input");

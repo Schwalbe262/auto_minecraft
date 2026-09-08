@@ -9,6 +9,14 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class LoggingModuleTest {
+    @Test void loggingOptsIntoItsOwnNavigationForTreesPlantingCraftWoodAndShipping() {
+        Fixture f=new Fixture(1);
+        assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertTrue(f.loggingMoves>0); assertEquals(f.moves,f.loggingMoves);
+        assertTrue(f.loggingTargets.containsAll(List.of(f.tablePos,f.woodPos,f.shippingPos)));
+        for(Pos p:f.profile.loggingPlots.get(0).plantingPositions()) assertTrue(f.loggingTargets.contains(p.offset(0,-1,0)));
+    }
+
     @Test void oneShotOwnsCutReplantTrashCraftStoreAndBerryShippingWhenEveryFeatureIsOff() {
         Fixture f=new Fixture(2); f.inventory[8]=item(ItemData.PINE_TAR,20); f.inventory[7]=item("minecraft:stick",12);
         WorkResult result=f.finish();
@@ -268,6 +276,7 @@ class LoggingModuleTest {
         final Map<Pos,ItemData[]> chests=new LinkedHashMap<>(); final Pos tablePos=new Pos(10,64,0),woodPos=new Pos(12,64,0),shippingPos=new Pos(14,64,0);
         final List<Action> actions=new ArrayList<>(); final List<String> events=new ArrayList<>();
         final List<Double> plantingReaches=new ArrayList<>();
+        final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
         int containerId,nextContainer=1; Pos opened;
         Action pending; ActionOutcome outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
@@ -405,6 +414,10 @@ class LoggingModuleTest {
             moves++;
             if(profile.loggingPlots.stream().flatMap(p -> p.plantingPositions().stream()).anyMatch(p -> p.offset(0,-1,0).equals(pos))) plantingReaches.add(reach);
             return loaded(pos) ? Result.ARRIVED : Result.BLOCKED;
+        }
+        public Result moveToLogging(Pos pos,double reach,Context c) {
+            assertTrue(profile.loggingRunActive); assertTrue(session.allows(profile,Feature.LOGGING));
+            loggingMoves++; loggingTargets.add(pos); return moveTo(pos,reach,c);
         }
         public void reset() { }
     }

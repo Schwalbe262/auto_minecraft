@@ -240,7 +240,7 @@ public final class LoggingModule implements AutomationModule {
     private boolean approach(Context c,Pos target,double reach) {
         if (c.world().menu().container() || !c.world().menu().carried().empty()) { fail("벌목 이동 중 메뉴나 커서가 바뀌었습니다."); return false; }
         if (!c.world().loaded(target)) { fail("등록한 벌목 작업 위치의 청크가 로드되지 않았습니다."); return false; }
-        Navigation.Result result=c.navigation().moveTo(target,reach,c);
+        Navigation.Result result=c.navigation().moveToLogging(target,reach,c);
         if (result==Navigation.Result.BLOCKED) { fail(ModuleSupport.navigationFailure(c,"등록한 벌목 작업 위치에 접근할 수 없습니다.")); return false; }
         if (result!=Navigation.Result.ARRIVED || !c.world().canInteract(target,reach)) return false;
         c.actions().stopMovement(); return true;
@@ -349,6 +349,9 @@ public final class LoggingModule implements AutomationModule {
         @Override protected boolean accepts(ItemData item) { return shipping ? LoggingRules.byproduct(item) : LoggingRules.wood(item); }
         @Override protected PoiKind destinationKind() { return shipping ? PoiKind.SHIPPING_BIN : PoiKind.WOOD_CHEST; }
         @Override protected Integer classifier(ItemData item) { return null; }
+        @Override protected Navigation.Result approachDestination(Context c,Poi destination) {
+            return c.navigation().moveToLogging(destination.pos(),2.5,c);
+        }
         @Override protected boolean prepareDestination(Context c,Poi destination,ItemData item) {
             return shipping || c.world().menu().slots().stream().filter(s -> !s.player()).map(ItemSlot::item)
                 .allMatch(i -> i.empty() || LoggingRules.wood(i));

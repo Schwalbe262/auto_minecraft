@@ -28,6 +28,11 @@ public final class LocalNavigator implements Navigation {
     private long endpointSettleTick = -1, endpointSampleTick;
     private int endpointQuietTicks;
     private PlayerState endpointSample;
+    private boolean loggingPath;
+    private LoggingJumpController loggingJump;
+    private boolean interruptedLanding;
+    /** A cancelled/uncertain launch is never silently retried by reset or another path search. */
+    private final Set<LoggingJumpEdge> interruptedJumps=new HashSet<>();
 
     public void setSprint(boolean sprint) { this.sprint = sprint; }
     public String failureReason() { return failure; }
@@ -38,28 +43,47 @@ public final class LocalNavigator implements Navigation {
     }
 
     @Override public Result moveTo(Pos target, double reach, Context context) {
-        return moveTo(target,reach,context,true);
+        return moveTo(target,reach,context,true,false);
+    }
+
+    @Override public Result moveToLogging(Pos target,double reach,Context context) {
+        return moveTo(target,reach,context,true,true);
     }
 
     /** Harvest lookahead must never open a door while another click is being verified. */
     @Override public Result moveToWithoutInteraction(Pos target,double reach,Context context) {
-        return moveTo(target,reach,context,false);
+        return moveTo(target,reach,context,false,false);
     }
 
-    private Result moveTo(Pos target,double reach,Context context,boolean allowDoors) {
+    private Result moveTo(Pos target,double reach,Context context,boolean allowDoors,boolean logging) {
         WorldAccess world = context.world();
         ActionPort actions = context.actions();
         PlayerState player = world.player();
         observeMotion(player);
         if (player == null || !player.connected() || !player.focused() && !context.profile().allowBackground)
             return blocked(actions, "플레이어가 게임을 조작할 수 없습니다.");
-        Pos walkingFeet = NavigationFeet.resolve(world,player);
-        if (!target.equals(destination) || Double.compare(reach, destinationReach) != 0) {
+        if (logging && (!context.profile().loggingRunActive || !context.session().allows(context.profile(),Feature.LOGGING)))
+            return blocked(actions,"벌목 작업이 활성화된 실행에서만 전용 이동을 사용할 수 있습니다.");
+        if (!target.equals(destination) || Double.compare(reach, destinationReach) != 0 || loggingPath!=logging) {
             reset();
             destination = target;
             destinationReach = reach;
+            loggingPath=logging;
             progressTick = world.tick();
         }
+        if (interruptedLanding) {
+            if (!player.onGround()) return blocked(actions,"중단된 벌목 오르기의 착지가 확인되지 않았습니다.");
+            Pos landed=NavigationFeet.resolve(world,player);
+            if (!world.canStand(landed) || !Double.isFinite(world.standingY(landed))
+                || Math.abs(player.y()-world.standingY(landed))>LoggingJumpRules.HEIGHT_TOLERANCE)
+                return blocked(actions,"중단된 벌목 오르기 뒤 실제 지면을 확인할 수 없습니다.");
+            interruptedLanding=false;
+        }
+        // In flight, raw feet can occupy an unsupported cell. Only this controller
+        // may steer, and neither interaction proximity nor normal waypoint skipping
+        // may finish the move before two grounded landing observations.
+        if (loggingJump!=null) return continueLoggingJump(context);
+        Pos walkingFeet = NavigationFeet.resolve(world,player);
         if (!ProfileBounds.contains(context.profile(), walkingFeet)) return blocked(actions, "등록한 작업 구역 밖입니다. 연결 경유지를 등록하세요.");
         if (!world.loaded(target)) return blocked(actions, "목표 청크가 로드되지 않았습니다.");
         if (doorTicket >= 0) {
@@ -70,7 +94,8 @@ public final class LocalNavigator implements Navigation {
             if (!outcome.success()) return blocked(actions, "문을 열지 못했습니다: " + outcome.message());
             progressTick = world.tick();
         }
-        if (endpointSettleTick < 0 && player.distance(target) <= reach + 2.5 && world.canInteract(target, reach)) {
+        if (endpointSettleTick < 0 && (!logging || player.onGround())
+            && player.distance(target) <= reach + 2.5 && world.canInteract(target, reach)) {
             actions.stopMovement();
             previousMoving = false;
             path = List.of();
@@ -82,7 +107,8 @@ public final class LocalNavigator implements Navigation {
         if (path.isEmpty()) {
             if (rejectedEndpoints.size() >= MAX_REJECTED_ENDPOINTS)
                 return blocked(actions,"정지 후에도 확인한 접근 위치 4곳에서 목표가 보이지 않거나 손이 닿지 않습니다.");
-            path = pathfinder.find(walkingFeet, target, reach, world, context.profile(), rejectedEndpoints);
+            path = logging ? pathfinder.findLogging(walkingFeet,target,reach,world,context.profile(),rejectedEndpoints)
+                : pathfinder.find(walkingFeet, target, reach, world, context.profile(), rejectedEndpoints);
             if (path.isEmpty()) return blocked(actions, "등록된 통로에 통행 가능한 경로가 없습니다.");
             nextIndex = path.size() > 1 ? 1 : 0;
             lastDistance = Double.POSITIVE_INFINITY;
@@ -95,6 +121,16 @@ public final class LocalNavigator implements Navigation {
         }
         Pos next = path.get(nextIndex);
         if (!world.loaded(next) || !world.canStand(next)) return blocked(actions, "이동 경로가 바뀌었습니다.");
+        if (logging && nextIndex>0) {
+            LoggingJumpEdge edge=new LoggingJumpEdge(path.get(nextIndex-1),next);
+            if (!world.canTraverse(edge.from(),edge.to()) && LoggingJumpRules.validShape(edge)) {
+                if (interruptedJumps.contains(edge) || interruptedJumps.size()>=256)
+                    return blocked(actions,"이전 벌목 오르기가 중단되어 같은 점프를 자동 재시도하지 않습니다.");
+                if (!LoggingJumpRules.permitted(edge,context)) return blocked(actions,"벌목 오르기 경로의 네이티브 안전 확인이 실패했습니다.");
+                loggingJump=new LoggingJumpController(edge);
+                return continueLoggingJump(context);
+            }
+        }
         boolean descendingEdge = verifiedDescendingEdge(world, player, next);
         // A body's center can cross into the lower cell while its rear still
         // rests on the previous step. The integer feet cell then has no floor.
@@ -243,6 +279,7 @@ public final class LocalNavigator implements Navigation {
     }
 
     private Result blocked(ActionPort actions, String reason) {
+        cancelLoggingJump();
         actions.stopMovement();
         previousMoving = false;
         failure = reason;
@@ -252,6 +289,7 @@ public final class LocalNavigator implements Navigation {
     }
 
     @Override public void reset() {
+        cancelLoggingJump();
         path = List.of();
         destination = null;
         doorTicket = -1;
@@ -261,5 +299,31 @@ public final class LocalNavigator implements Navigation {
         previousMoving = false;
         failure = "";
         rejectedEndpoints.clear(); clearEndpointSettle();
+    }
+
+    private Result continueLoggingJump(Context context) {
+        Result result=loggingJump.tick(context);
+        previousMoving=result==Result.MOVING;
+        previousSprint=false;
+        if (result==Result.BLOCKED) return blocked(context.actions(),loggingJump.failureReason());
+        if (result==Result.ARRIVED) {
+            loggingJump=null;
+            // The final approach may require a center tighter than the landing
+            // margin. Replan FROM the actual landing, never redispatch this edge.
+            path=List.of(); nextIndex=0;
+            lastDistance=Double.POSITIVE_INFINITY; progressTick=context.world().tick();
+            previousMoving=false;
+        }
+        // Landing only completes this edge, not an interaction in the same tick.
+        return Result.MOVING;
+    }
+
+    private void cancelLoggingJump() {
+        if (loggingJump==null) return;
+        if (loggingJump.attempted() && loggingJump.phase()!=LoggingJumpController.Phase.COMPLETE) {
+            interruptedJumps.add(loggingJump.edge());
+            interruptedLanding=true;
+        }
+        loggingJump.cancel(); loggingJump=null;
     }
 }

@@ -15,6 +15,19 @@ public final class LocalPathfinder {
 
     /** Rejected interaction centers remain traversable; only their goal eligibility is excluded. */
     public List<Pos> find(Pos start, Pos target, double reach, WorldAccess world, Profile profile, Set<Pos> excludedGoals) {
+        return find(start,target,reach,world,profile,excludedGoals,false);
+    }
+
+    /** Read-only geometry preflight; movement still requires an active authorised logging run. */
+    public List<Pos> findLogging(Pos start,Pos target,double reach,WorldAccess world,Profile profile) {
+        return findLogging(start,target,reach,world,profile,Set.of());
+    }
+
+    public List<Pos> findLogging(Pos start,Pos target,double reach,WorldAccess world,Profile profile,Set<Pos> excludedGoals) {
+        return find(start,target,reach,world,profile,excludedGoals,true);
+    }
+
+    private List<Pos> find(Pos start,Pos target,double reach,WorldAccess world,Profile profile,Set<Pos> excludedGoals,boolean logging) {
         ProfileBounds bounds = new ProfileBounds(profile);
         if (!world.loaded(start) || !bounds.contains(start)) return List.of();
         PriorityQueue<Node> open = new PriorityQueue<>(Comparator.comparingDouble(Node::score));
@@ -37,10 +50,16 @@ public final class LocalPathfinder {
                     if (closed.contains(next) || !bounds.contains(next) || !world.loaded(next)
                         || !world.loaded(next.offset(0,1,0)) || !world.loaded(next.offset(0,-1,0))
                         || !world.canStand(next)) continue;
-                    if (diagonal ? !DiagonalTraversal.canTraverse(node.pos(),next,world,bounds)
-                            : !world.canTraverse(node.pos(),next)) continue;
+                    boolean traversable=diagonal ? DiagonalTraversal.canTraverse(node.pos(),next,world,bounds)
+                        : world.canTraverse(node.pos(),next);
+                    boolean jump=false;
+                    if (!traversable && logging && !diagonal) {
+                        LoggingJumpEdge edge=new LoggingJumpEdge(node.pos(),next);
+                        jump=LoggingJumpRules.verifiedSupports(edge,world,profile) && world.canLoggingJump(edge,profile);
+                    }
+                    if (!traversable && !jump) continue;
                     // The world adapter validates collision geometry and step height, including modded supports.
-                    double nextCost = node.cost() + (diagonal ? Math.sqrt(2) : dy == 0 ? 1 : 1.5);
+                    double nextCost = node.cost() + (jump ? 3 : diagonal ? Math.sqrt(2) : dy == 0 ? 1 : 1.5);
                     if (nextCost >= cost.getOrDefault(next, Double.POSITIVE_INFINITY)) continue;
                     cost.put(next, nextCost);
                     parent.put(next, node.pos());
