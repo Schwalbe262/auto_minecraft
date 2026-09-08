@@ -91,6 +91,7 @@ class NavigationDescentTest {
         final Context context;
         Fixture() {
             Profile profile=new Profile();
+            profile.navigationMode=NavigationMode.WAYPOINTS;
             profile.farms.add(new Farm("stairs",new Pos(-1,-1,-3),new Pos(2,3,1)));
             context=new Context(world,actions,navigation,profile);
         }

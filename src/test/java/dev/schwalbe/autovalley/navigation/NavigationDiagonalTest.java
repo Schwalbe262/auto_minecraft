@@ -113,6 +113,7 @@ class NavigationDiagonalTest {
         final Map<Pos,Double> heights=new HashMap<>(); final Map<Pos,Boolean> doors=new HashMap<>();
         long now; double x=.5,y=64,z=.5,floor=64; boolean nativeDiagonal=true; Movement movement; int submissions;
         Fixture() {
+            profile.navigationMode=NavigationMode.WAYPOINTS;
             profile.farms.add(new Farm("registered",START,new Pos(8,64,8)));
             context=new Context(this,this,navigator,profile);
         }

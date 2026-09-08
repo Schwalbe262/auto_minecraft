@@ -17,7 +17,8 @@ import java.util.*;
 import java.util.function.BooleanSupplier;
 
 /**
- * Read-only proof for a registered logging-only, cardinal one-block ascent.
+ * Shared read-only geometry for cardinal one-block ascents. Logging retains
+ * its registered-only wrapper; general transit has a separate opt-in wrapper.
  * The destination riser is expected solid terrain, not a collision to erase:
  * ordinary player physics must lift the body over it. No position/velocity,
  * key binding, block, or network state is written by this helper.
@@ -36,21 +37,32 @@ final class NativeLoggingJump {
     static boolean mayTraverse(Minecraft mc,MinecraftWorld world,LoggingJumpEdge edge,Profile profile) {
         if (mc==null || mc.level==null || mc.player==null || !normalPhysics(mc)
                 || !LoggingJumpRules.verifiedSupports(edge,world,profile)) return false;
+        return inspectNative(mc,world,edge,profile,true);
+    }
+
+    static boolean mayStepUp(Minecraft mc,MinecraftWorld world,LoggingJumpEdge edge,Profile profile) {
+        if (mc==null || mc.level==null || mc.player==null || !normalPhysics(mc)
+                || !StepUpRules.verifiedSupports(edge,world,profile)) return false;
+        return inspectNative(mc,world,edge,profile,false);
+    }
+
+    private static boolean inspectNative(Minecraft mc,MinecraftWorld world,LoggingJumpEdge edge,Profile profile,boolean logging) {
         try {
-            ProfileBounds bounds=new ProfileBounds(profile);
+            ProfileBounds bounds=logging ? new ProfileBounds(profile) : null;
             Cells cells=pos -> {
                 if (!world.loaded(pos)) return new Cell(false,false,true,false,List.of());
                 BlockPos bp=MinecraftWorld.nativePos(pos);
                 BlockState state=mc.level.getBlockState(bp);
                 Block block=state.getBlock();
                 boolean forbidden=forbiddenBlock(state) || protectedPlanting(profile,pos);
-                return new Cell(true,bounds.contains(pos),forbidden,
+                return new Cell(true,bounds==null || bounds.contains(pos),forbidden,
                     normalSurface(block.getJumpFactor(),block.getSpeedFactor(),block.getFriction()),
                     state.getCollisionShape(mc.level,bp,CollisionContext.of(mc.player)).toAabbs());
             };
             double floor=world.standingY(edge.from());
             AABB sweep=sweep(edge,mc.player.getBbWidth(),mc.player.getBbHeight(),floor);
-            return geometry(edge,mc.player.getBbWidth(),mc.player.getBbHeight(),floor,
+            return world.insideBorder(sweep)
+                && geometry(edge,mc.player.getBbWidth(),mc.player.getBbHeight(),floor,
                 world.standingY(edge.to()),cells) && mc.level.getEntityCollisions(mc.player,sweep).isEmpty();
         } catch (RuntimeException unsupported) { return false; }
     }
@@ -82,7 +94,8 @@ final class NativeLoggingJump {
         return !s.getFluidState().isEmpty() || b instanceof DoorBlock || b instanceof TrapDoorBlock || b instanceof FenceGateBlock
             || b instanceof FarmBlock || b instanceof CropBlock || b instanceof StemBlock || b instanceof AttachedStemBlock
             || b instanceof SaplingBlock || s.is(BlockTags.CROPS)
-            || id.equals("farmersdelight:tomatoes") || id.equals("farmersdelight:budding_tomatoes")
+            || id.equals("farmersdelight:tomatoes") || id.equals("farmersdelight:tomatoes_on_rope")
+            || id.equals("farmersdelight:budding_tomatoes")
             || s.is(Blocks.FIRE) || s.is(Blocks.SOUL_FIRE) || s.is(Blocks.CACTUS) || s.is(Blocks.MAGMA_BLOCK)
             || s.is(Blocks.CAMPFIRE) || s.is(Blocks.SOUL_CAMPFIRE) || s.is(Blocks.POWDER_SNOW)
             || s.is(Blocks.SWEET_BERRY_BUSH) || s.is(Blocks.WITHER_ROSE) || s.is(Blocks.COBWEB)

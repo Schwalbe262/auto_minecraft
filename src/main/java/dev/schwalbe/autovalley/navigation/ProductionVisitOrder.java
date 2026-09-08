@@ -39,7 +39,7 @@ public final class ProductionVisitOrder {
         if (!world.loaded(feet)) return fallback;
         // Match LocalNavigator's slab/farmland/stair support-cell adjustment.
         if (!world.canStand(feet) && world.loaded(feet.offset(0,1,0)) && world.canStand(feet.offset(0,1,0))) feet=feet.offset(0,1,0);
-        ProfileBounds bounds=new ProfileBounds(profile);
+        TravelDomain bounds=new TravelDomain(profile,feet,remaining.get(0).pos());
         if (!bounds.contains(feet)) return fallback;
         int interactionChecks=0;
         for (Candidate candidate:remaining) {

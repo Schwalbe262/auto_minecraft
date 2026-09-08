@@ -38,6 +38,7 @@ public final class MinecraftWorld implements WorldAccess {
         return NativeLoggingActions.canPlantFrom(mc,target,eye,reach);
     }
     public boolean canLoggingJump(LoggingJumpEdge edge,Profile profile) { return NativeLoggingJump.mayTraverse(mc,this,edge,profile); }
+    @Override public boolean canStepUp(LoggingJumpEdge edge,Profile profile) { return NativeLoggingJump.mayStepUp(mc,this,edge,profile); }
     public boolean loggingAxe(int inventoryIndex) {
         return mc.player!=null && inventoryIndex>=0 && inventoryIndex<9
             && mc.player.getInventory().getItem(inventoryIndex).is(net.minecraft.world.item.Items.NETHERITE_AXE)
@@ -79,6 +80,13 @@ public final class MinecraftWorld implements WorldAccess {
         return new BlockData(pos,blockId,properties);
     }
     public boolean loaded(Pos p) { return mc.level!=null && mc.level.hasChunkAt(nativePos(p)) && p.y()>=mc.level.getMinBuildHeight() && p.y()<mc.level.getMaxBuildHeight(); }
+    /** WorldBorder's AABB overlap helper is insufficient: require the whole swept body inside. */
+    boolean insideBorder(AABB body) {
+        if (mc.level==null || body==null) return false;
+        var border=mc.level.getWorldBorder();
+        return body.minX>=border.getMinX() && body.maxX<=border.getMaxX()
+            && body.minZ>=border.getMinZ() && body.maxZ<=border.getMaxZ();
+    }
     private boolean door(BlockState state) { return state.getBlock() instanceof DoorBlock && !state.is(Blocks.IRON_DOOR); }
     private boolean hazard(BlockState s) {
         return !s.getFluidState().isEmpty() || s.is(Blocks.FIRE) || s.is(Blocks.SOUL_FIRE) || s.is(Blocks.CACTUS)
@@ -87,6 +95,9 @@ public final class MinecraftWorld implements WorldAccess {
     }
     public boolean canStand(Pos p) {
         if (mc.level==null || mc.player==null || !loaded(p) || !loaded(p.offset(0,1,0)) || !loaded(p.offset(0,-1,0))) return false;
+        double radius=mc.player.getBbWidth()/2.0;
+        if (!insideBorder(new AABB(p.x()+.5-radius,p.y(),p.z()+.5-radius,
+                p.x()+.5+radius,p.y()+mc.player.getBbHeight(),p.z()+.5+radius))) return false;
         BlockPos feet=nativePos(p);
         BlockState floor=mc.level.getBlockState(feet.below());
         BlockState low=mc.level.getBlockState(feet), high=mc.level.getBlockState(feet.above());
@@ -173,6 +184,7 @@ public final class MinecraftWorld implements WorldAccess {
     private boolean clearBodyAt(double x,double y,double z) {
         double radius=mc.player.getBbWidth()/2.0-1.0e-5;
         AABB body=new AABB(x-radius,y+1.0e-5,z-radius,x+radius,y+mc.player.getBbHeight()-1.0e-5,z+radius);
+        if (!insideBorder(body)) return false;
         for (int bx=(int)Math.floor(body.minX);bx<=(int)Math.floor(body.maxX);bx++)
             for (int bz=(int)Math.floor(body.minZ);bz<=(int)Math.floor(body.maxZ);bz++)
                 for (int by=(int)Math.floor(body.minY);by<=(int)Math.floor(body.maxY);by++) {

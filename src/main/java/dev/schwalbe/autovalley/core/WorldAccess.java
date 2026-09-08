@@ -12,6 +12,8 @@ public interface WorldAccess {
     boolean canTraverse(Pos from, Pos to);
     /** Geometry-only opt-in proof for one cardinal, exactly one-support-block logging ascent. */
     default boolean canLoggingJump(LoggingJumpEdge edge,Profile profile) { return false; }
+    /** Geometry-only proof for a general one-block ascent; never grants logging or input permission. */
+    default boolean canStepUp(LoggingJumpEdge edge,Profile profile) { return false; }
     /** Opt-in native collision proof for a single flat diagonal; unknown adapters remain cardinal-only. */
     default boolean canTraverseDiagonal(Pos from, Pos to) { return false; }
     List<BlockData> scan(Pos center, int horizontalRadius, int verticalRadius);

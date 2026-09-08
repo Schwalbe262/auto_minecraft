@@ -38,7 +38,7 @@ public final class LocalPathfinder {
     }
 
     private List<Pos> find(Pos start,Pos target,double reach,WorldAccess world,Profile profile,Set<Pos> excludedGoals,boolean logging,List<Pos> plantingTargets) {
-        ProfileBounds bounds = new ProfileBounds(profile);
+        TravelDomain bounds = new TravelDomain(profile,start,target);
         if (!world.loaded(start) || !bounds.contains(start)) return List.of();
         PriorityQueue<Node> open = new PriorityQueue<>(Comparator.comparingDouble(Node::score));
         Map<Pos, Double> cost = new HashMap<>();
@@ -67,6 +67,10 @@ public final class LocalPathfinder {
                     if (!traversable && logging && !diagonal) {
                         LoggingJumpEdge edge=new LoggingJumpEdge(node.pos(),next);
                         jump=LoggingJumpRules.verifiedSupports(edge,world,profile) && world.canLoggingJump(edge,profile);
+                    }
+                    if (!traversable && !logging && !diagonal && bounds.terrain()) {
+                        LoggingJumpEdge edge=new LoggingJumpEdge(node.pos(),next);
+                        jump=StepUpRules.verifiedSupports(edge,world,profile) && world.canStepUp(edge,profile);
                     }
                     if (!traversable && !jump) continue;
                     // The world adapter validates collision geometry and step height, including modded supports.

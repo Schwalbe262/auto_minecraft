@@ -76,6 +76,7 @@ class NavigationPlantingTest {
         final Set<Pos> actual=new HashSet<>(),predicted=new HashSet<>(); final List<Double> reaches=new ArrayList<>();
         long now; double x=.5; Movement movement; int submissions;
         Fixture() {
+            profile.navigationMode=NavigationMode.WAYPOINTS;
             profile.farms.add(new Farm("walkway",START,new Pos(3,0,0)));
             profile.loggingPlots.add(PLOT); profile.loggingRunActive=true;
             profile.loggingRemainingPlots.add(PLOT.corner()); profile.loggingReplantingPlots.add(PLOT.corner());

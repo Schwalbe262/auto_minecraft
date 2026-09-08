@@ -34,9 +34,50 @@ public final class LocalNavigator implements Navigation {
     private boolean interruptedLanding;
     /** A cancelled/uncertain launch is never silently retried by reset or another path search. */
     private final Set<LoggingJumpEdge> interruptedJumps=new HashSet<>();
+    private TravelDomain domain;
+    private Profile requestProfile;
+    private SessionState requestSession;
+    private NavigationMode requestMode;
+    /** Lookahead is walking only, including after its harvest ticket completes. */
+    private boolean requestInteractions;
+    private TerrainPathSearch.Goal goal=TerrainPathSearch.Goal.INTERACTION;
+    private TerrainPathSearch search;
+    private TerrainPathSearch.Frontier frontier;
+    private final Set<TerrainPathSearch.Frontier> rejectedFrontiers=new HashSet<>();
+    private long frontierWait=-1,searchBudgetTick=Long.MIN_VALUE;
+    private int frontierAttempts,replans,requestNodes,sliceNodes,sliceLos;
+    private long sliceNanos;
+    private Failure failureKind=Failure.NONE;
+    private String diagnostic="IDLE";
+    private ActionPort lastActions;
 
     public void setSprint(boolean sprint) { this.sprint = sprint; }
     public String failureReason() { return failure; }
+    @Override public Failure failureKind() { return failureKind; }
+    @Override public boolean retryableFailure() {
+        return failureKind==Failure.NO_PATH || failureKind==Failure.UNLOADED || failureKind==Failure.SEARCH_LIMIT
+            || failureKind==Failure.OBSTACLE || failureKind==Failure.STALLED || failureKind==Failure.REACH;
+    }
+    @Override public Pos failureDestination() { return failureKind==Failure.NONE ? null : destination; }
+    @Override public String diagnosticStatus() { return diagnostic; }
+    @Override public java.util.Map<String,Object> diagnostics() {
+        java.util.Map<String,Object> report=new java.util.LinkedHashMap<>();
+        report.put("state",diagnostic);report.put("mode",requestMode==null ? "NONE" : requestMode.name());
+        report.put("goalKind",goal.name());report.put("failure",failureKind.name());report.put("destination",destination);
+        report.put("sliceNodes",sliceNodes);report.put("sliceLos",sliceLos);report.put("sliceElapsedNanos",sliceNanos);
+        report.put("requestExpanded",requestNodes);report.put("replans",replans);report.put("frontierAttempts",frontierAttempts);
+        report.put("pathLength",path.size());report.put("nextIndex",nextIndex);
+        report.put("searchLimit",search==null ? 0 : search.nodeLimit());return java.util.Collections.unmodifiableMap(report);
+    }
+    @Override public boolean permitsTransit(Pos feet,Context c) {
+        return domain!=null && destination!=null && c.profile()==requestProfile && c.session()==requestSession
+            && c.profile().navigationMode==requestMode && failureKind==Failure.NONE && domain.contains(feet) && c.world().loaded(feet);
+    }
+    @Override public boolean permitsStepUp(LoggingJumpEdge edge,Context c) {
+        return requestInteractions && loggingJump instanceof StepUpController && loggingJump.edge().equals(edge)
+            && loggingJump.phase()!=LoggingJumpController.Phase.FAILED && loggingJump.phase()!=LoggingJumpController.Phase.COMPLETE
+            && permitsTransit(edge.from(),c) && permitsTransit(edge.to(),c);
+    }
     /** Measured displacement while movement was requested; teleports are excluded. */
     public double measuredDistance(boolean sprinting, WorldAccess world) {
         observeMotion(world.player());
@@ -45,6 +86,12 @@ public final class LocalNavigator implements Navigation {
 
     @Override public Result moveTo(Pos target, double reach, Context context) {
         return moveTo(target,reach,context,true,false);
+    }
+    @Override public Result moveToPosition(Pos target,double reach,Context context) {
+        return moveTo(target,reach,context,true,false,List.of(),TerrainPathSearch.Goal.POSITION);
+    }
+    @Override public Result moveToObserve(Pos target,double reach,Context context) {
+        return moveTo(target,reach,context,true,false,List.of(),TerrainPathSearch.Goal.OBSERVE);
     }
 
     @Override public Result moveToLogging(Pos target,double reach,Context context) {
@@ -69,20 +116,31 @@ public final class LocalNavigator implements Navigation {
     }
 
     private Result moveTo(Pos target,double reach,Context context,boolean allowDoors,boolean logging,List<Pos> planting) {
+        return moveTo(target,reach,context,allowDoors,logging,planting,TerrainPathSearch.Goal.INTERACTION);
+    }
+    private Result moveTo(Pos target,double reach,Context context,boolean allowDoors,boolean logging,List<Pos> planting,TerrainPathSearch.Goal requestedGoal) {
         WorldAccess world = context.world();
         ActionPort actions = context.actions();
+        if (lastActions!=null && lastActions!=actions) lastActions.stopMovement();
+        lastActions=actions;
         PlayerState player = world.player();
         observeMotion(player);
         if (player == null || !player.connected() || !player.focused() && !context.profile().allowBackground)
             return blocked(actions, "플레이어가 게임을 조작할 수 없습니다.");
         if (logging && (!context.profile().loggingRunActive || !context.session().allows(context.profile(),Feature.LOGGING)))
             return blocked(actions,"벌목 작업이 활성화된 실행에서만 전용 이동을 사용할 수 있습니다.");
-        if (!target.equals(destination) || Double.compare(reach, destinationReach) != 0 || loggingPath!=logging || !plantingTargets.equals(planting)) {
+        if (target==null || !Double.isFinite(reach) || reach<0) return blocked(actions,Failure.SAFETY,"이동 목적지 또는 도달 거리가 올바르지 않습니다.");
+        if (!target.equals(destination) || Double.compare(reach, destinationReach) != 0 || loggingPath!=logging || !plantingTargets.equals(planting)
+            || goal!=requestedGoal || requestProfile!=context.profile() || requestSession!=context.session() || requestMode!=context.profile().navigationMode
+            || requestInteractions!=allowDoors) {
             reset();
             destination = target;
             destinationReach = reach;
             loggingPath=logging;
             plantingTargets=planting;
+            goal=requestedGoal;requestProfile=context.profile();requestSession=context.session();requestMode=context.profile().navigationMode;
+            requestInteractions=allowDoors;
+            domain=new TravelDomain(context.profile(),NavigationFeet.resolve(world,player),target);
             progressTick = world.tick();
         }
         if (interruptedLanding) {
@@ -96,10 +154,10 @@ public final class LocalNavigator implements Navigation {
         // In flight, raw feet can occupy an unsupported cell. Only this controller
         // may steer, and neither interaction proximity nor normal waypoint skipping
         // may finish the move before two grounded landing observations.
-        if (loggingJump!=null) return continueLoggingJump(context);
+        if (loggingJump!=null) { diagnostic="STEP_UP";return continueLoggingJump(context); }
         Pos walkingFeet = NavigationFeet.resolve(world,player);
-        if (!ProfileBounds.contains(context.profile(), walkingFeet)) return blocked(actions, "등록한 작업 구역 밖입니다. 연결 경유지를 등록하세요.");
-        if (!world.loaded(target)) return blocked(actions, "목표 청크가 로드되지 않았습니다.");
+        if (!domain.contains(walkingFeet)) return blocked(actions,Failure.INVALID_START,"현재 이동 요청의 안전 탐색 영역 밖입니다.");
+        if (!world.loaded(target) && !domain.terrain()) return blocked(actions,Failure.UNLOADED,"목표 청크가 로드되지 않았습니다.");
         if (doorTicket >= 0) {
             actions.stopMovement();
             ActionOutcome outcome = actions.outcome(doorTicket);
@@ -115,16 +173,22 @@ public final class LocalNavigator implements Navigation {
             path = List.of();
             rejectedEndpoints.clear();
             failure = "";
+            failureKind=Failure.NONE;diagnostic="ARRIVED";search=null;frontier=null;
             return Result.ARRIVED;
         }
         if (world.menu() != null && world.menu().container()) return blocked(actions, "상자가 열린 동안 이동하지 않습니다.");
         if (path.isEmpty()) {
             if (rejectedEndpoints.size() >= MAX_REJECTED_ENDPOINTS)
-                return blocked(actions,"정지 후에도 확인한 접근 위치 4곳에서 목표가 보이지 않거나 손이 닿지 않습니다.");
-            path = !plantingTargets.isEmpty() ? pathfinder.findLoggingPlanting(walkingFeet,plantingTargets,reach,world,context.profile(),rejectedEndpoints)
-                : logging ? pathfinder.findLogging(walkingFeet,target,reach,world,context.profile(),rejectedEndpoints)
-                : pathfinder.find(walkingFeet, target, reach, world, context.profile(), rejectedEndpoints);
-            if (path.isEmpty()) return blocked(actions, "등록된 통로에 통행 가능한 경로가 없습니다.");
+                return blocked(actions,Failure.REACH,"정지 후에도 확인한 접근 위치 4곳에서 목표가 보이지 않거나 손이 닿지 않습니다.");
+            if (domain.terrain() || goal!=TerrainPathSearch.Goal.INTERACTION) {
+                Result planned=planTerrain(context,walkingFeet);
+                if (planned!=null) return planned;
+            } else {
+                path = !plantingTargets.isEmpty() ? pathfinder.findLoggingPlanting(walkingFeet,plantingTargets,reach,world,context.profile(),rejectedEndpoints)
+                    : logging ? pathfinder.findLogging(walkingFeet,target,reach,world,context.profile(),rejectedEndpoints)
+                    : pathfinder.find(walkingFeet, target, reach, world, context.profile(), rejectedEndpoints);
+                if (path.isEmpty()) return blocked(actions,Failure.NO_PATH,"등록된 통로에 통행 가능한 경로가 없습니다.");
+            }
             nextIndex = path.size() > 1 ? 1 : 0;
             lastDistance = Double.POSITIVE_INFINITY;
             progressTick = world.tick();
@@ -135,14 +199,16 @@ public final class LocalNavigator implements Navigation {
             progressTick = world.tick();
         }
         Pos next = path.get(nextIndex);
-        if (!world.loaded(next) || !world.canStand(next)) return blocked(actions, "이동 경로가 바뀌었습니다.");
-        if (logging && nextIndex>0) {
+        if (frontier!=null && nextIndex==path.size()-1 && standingNear(world,player,next,.15)) return arriveFrontier(context,walkingFeet);
+        if (!world.loaded(next) || !world.canStand(next)) return replan(context,Failure.OBSTACLE,"이동 경로가 바뀌었습니다.");
+        if (requestInteractions && (logging || domain.terrain()) && nextIndex>0) {
             LoggingJumpEdge edge=new LoggingJumpEdge(path.get(nextIndex-1),next);
             if (!world.canTraverse(edge.from(),edge.to()) && LoggingJumpRules.validShape(edge)) {
                 if (interruptedJumps.contains(edge) || interruptedJumps.size()>=256)
                     return blocked(actions,"이전 벌목 오르기가 중단되어 같은 점프를 자동 재시도하지 않습니다.");
-                if (!LoggingJumpRules.permitted(edge,context)) return blocked(actions,"벌목 오르기 경로의 네이티브 안전 확인이 실패했습니다.");
-                loggingJump=new LoggingJumpController(edge);
+                if (!(logging ? LoggingJumpRules.permitted(edge,context) : StepUpRules.permitted(edge,context)))
+                    return replan(context,Failure.OBSTACLE,"한 칸 오르기 경로의 네이티브 안전 확인이 실패했습니다.");
+                loggingJump=logging ? new LoggingJumpController(edge) : new StepUpController(edge);
                 return continueLoggingJump(context);
             }
         }
@@ -153,7 +219,7 @@ public final class LocalNavigator implements Navigation {
         if (!world.canStand(walkingFeet) && !descendingEdge)
             return blocked(actions, "현재 발밑의 안전한 경로를 확인할 수 없습니다.");
         if (!walkingFeet.equals(next) && walkingFeet.distanceSquared(next) <= 2
-            && !canTraverse(walkingFeet,next,world,context.profile()) && !descendingEdge) return blocked(actions, "이동 경로가 막혔습니다.");
+            && !canTraverse(walkingFeet,next,world,domain) && !descendingEdge) return replan(context,Failure.OBSTACLE,"이동 경로가 막혔습니다.");
         if (descendingEdge && !player.onGround()) {
             actions.stopMovement();
             previousMoving = false;
@@ -189,12 +255,13 @@ public final class LocalNavigator implements Navigation {
             lastDistance = distance;
             progressTick = world.tick();
         }
-        if (world.tick() - progressTick > 60) return blocked(actions, "이동이 3초 동안 진행되지 않았습니다.");
+        if (world.tick() - progressTick > 60) return replan(context,Failure.STALLED,"이동이 3초 동안 진행되지 않았습니다.");
         double dx = next.x() + 0.5 - player.x(), dz = next.z() + 0.5 - player.z();
         float yaw = (float)Math.toDegrees(Math.atan2(-dx, dz));
         boolean flat = next.y() == walkingFeet.y();
         previousMoving = true;
         previousSprint = sprint && flat && distance > 0.55;
+        diagnostic="FOLLOWING";
         actions.move(new Movement(yaw, 0, true, previousSprint, false, false));
         return Result.MOVING;
     }
@@ -216,11 +283,11 @@ public final class LocalNavigator implements Navigation {
             rejectedEndpoints.add(endpoint); clearEndpointSettle(); path=List.of();
             lastDistance=Double.POSITIVE_INFINITY; progressTick=world.tick();
             if (rejectedEndpoints.size()>=MAX_REJECTED_ENDPOINTS)
-                return blocked(actions,"정지 후에도 확인한 접근 위치 4곳에서 목표가 보이지 않거나 손이 닿지 않습니다.");
+                return blocked(actions,Failure.REACH,"정지 후에도 확인한 접근 위치 4곳에서 목표가 보이지 않거나 손이 닿지 않습니다.");
             return Result.MOVING; // Replan next tick; this tick remains stopped.
         }
         if (world.tick()-endpointSettleTick>=ENDPOINT_SETTLE_TIMEOUT_TICKS)
-            return blocked(actions,"접근 위치에서 안전하게 정지하지 못했습니다.");
+            return blocked(actions,Failure.REACH,"접근 위치에서 안전하게 정지하지 못했습니다.");
         return Result.MOVING;
     }
 
@@ -229,8 +296,81 @@ public final class LocalNavigator implements Navigation {
     }
 
     private boolean interactionReady(WorldAccess world,Pos target,double reach) {
+        if (!world.loaded(target)) return false;
+        if (goal!=TerrainPathSearch.Goal.INTERACTION) {
+            PlayerState p=world.player();Pos feet=NavigationFeet.resolve(world,p);
+            if (!p.onGround() || !TerrainPathSearch.loadedStance(world,feet) || !world.canStand(feet)) return false;
+            if (goal==TerrainPathSearch.Goal.OBSERVE) return p.distance(target)<=reach;
+            return TerrainPathSearch.loadedStance(world,target) && world.canStand(target) && standingNear(world,p,target,reach);
+        }
         return plantingTargets.isEmpty() ? world.canInteract(target,reach)
             : plantingTargets.stream().allMatch(p -> world.canPlantLoggingSapling(p,reach));
+    }
+
+    /** Null means a complete safe path was obtained; no other return may issue movement. */
+    private Result planTerrain(Context c,Pos walkingFeet) {
+        ActionPort actions=c.actions();WorldAccess world=c.world();actions.stopMovement();previousMoving=false;
+        if (frontierWait>=0) {
+            if (frontier!=null && world.loaded(frontier.crossing())) {
+                frontier=null;frontierWait=-1;search=null;progressTick=world.tick();
+                rejectedFrontiers.removeIf(f -> !f.domainEdge() && world.loaded(f.crossing()));
+            } else {
+                diagnostic="WAITING_CHUNKS";
+                if (world.tick()-frontierWait<100) return Result.MOVING;
+                if (frontier!=null) rejectedFrontiers.add(frontier);
+                frontier=null;frontierWait=-1;search=null;
+                if (++frontierAttempts>=3) return blocked(actions,Failure.UNLOADED,"안전한 경계에서 청크 로드를 기다렸지만 진전이 없습니다. 잠시 뒤 다시 시도합니다.");
+                return Result.MOVING;
+            }
+        }
+        if (requestNodes>=TerrainPathSearch.MAX_VISITED)
+            return blocked(actions,Failure.SEARCH_LIMIT,"지형 탐색의 전체 노드 예산에 도달했습니다. 이동을 멈춥니다.");
+        if (searchBudgetTick!=world.tick()) { searchBudgetTick=world.tick();sliceNodes=0;sliceLos=0;sliceNanos=0; }
+        diagnostic="SEARCHING";
+        if (sliceNodes>=TerrainPathSearch.NODES_PER_TICK || sliceLos>=TerrainPathSearch.LOS_PER_TICK || sliceNanos>=TerrainPathSearch.SLICE_NANOS)
+            return Result.MOVING;
+        long began=System.nanoTime();
+        if (search==null) search=new TerrainPathSearch(walkingFeet,destination,destinationReach,world,c.profile(),domain,
+            rejectedEndpoints,rejectedFrontiers,loggingPath,goal,plantingTargets,domain.terrain(),requestInteractions);
+        long remaining=TerrainPathSearch.SLICE_NANOS-sliceNanos-(System.nanoTime()-began);
+        TerrainPathSearch.Status state=search.status();
+        if (remaining>0 && state==TerrainPathSearch.Status.SEARCHING) {
+            state=search.advance(world,Math.min(TerrainPathSearch.NODES_PER_TICK-sliceNodes,TerrainPathSearch.MAX_VISITED-requestNodes),
+                TerrainPathSearch.LOS_PER_TICK-sliceLos,remaining);
+            sliceNodes+=search.lastExpanded();sliceLos+=search.lastLosChecks();requestNodes+=search.lastExpanded();
+        }
+        sliceNanos+=System.nanoTime()-began;
+        if (state==TerrainPathSearch.Status.SEARCHING) return Result.MOVING;
+        if (state==TerrainPathSearch.Status.INVALID_START) return blocked(actions,Failure.INVALID_START,"지형 탐색 출발점의 안전한 바닥을 확인할 수 없습니다.");
+        if (state==TerrainPathSearch.Status.NO_PATH) return blocked(actions,Failure.NO_PATH,"현재 로드된 안전 지형에서 목적지로 가는 경로를 찾지 못했습니다.");
+        if (state==TerrainPathSearch.Status.SEARCH_LIMIT) return blocked(actions,Failure.SEARCH_LIMIT,"지형 탐색 예산 안에서 안전한 경로를 찾지 못했습니다.");
+        path=search.path();frontier=state==TerrainPathSearch.Status.FRONTIER ? search.frontier() : null;
+        search=null;diagnostic=frontier==null ? "FOLLOWING" : "FRONTIER";
+        if (path.isEmpty()) return blocked(actions,Failure.NO_PATH,"안전한 보행 경로가 비어 있습니다.");
+        return null;
+    }
+
+    private Result arriveFrontier(Context c,Pos walkingFeet) {
+        c.actions().stopMovement();previousMoving=false;path=List.of();search=null;
+        if (frontier.domainEdge()) {
+            domain=new TravelDomain(c.profile(),walkingFeet,destination);frontier=null;frontierWait=-1;
+            diagnostic="SEARCHING";progressTick=c.world().tick();
+        } else { frontierWait=c.world().tick();diagnostic="WAITING_CHUNKS"; }
+        return Result.MOVING;
+    }
+
+    private Result replan(Context c,Failure kind,String message) {
+        c.actions().stopMovement();previousMoving=false;
+        if (domain==null || !domain.terrain() || replans>=3) return blocked(c.actions(),kind,message);
+        replans++;path=List.of();search=null;frontier=null;frontierWait=-1;clearEndpointSettle();
+        lastDistance=Double.POSITIVE_INFINITY;progressTick=c.world().tick();diagnostic="REPLANNING";
+        return Result.MOVING;
+    }
+
+    private static boolean standingNear(WorldAccess world,PlayerState player,Pos feet,double reach) {
+        double height=world.standingY(feet);
+        if (!player.onGround() || !Double.isFinite(height)) return false;
+        return Math.pow(player.x()-feet.x()-.5,2)+Math.pow(player.z()-feet.z()-.5,2)+Math.pow(player.y()-height,2)<=reach*reach;
     }
 
     private void observeMotion(PlayerState player) {
@@ -253,9 +393,9 @@ public final class LocalNavigator implements Navigation {
         return null;
     }
 
-    private static boolean canTraverse(Pos from,Pos to,WorldAccess world,Profile profile) {
+    private static boolean canTraverse(Pos from,Pos to,WorldAccess world,TravelDomain domain) {
         if (from.y()==to.y() && Math.abs(from.x()-to.x())==1 && Math.abs(from.z()-to.z())==1)
-            return DiagonalTraversal.canTraverse(from,to,world,new ProfileBounds(profile));
+            return DiagonalTraversal.canTraverse(from,to,world,domain);
         return world.canTraverse(from,to);
     }
 
@@ -299,10 +439,14 @@ public final class LocalNavigator implements Navigation {
     }
 
     private Result blocked(ActionPort actions, String reason) {
+        return blocked(actions,Failure.SAFETY,reason);
+    }
+    private Result blocked(ActionPort actions,Failure kind,String reason) {
         cancelLoggingJump();
         actions.stopMovement();
         previousMoving = false;
         failure = reason;
+        failureKind=kind;diagnostic="BLOCKED_"+kind.name();search=null;
         path = List.of();
         clearEndpointSettle();
         return Result.BLOCKED;
@@ -310,6 +454,7 @@ public final class LocalNavigator implements Navigation {
 
     @Override public void reset() {
         cancelLoggingJump();
+        if (lastActions!=null) lastActions.stopMovement();
         path = List.of();
         destination = null;
         plantingTargets=List.of();
@@ -320,13 +465,16 @@ public final class LocalNavigator implements Navigation {
         previousMoving = false;
         failure = "";
         rejectedEndpoints.clear(); clearEndpointSettle();
+        domain=null;requestProfile=null;requestSession=null;requestMode=null;requestInteractions=false;goal=TerrainPathSearch.Goal.INTERACTION;
+        search=null;frontier=null;frontierWait=-1;rejectedFrontiers.clear();frontierAttempts=0;replans=0;requestNodes=0;
+        failureKind=Failure.NONE;diagnostic="IDLE";
     }
 
     private Result continueLoggingJump(Context context) {
         Result result=loggingJump.tick(context);
         previousMoving=result==Result.MOVING;
         previousSprint=false;
-        if (result==Result.BLOCKED) return blocked(context.actions(),loggingJump.failureReason());
+        if (result==Result.BLOCKED) return blocked(context.actions(),Failure.JUMP_UNCERTAIN,loggingJump.failureReason());
         if (result==Result.ARRIVED) {
             loggingJump=null;
             // The final approach may require a center tighter than the landing

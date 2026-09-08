@@ -1,7 +1,6 @@
 package dev.schwalbe.autovalley.client;
 
 import dev.schwalbe.autovalley.core.*;
-import dev.schwalbe.autovalley.navigation.ProfileBounds;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.inventory.ClickType;
@@ -30,6 +29,7 @@ public final class MinecraftActions implements ActionPort {
     private long movementAt;
     private long movementLookAt=Long.MIN_VALUE;
     private LoggingJumpEdge loggingJumpEdge;
+    private boolean generalStepUp;
     private long loggingJumpGeneration,loggingJumpStarted;
     private Pos ownedContainer;
     private ContainerShape openingShape, ownedShape;
@@ -437,9 +437,10 @@ public final class MinecraftActions implements ActionPort {
         // machine, door and sleep operations continue to exclude all movement.
         if (harvesting && !HarvestMovementRules.mayOverlap(pending,intent,beforePlayer,world.player(),world.tick()-started,
             context.profile().continueHarvestWhenFull && context.session().allows(context.profile(),Feature.HARVEST))) { stopMovement(); return; }
-        // Navigation cannot gain permission to jump or leave the approved farm/corridor.
+        // Only the active navigator's transit domain can drive ordinary movement.
+        // Work permissions are checked independently in SafetyPolicy.
         Pos feet=NavigationFeet.resolve(world,world.player());
-        if (!ProfileBounds.contains(context.profile(),feet) || intent.jump()) { stopMovement(); return; }
+        if (!context.navigation().permitsTransit(feet,context) || intent.jump()) { stopMovement(); return; }
         if (!Float.isFinite(mc.player.getYRot()) || !Float.isFinite(mc.player.getXRot())) { stopMovement(); return; }
         movement=new Movement(intent.yaw(),intent.pitch(),intent.forward(),intent.sprint(),false,intent.sneak());
         movementAt=world.tick();
@@ -454,7 +455,13 @@ public final class MinecraftActions implements ActionPort {
         mc.player.setSprinting(intent.sprint() && intent.forward() && MovementAxes.from(intent,mc.player.getYRot()).forward()>.8f);
     }
     @Override public boolean moveLoggingJump(LoggingJumpEdge edge,boolean launch) {
-        if (!loggingJumpReady(edge) || !launch && (loggingJumpEdge==null || !loggingJumpEdge.equals(edge)
+        return moveVerifiedAscent(edge,launch,false);
+    }
+    @Override public boolean moveStepUp(LoggingJumpEdge edge,boolean launch) {
+        return moveVerifiedAscent(edge,launch,true);
+    }
+    private boolean moveVerifiedAscent(LoggingJumpEdge edge,boolean launch,boolean transit) {
+        if (!ascentReady(edge,transit) || !launch && (loggingJumpEdge==null || !loggingJumpEdge.equals(edge) || generalStepUp!=transit
                 || loggingJumpGeneration!=observations.generation() || world.tick()-loggingJumpStarted>40)) {
             stopMovement(); return false;
         }
@@ -464,7 +471,7 @@ public final class MinecraftActions implements ActionPort {
                     || !LoggingJumpRules.standingAt(world.player(),edge.from(),from,LoggingJumpRules.SOURCE_CENTER)) {
                 stopMovement(); return false;
             }
-            loggingJumpEdge=edge; loggingJumpGeneration=observations.generation(); loggingJumpStarted=world.tick();
+            loggingJumpEdge=edge; generalStepUp=transit; loggingJumpGeneration=observations.generation(); loggingJumpStarted=world.tick();
         } else if (!LoggingJumpRules.insideFlight(edge,world.player(),from)) { stopMovement(); return false; }
         else if (movementAt==world.tick()) return true; // Do not overwrite this tick's one-use launch input.
         double dx=edge.to().x()+.5-mc.player.getX(),dz=edge.to().z()+.5-mc.player.getZ();
@@ -483,8 +490,8 @@ public final class MinecraftActions implements ActionPort {
             movementLookAt=world.tick();
         }
         if (launch) NativeLoggingJump.permitPulse(movement,world.tick(),() -> loggingJumpEdge!=null
-            && loggingJumpEdge.equals(edge) && loggingJumpGeneration==observations.generation()
-            && loggingJumpReady(edge) && stationaryLoggingLaunch()
+            && loggingJumpEdge.equals(edge) && generalStepUp==transit && loggingJumpGeneration==observations.generation()
+            && ascentReady(edge,transit) && stationaryLoggingLaunch()
             && LoggingJumpRules.standingAt(world.player(),edge.from(),world.standingY(edge.from()),LoggingJumpRules.SOURCE_CENTER));
         return true;
     }
@@ -496,7 +503,14 @@ public final class MinecraftActions implements ActionPort {
             && pauseReason()==null && LoggingJumpRules.authorised(context) && LoggingRules.allowed(context)
             && !MachineOutputLedger.hasPending(context) && world.canLoggingJump(edge,context.profile());
     }
-    private void clearLoggingJump() { loggingJumpEdge=null; NativeLoggingJump.clearPulse(); }
+    private boolean ascentReady(LoggingJumpEdge edge,boolean transit) {
+        if (!transit) return loggingJumpReady(edge);
+        return enabled && context!=null && pending==null && mc.player!=null && mc.level!=null && mc.screen==null
+            && pauseReason()==null && StepUpRules.permitted(edge,context)
+            && !MachineOutputLedger.hasPending(context) && context.navigation().permitsStepUp(edge,context)
+            && context.navigation().permitsTransit(edge.from(),context) && context.navigation().permitsTransit(edge.to(),context);
+    }
+    private void clearLoggingJump() { loggingJumpEdge=null; generalStepUp=false; NativeLoggingJump.clearPulse(); }
     public void stopMovement() { movement=null; clearLoggingJump(); if (mc.player!=null && enabled) mc.player.setSprinting(false); }
     public void cancel() {
         stopMovement();

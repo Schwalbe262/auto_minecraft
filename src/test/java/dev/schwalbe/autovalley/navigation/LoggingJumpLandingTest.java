@@ -119,6 +119,7 @@ class LoggingJumpLandingTest {
         final Context context; long now; double x=.5,y=0,z=.5; boolean grounded=true,nativeProof=true;
         int launches,steers,moves,submissions; Movement movement;
         Fixture() {
+            profile.navigationMode=NavigationMode.WAYPOINTS;
             profile.farms.add(new Farm("test corridor",new Pos(-1,-1,-1),new Pos(2,3,1)));
             profile.loggingRunActive=true; session.oneShotFeature=Feature.LOGGING;
             context=new Context(this,this,new LocalNavigator(),profile,session);

@@ -183,6 +183,7 @@ class LoggingJumpNavigationTest {
         final LocalNavigator navigation=new LocalNavigator(); final Profile profile=new Profile();
         final SessionState session=new SessionState(); final Context context;
         Fixture() {
+            profile.navigationMode=NavigationMode.WAYPOINTS;
             profile.farms.add(new Farm("verified corridor",new Pos(-1,-1,-1),new Pos(3,3,1)));
             profile.loggingRunActive=true; session.oneShotFeature=Feature.LOGGING;
             context=new Context(world,actions,navigation,profile,session);

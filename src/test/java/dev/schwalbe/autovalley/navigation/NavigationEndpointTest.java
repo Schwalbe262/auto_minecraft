@@ -46,6 +46,8 @@ class NavigationEndpointTest {
             if(n<3) assertEquals(Navigation.Result.MOVING,f.step());
         }
         assertTrue(f.navigation.failureReason().contains("4곳"));
+        assertEquals(Navigation.Failure.REACH,f.navigation.failureKind());
+        assertTrue(f.navigation.retryableFailure());assertEquals(TARGET,f.navigation.failureDestination());
         assertNull(f.movement); assertEquals(0,f.submissions);
         f.now++; assertEquals(Navigation.Result.BLOCKED,f.step(),"Exhaustion is not an automatic new four-attempt cycle");
     }
@@ -58,6 +60,7 @@ class NavigationEndpointTest {
             assertNull(f.movement);
         }
         assertEquals(0,f.submissions);
+        assertEquals(Navigation.Failure.REACH,f.navigation.failureKind());assertTrue(f.navigation.retryableFailure());
     }
 
     @Test void alternativeCannotCrossChangedOrUnloadedTerrainAndResetClearsRejectedGoals() {
@@ -87,6 +90,7 @@ class NavigationEndpointTest {
         final List<Double> requestedReaches=new ArrayList<>();
         long now; double x=.5; boolean actualReach; Movement movement; int submissions;
         Fixture() {
+            profile.navigationMode=NavigationMode.WAYPOINTS;
             profile.farms.add(new Farm("bounded",new Pos(0,0,0),new Pos(3,0,0)));
             context=new Context(this,this,navigation,profile);
         }

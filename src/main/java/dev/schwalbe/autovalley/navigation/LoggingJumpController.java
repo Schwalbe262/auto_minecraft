@@ -3,9 +3,10 @@ package dev.schwalbe.autovalley.navigation;
 import dev.schwalbe.autovalley.core.*;
 
 /** One verified ascent, one launch pulse, and two distinct grounded landing observations. */
-public final class LoggingJumpController {
+public class LoggingJumpController {
     public enum Phase { PREPARE, LIFT, FLIGHT, LAND, COMPLETE, FAILED }
     private final LoggingJumpEdge edge;
+    private final boolean loggingAuthority;
     private Phase phase=Phase.PREPARE;
     private long startedTick=Long.MIN_VALUE,lastTick=Long.MIN_VALUE,launchTick;
     private double fromHeight,toHeight;
@@ -17,7 +18,8 @@ public final class LoggingJumpController {
     private PlayerState motionSample;
     private long motionSampleTick=Long.MIN_VALUE;
 
-    public LoggingJumpController(LoggingJumpEdge edge) { this.edge=edge; }
+    public LoggingJumpController(LoggingJumpEdge edge) { this(edge,true); }
+    protected LoggingJumpController(LoggingJumpEdge edge,boolean loggingAuthority) { this.edge=edge;this.loggingAuthority=loggingAuthority; }
     public LoggingJumpEdge edge() { return edge; }
     public Phase phase() { return phase; }
     public boolean attempted() { return attempted; }
@@ -27,7 +29,8 @@ public final class LoggingJumpController {
         if (phase==Phase.FAILED) return Navigation.Result.BLOCKED;
         if (phase==Phase.COMPLETE) return Navigation.Result.ARRIVED;
         lastActions=c.actions();
-        if (!LoggingJumpRules.permitted(edge,c)) return fail("벌목 한 칸 오르기의 권한이나 안전 지형이 바뀌었습니다.");
+        if (!(loggingAuthority ? LoggingJumpRules.permitted(edge,c) : StepUpRules.permitted(edge,c)))
+            return fail("한 칸 오르기의 권한이나 안전 지형이 바뀌었습니다.");
         long now=c.world().tick();
         if (lastTick!=Long.MIN_VALUE && now<lastTick) return fail("벌목 오르기 중 시간이 되돌아갔습니다. 자동 재점프하지 않습니다.");
         // Multiple module calls in one client tick must not clear the launch pulse before physics runs.
@@ -56,7 +59,8 @@ public final class LoggingJumpController {
             preparedSample=p;
             if (++quietSamples<2) return Navigation.Result.MOVING;
             attempted=true; launchTick=now; phase=Phase.LIFT;
-            if (!c.actions().moveLoggingJump(edge,true)) return fail("네이티브 벌목 오르기 시작이 거절되었습니다. 재전송하지 않습니다.");
+            if (!(loggingAuthority ? c.actions().moveLoggingJump(edge,true) : c.actions().moveStepUp(edge,true)))
+                return fail("네이티브 한 칸 오르기 시작이 거절되었습니다. 재전송하지 않습니다.");
             return Navigation.Result.MOVING;
         }
         if (now-launchTick>40) return fail("벌목 오르기 착지가 시간 안에 확인되지 않았습니다. 자동 재점프하지 않습니다.");
@@ -72,7 +76,8 @@ public final class LoggingJumpController {
             if (phase==Phase.FLIGHT || now-launchTick>4 || Math.abs(p.y()-fromHeight)>LoggingJumpRules.HEIGHT_TOLERANCE)
                 return fail("벌목 오르기의 이륙 또는 착지가 확인되지 않았습니다. 자동 재점프하지 않습니다.");
         } else phase=Phase.FLIGHT;
-        if (!c.actions().moveLoggingJump(edge,false)) return fail("벌목 오르기의 안전한 공중 이동이 거절되었습니다.");
+        if (!(loggingAuthority ? c.actions().moveLoggingJump(edge,false) : c.actions().moveStepUp(edge,false)))
+            return fail("한 칸 오르기의 안전한 공중 이동이 거절되었습니다.");
         return Navigation.Result.MOVING;
     }
 

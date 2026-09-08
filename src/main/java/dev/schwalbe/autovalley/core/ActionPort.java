@@ -8,6 +8,8 @@ public interface ActionPort {
     void cancel();
     /** Logging-only one-pulse movement; unknown/native-unverified adapters cannot jump. */
     default boolean moveLoggingJump(LoggingJumpEdge edge,boolean launch) { return false; }
+    /** An active navigator may request one natively verified ascent, not an unrestricted jump key. */
+    default boolean moveStepUp(LoggingJumpEdge edge,boolean launch) { return false; }
     /** Unresolved in-flight inventory changes must block every scheduler consumer. */
     default String pauseReason() { return null; }
     /** Explicit manual resume may clear an already-resolved failure, never a late-ACK fence. */

@@ -11,7 +11,7 @@ class ProductionVisitOrderTest {
     private static final Pos START=new Pos(0,64,0);
     private static Poi keg(int x,int y,int z) { return new Poi(new Pos(x,y,z),PoiKind.WINE_KEG,"Machine",null); }
     private static Profile bounded(int x1,int x2,int z1,int z2) {
-        Profile p=new Profile();p.farms.add(new Farm("Registered work area",new Pos(x1,63,z1),new Pos(x2,66,z2)));return p;
+        Profile p=new Profile();p.navigationMode=NavigationMode.WAYPOINTS;p.farms.add(new Farm("Registered work area",new Pos(x1,63,z1),new Pos(x2,66,z2)));return p;
     }
     @Test void currentlyNativeInteractableMachineWinsWithoutAnyPathSearch(TestReporter reporter) {
         World world=new World();List<Poi> machines=List.of(keg(1,64,1),keg(4,64,0));
