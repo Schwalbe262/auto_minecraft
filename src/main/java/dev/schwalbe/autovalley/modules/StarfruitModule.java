@@ -16,6 +16,10 @@ public final class StarfruitModule implements AutomationModule {
     private final Set<Pos> confirmedToday=new HashSet<>();
     private FruitPatch patch;
     private Pos target;
+    private FruitPatch lastConfirmedPatch;
+    private Pos lastConfirmedTarget;
+    private CommodityStore lastConfirmedStore;
+    private boolean lateCleanup;
     private int fruitBefore;
     private CommodityStorageModule storage;
 
@@ -28,13 +32,25 @@ public final class StarfruitModule implements AutomationModule {
             // cannot make it touch an unrelated in-flight action or open menu.
             if (c.actions().busy() || !c.session().allows(c.profile(),feature()) || !clearMenu(c)) return WorkResult.idle();
             long today=Math.floorDiv(c.world().dayTime(),24000L);
+            if (observedProfile!=c.profile()) {
+                lastConfirmedPatch=null;lastConfirmedTarget=null;lastConfirmedStore=null;
+            }
             if (observedProfile!=c.profile() || confirmedDay!=today) {
                 confirmedToday.clear();observedProfile=c.profile();confirmedDay=today;
             }
-            if (safeHotbar(c)<0 || !hasPickupRoom(c)) return WorkResult.idle();
-            chooseNearby(c);
-            if (target==null) return WorkResult.idle();
-            approachSince=c.world().tick();stage=Stage.APPROACH;
+            if (lateFruitReady(c)) {
+                // This is an actual currently held item, not a pickup debt or a
+                // prediction. A delayed arrival can use the same still-registered
+                // destination without visiting or clicking the fruit again.
+                patch=lastConfirmedPatch;target=lastConfirmedTarget;lateCleanup=true;
+                storage=new CommodityStorageModule(feature(),patch.storeId(),Set.of(FruitRules.ITEM));
+                stage=Stage.STORE;
+            } else {
+                if (safeHotbar(c)<0 || !hasPickupRoom(c)) return WorkResult.idle();
+                chooseNearby(c);
+                if (target==null) return WorkResult.idle();
+                approachSince=c.world().tick();stage=Stage.APPROACH;
+            }
         }
         if (ticket>=0) {
             ActionOutcome result=c.actions().outcome(ticket);
@@ -89,7 +105,8 @@ public final class StarfruitModule implements AutomationModule {
                 if (block!=null && target.equals(block.pos()) && FruitRules.BLOCK.equals(block.id()) && age>=0 && age<7) {
                     long today=Math.floorDiv(c.world().dayTime(),24000L);
                     if (confirmedDay!=today) { confirmedToday.clear();confirmedDay=today; }
-                    confirmedToday.add(target);stage=Stage.PICKUP;
+                    confirmedToday.add(target);lastConfirmedPatch=patch;lastConfirmedTarget=target;
+                    lastConfirmedStore=CommodityStorageRules.store(c.profile(),patch.storeId());stage=Stage.PICKUP;
                 } else if (c.world().tick()-verifySince>=Math.max(1,c.profile().interactionTimeoutTicks))
                     return fail(c,"같은 스타프루트의 수확 후 성장 상태가 확인되지 않았습니다");
             }
@@ -136,7 +153,13 @@ public final class StarfruitModule implements AutomationModule {
         }
     }
     private boolean registered(Context c) {
-        return target!=null && patch!=null && patch.equals(FruitRules.patch(c.profile(),target)) && validStore(c,patch);
+        return target!=null && patch!=null && patch.equals(FruitRules.patch(c.profile(),target)) && validStore(c,patch)
+            && (!lateCleanup || Objects.equals(lastConfirmedStore,CommodityStorageRules.store(c.profile(),patch.storeId())));
+    }
+    private boolean lateFruitReady(Context c) {
+        return lastConfirmedTarget!=null && lastConfirmedPatch!=null && fruitCount(c)>0
+            && lastConfirmedPatch.equals(FruitRules.patch(c.profile(),lastConfirmedTarget))
+            && lastConfirmedStore!=null && lastConfirmedStore.equals(CommodityStorageRules.store(c.profile(),lastConfirmedPatch.storeId()));
     }
     private static boolean validStore(Context c,FruitPatch patch) {
         CommodityStore store=CommodityStorageRules.store(c.profile(),patch.storeId());
@@ -175,8 +198,9 @@ public final class StarfruitModule implements AutomationModule {
     private WorkResult fail(Context c,String message) { c.actions().stopMovement();c.navigation().reset();reset();return WorkResult.blocked(message); }
     @Override public void reset() {
         if (storage!=null) storage.reset();
-        stage=Stage.FIND;pending=null;ticket=-1;target=null;patch=null;storage=null;
-        // Confirmed same-day evidence survives scheduler/one-shot reset; no action,
-        // borrowed inventory, debt, or persisted completion is retained.
+        stage=Stage.FIND;pending=null;ticket=-1;target=null;patch=null;storage=null;lateCleanup=false;
+        // Confirmed same-day evidence and its destination survive scheduler/one-shot
+        // reset. A late arrival is stored only when actually in inventory; no action,
+        // borrowed inventory, debt, expected count, or persisted completion is retained.
     }
 }

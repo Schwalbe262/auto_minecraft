@@ -149,6 +149,86 @@ class StarfruitModuleTest {
         f.day+=24000;f.run();assertEquals(2,f.clicked().size());assertEquals(2,f.stored);
     }
 
+    @Test void lateFruitAfterThePickupWindowIsStoredAtTheNextSafeBoundaryWithoutAnotherPick() {
+        Fixture f=new Fixture();f.deliver=false;f.run();
+        assertEquals(0,f.stored);assertEquals(1,f.clicked().size());
+        f.x=100;f.put(9,f.product(1));int travelBefore=f.travel.size();
+        f.run();
+        assertEquals(1,f.stored);assertEquals(1,f.clicked().size());
+        assertTrue(f.travel.subList(travelBefore,f.travel.size()).stream().allMatch(STORE::equals));
+        assertTrue(f.profile.pendingMachineOutputs.isEmpty());
+    }
+
+    @Test void lateFruitCleanupDoesNotNeedAnEmptyHotbarOrAnotherPickupSlot() {
+        Fixture f=new Fixture();f.deliver=false;f.run();f.x=100;
+        for(int index=0;index<36;index++)f.put(index,f.food);
+        f.put(9,f.product(1));f.run();
+        assertEquals(1,f.stored);assertEquals(1,f.clicked().size());
+        assertTrue(f.submitted.stream().noneMatch(Action.SwapHotbar.class::isInstance));
+        assertEquals(f.food,f.inventory.get(0).item());
+    }
+
+    @Test void lateFruitCannotUseAChangedRegistrationOrAnUnrelatedGenericStore() {
+        for(boolean removed:List.of(false,true)) {
+            Fixture f=new Fixture();f.deliver=false;f.run();f.x=100;f.put(9,f.product(1));
+            if(removed)f.profile.fruitPatches=List.of();
+            else f.profile.fruitPatches=List.of(new FruitPatch("changed","fruit",List.of(FRUIT)));
+            int actions=f.submitted.size();f.run();
+            assertEquals(actions,f.submitted.size());assertEquals(0,f.stored);
+        }
+    }
+
+    @Test void delayedCleanupLeavesManualOffMenusAndUnrelatedPendingActionsAlone() {
+        for(String guard:List.of("off","menu","busy")) {
+            Fixture f=new Fixture();f.deliver=false;f.run();f.x=100;f.put(9,f.product(1));
+            if(guard.equals("off"))f.profile.enabled.put(Feature.STARFRUIT,false);
+            else if(guard.equals("menu"))f.open=true;
+            else f.externalBusy=true;
+            int actions=f.submitted.size(),stops=f.stops;f.step();
+            assertEquals(WorkResult.State.IDLE,f.result.state(),guard);
+            assertEquals(actions,f.submitted.size());assertEquals(stops,f.stops);assertEquals(0,f.stored);
+        }
+    }
+
+    @Test void lateCleanupDoesNotFollowAReplacedStoreEvenIfItsIdAndItemStayTheSame() {
+        Fixture f=new Fixture();f.deliver=false;f.run();f.x=100;f.put(9,f.product(1));
+        f.profile.commodityStores.put("fruit",new CommodityStore("fruit","Moved",Set.of(FruitRules.ITEM),List.of(STORE.offset(5,0,0))));
+        int actions=f.submitted.size(),travel=f.travel.size();f.run();
+        assertEquals(actions,f.submitted.size());assertEquals(travel,f.travel.size());assertEquals(0,f.stored);
+    }
+
+    @Test void aStoreEditDuringLateDepositWaitsForTheExistingAckAndPreventsFurtherActions() {
+        Fixture f=new Fixture();f.deliver=false;f.run();f.x=100;f.put(9,f.product(1));
+        f.untilAction(Action.QuickMove.class);int actions=f.submitted.size();
+        f.profile.commodityStores.put("fruit",new CommodityStore("fruit","Moved",Set.of(FruitRules.ITEM),List.of(STORE.offset(5,0,0))));
+        assertEquals(WorkResult.State.BUSY,f.step().state());assertEquals(actions,f.submitted.size());
+        f.complete(true);assertEquals(WorkResult.State.BLOCKED,f.step().state());assertEquals(actions,f.submitted.size());
+    }
+
+    @Test void anUnconfirmedUseCannotCreateALateCleanupDestination() {
+        Fixture f=new Fixture();f.untilFruit();f.complete(false);f.step();
+        assertEquals(WorkResult.State.BLOCKED,f.result.state());
+        f.fruit(FRUIT,0);f.x=100;f.put(9,f.product(1));int actions=f.submitted.size();f.run();
+        assertEquals(actions,f.submitted.size());assertEquals(0,f.stored);
+    }
+
+    @Test void registrationRemovalDuringLateDepositWaitsForItsAckButSendsNoNextAction() {
+        Fixture f=new Fixture();f.deliver=false;f.run();f.x=100;f.put(9,f.product(1));
+        f.untilAction(Action.QuickMove.class);f.profile.fruitPatches=List.of();int actions=f.submitted.size();
+        assertEquals(WorkResult.State.BUSY,f.step().state());assertEquals(actions,f.submitted.size());
+        f.complete(true);assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertEquals(actions,f.submitted.size());assertEquals(1,f.stored);
+    }
+
+    @Test void aDifferentProfileCannotInheritAPreviousFruitCleanupDestination() {
+        Fixture f=new Fixture();f.deliver=false;f.run();f.x=100;f.put(9,f.product(1));
+        Profile replacement=new Profile();replacement.enabled.put(Feature.STARFRUIT,true);
+        replacement.fruitPatches=List.copyOf(f.profile.fruitPatches);replacement.commodityStores.putAll(f.profile.commodityStores);
+        int actions=f.submitted.size();
+        assertEquals(WorkResult.State.IDLE,f.module.tick(new Context(f,f,f,replacement)).state());
+        assertEquals(actions,f.submitted.size());assertEquals(0,f.stored);
+    }
+
     @Test void aUseConfirmedAfterMidnightBelongsToTheActualConfirmationDay() {
         Fixture f=new Fixture();f.untilFruit();f.day+=24000;f.complete(true);f.run();
         f.fruit(FRUIT,7);assertEquals(WorkResult.State.IDLE,f.step().state());assertEquals(1,f.clicked().size());
