@@ -759,3 +759,25 @@ verification. No new inventory interruption was induced in the running soak test
   **719 tests pass**, with no failures, errors or skipped tests. The rebuilt
   production JAR is byte-identical to the already running optimized artifact;
   these test/documentation additions do not require a second restart.
+
+### Synchronized due-day harvest completed
+
+- The entire intermediate day has **635 state samples, no HARVEST activity and
+  no inventory action**. Its only action is a successful bed entry. The next day
+  resumed HARVEST automatically. A fully loaded inspection before the first crop
+  use found **all 800 tomatoes mature**, with no unripe plants in either field.
+- That due-day harvest made 183 confirmed harvest-associated interactions and
+  stored exactly **1,600 tomatoes in 28 confirmed transfers**. It also deleted
+  80 rotten tomatoes and shipped 38 pine tar. These quantities are confirmed
+  separately from the earlier 1,452-tomato timing comparison; the larger harvest
+  must not be used as an identical-workload speed benchmark.
+- Afterward, all 800 registered plants were observed at age 0, with zero mature
+  leftovers; both persisted next dates advanced by another two days. No tracked
+  ingredients/products remained in inventory when the engine returned to waiting.
+  This closes the previously pending next-harvest verification above.
+- Through **2026-09-08 03:54:40 UTC**, the optimized client remained ON/connected
+  for **27 minutes 5.854 seconds**, with **1,678 consecutive actions successful**,
+  no missing or unresolved action, no native failure/late-reply flag, navigation
+  error or trace loss. Three actual sleep transitions were observed. The local
+  harvest-setting adjustment occurred during this interval; this is workflow
+  validation, not an unchanged-configuration or three-hour endurance claim.
