@@ -889,3 +889,90 @@ verification. No new inventory interruption was induced in the running soak test
   It does not establish arbitrary-lag behavior, live one-shot acceptance,
   independently attributed currency payouts or three-hour uninterrupted
   endurance. Those scopes must not be inferred from one completed batch.
+
+### Registered spruce logging: development scope and setup
+
+This section describes newly implemented development behavior, not a published
+release or live acceptance result. No new test-pass count or completed logging
+run is claimed here. Earlier crop/production observations do not validate logging.
+
+- `LOGGING` defaults OFF in both new profiles and older profiles that omit it.
+  The ordinary feature toggle controls repeated operation; **Ctrl+F8 → 실행·기록
+  → 한 번 실행 → 벌목·장작** runs only the logging routine without changing that
+  saved toggle. This routine includes replanting, waste handling, fire-log
+  crafting, wood storage and mossberry shipping before completion. It does not
+  enable unrelated harvest, wine or sleep jobs.
+- Register named plots under **밭·벌목 구역 → 벌목 구역…**. Each plot starts at
+  the aimed northwest sapling/trunk base and covers four same-height planting
+  cells to its east and south. Registration requires loaded spruce saplings or
+  logs in those cells and rejects overlapping planting cells or tomato fields.
+  Multiple plots can be listed, renamed and removed; registration removal does
+  not remove world blocks. **도끼·벌목 설정…** captures an equipped netherite axe
+  with remaining durability at least two, in a different hotbar slot from the hoe.
+- Register an ordinary wood-only chest/barrel, a vanilla crafting table and a
+  smart shipping bin through the existing facility UI, with safe connecting
+  waypoints. The wood destination accepts only `minecraft:spruce_log` and
+  `meadow:fire_log`; its contents must be checked before registration. The
+  native crafting adapter requires the known, unlocked six-ingredient recipe:
+  **six spruce logs produce one `meadow:fire_log`, not planks**. Competing raw-log
+  species in the inventory are rejected. Remaining spruce logs and crafted
+  fire logs are stored; carried `society:mossberry` is sent to the smart shipping
+  bin. A shipping transfer is not an independently verified monetary payout.
+- Tomato harvesting remains hoe/right-click only. The new destroy-packet
+  exception is limited to the active logging action, an approved registered
+  spruce base, the registered usable axe, native tree proof and current loaded
+  reach/line-of-sight checks. It is not a general attack, building-demolition or
+  other-tree capability. Replanting likewise targets only registered empty
+  planting cells with spruce saplings. Unknown or unsafe tree proof fails closed.
+- Repetition modes are **all registered trees grown** (default), **due game day
+  plus observed growth**, and **one-shot only**. The date-mode interval is 1–28
+  game days, default one. Explicit one-shot checks current readiness instead of
+  waiting for the repeated-mode schedule. The readiness poll defaults to 60
+  seconds and is configurable from 1 to 1,200 seconds in 0.05-second increments;
+  it is not a predicted growth timer. Repairs and leftover product handling may
+  be needed even when not all trees are ready for a new cut.
+- The optional spare-sapling setting is a minimum retained quantity after all
+  planting cells have been restored: default zero, supported range 0–2,304.
+  Whole-stack TrashSlot operations may leave more than this minimum. Only
+  approved surplus spruce saplings and `twigs:twig` are logging waste; ordinary
+  sticks, logs and berries are not discarded. Temporary sapling hotbar borrowing
+  excludes the hoe and logging-axe slots and must restore the original item with
+  exact native state/response checks. Ambiguous replies do not authorize replay.
+- Unfinished plot membership, replanting progress and a borrowed hotbar item are
+  durable. Pause, reconnect and schedule reset do not erase them; UI plot/tool/
+  logging-setting edits are locked while a batch remains active. **Profile
+  schema 3 supersedes the earlier schema-2 note**: validated schemas 1 and 2
+  migrate in memory without rewriting the old file until an actual save.
+  Clients that only accept schemas 1/2 refuse schema 3 rather than silently
+  ignoring pending logging or restoration state. Do not lower a schema number
+  or erase checkpoints to bypass this protection.
+
+Separate acceptance still needs the actual logging UI and a registered grown
+tree, complete four-cell replanting, reserve-aware waste handling, native crafting
+and destination transfers. Pause/reconnect with unfinished work or a borrowed
+hotbar item, blocked paths, changed/missing tree proof, insufficient saplings,
+unknown recipes and full destinations also need scoped verification. Build
+results and any later live observations must be recorded separately; no existing
+endurance window is extended by this feature description.
+
+Development verification, 2026-09-08: Java 17 with the repository's Gradle 8.8
+completed `test build`; 67 suites / 823 tests passed, with zero failures,
+errors or skips. The 100 added tests cover logging geometry and safety gates,
+profile/UI rules, native recipe and packet-permit boundaries, the complete
+module state machine, and scheduler resume ordering. Native-boundary tests are
+not a substitute for live server acknowledgement tests.
+
+An unfinished logging batch resumes before ordinary inventory consumers. If
+logging is disabled, unavailable or blocked, it pauses with its checkpoint
+intact instead of allowing storage or production to consume the borrowed
+hotbar item. An explicit logging one-shot may finish it without changing the
+saved toggle; other one-shots are rejected until it is finished. Ordinary
+inactive logging checks retain the existing scheduler sweep behavior.
+
+TrashSlot's retained recovery buffer accepts the authorized waste union
+(empty, rotten tomato, spruce sapling or twig) across both disposal workflows.
+The source-item restrictions are unchanged: rotten-tomato disposal cannot
+delete logging products, and logging disposal cannot delete wood, berries,
+tools or unrelated items. A valuable recovery-buffer item still blocks the
+operation. This compatibility change does not prove the contents of a past
+failed live buffer that was not captured.
