@@ -1442,3 +1442,36 @@ failed or unresolved. No automated wine/preserves production or actual sleep was
 observed in this window. Machine-state changes outside the active work are not
 credited to automation. The client remained OFF for manual control, and the
 three-hour uninterrupted acceptance requirement remains unverified.
+
+### Rolling three-edge stair preview — 2026-09-08
+
+The descent controller now retains its measured braking and finite path through
+straight stair runs. A rolling preview covers the active edge plus at most two
+following edges. Only an observed grounded landing at the current destination
+support advances one edge. Intermediate half-height treads do not advance the
+path. Turns, the final landing, unavailable proof or a missing tick retain the
+single-edge settling behavior; no airborne acceleration or jump is introduced.
+
+The native read-only proof checks loaded geometry, full swept headroom, world
+border, entities, normal surfaces and current native physics. Full-footprint
+supports and ordinary bottom/straight stairs facing upstream are supported.
+Stair collision shapes must exactly match the six required half-block octants;
+corners, reversed/sideways/upside-down stairs and unknown partial shapes do not
+gain this optimization. Doors, climbable blocks, fluids, hazards and protected
+planting cells also reject the preview. Default adapters remain opt-out.
+
+Java 17 / Gradle `test build` passed **1,073 tests across 86 suites**, with no
+failures, errors or skips. This includes 13 native geometry tests and 11 rolling
+descent tests. Four-direction, three-acceleration fixtures verify every physical
+half-tread and destination landing, cancellation, changed support, lost proof
+and observation gaps. A six-step full-block fixture took 174 versus 263 ticks;
+the half-tread fixture took 162 versus 256 ticks. These are model comparisons,
+not real-client speed measurements.
+
+Candidate SHA-256:
+`07AE3E54DC06D3806A49F08AA647D6161C09FA57B83E1A4CCC6C886F55696B64`.
+The current client was manually paused and has not been restarted for this
+candidate. Installation and a matched real-cellar retest remain pending operator
+coordination. Earlier live timings belong to the previous artifact, not this
+rolling-preview implementation. No registrations, cooldowns or action ledgers
+were edited, and no live movement was initiated during this change.
