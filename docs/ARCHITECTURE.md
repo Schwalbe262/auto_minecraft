@@ -65,6 +65,21 @@ For installed Quark 4.0-462, native range two means a half-span of one (golden h
 
 Only full-inventory-enabled harvest can opt into bounded movement during one outstanding use. A movement-only navigator cannot open doors, and the native adapter allows at most ten ticks of grounded, short-distance harvest overlap. Camera-relative forward/strafe components preserve the route's world heading while the view stays on the clicked crop, without diagonal speed amplification. Inventory, machine, door and sleep actions still exclude movement. Calibration and non-capable adapters retain stopped harvesting. Production timing and pickup confirmation remain separate from movement, and no world attack or break action is introduced.
 
+The normal harvest planner anchors fixed-width strips to all observed tomato
+positions, including unripe plants, and sweeps along the layout's longer axis.
+Primary centers keep a fixed cross-row coordinate; every original mature target
+also remains accounted for in the primary or cleanup queue. Pending-use movement
+can only approach the immediate next primary center in that same farm/lane. It
+cannot search past a distant center for a closer later row or cleanup target.
+
+Local A* additionally permits one-cell, same-height diagonals after both side
+cells, all four cardinal legs, registered bounds and native swept-body/support
+checks pass. Unknown adapters opt out. Doors and changing/partial supports retain
+cardinal approaches; no long shortcut is inferred. Movement-only view easing is
+bounded to 18 degrees yaw and 10 degrees pitch per tick, while movement axes keep
+the exact world-space heading. Pending harvest keeps its crop aim; explicit
+block-use aiming remains exact. These bounds do not relax reach or collision.
+
 ### Bounded native inventory consolidation
 
 `ProductionMergePlanner` proposes owned-inventory tomato/product merges; reduced quality/year metadata only selects candidates. `ConsolidateInventory` is a separate allow-listed action and does not relax storage-only `QuickMove`. It prefers one native opposite-region shift move, otherwise uses a tomato/empty production hotbar scratch and at most three cursor-free primitives. A tomato-only hotbar-to-empty-main reposition can enable a subsequent merge when all fragments occupy hotbar slots. Protected hoe slots and arbitrary tool scratch slots are excluded.

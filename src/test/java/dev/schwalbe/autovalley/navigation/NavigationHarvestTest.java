@@ -502,6 +502,75 @@ class NavigationHarvestTest {
         assertEquals(2,actions.submitted.size());
     }
 
+    @Test void twoDayCadenceSkipsPhasedRipeCropsOnDay372AndSurvivesModuleReset() {
+        FakeWorld world=new FakeWorld();world.day=372L*24000+5000;
+        world.tomato(ORIGIN,2);world.tomato(new Pos(1,0,0),2);
+        world.tomato(new Pos(4,0,0),2);world.tomato(new Pos(5,0,0),3);
+        Profile profile=farmProfile(new Pos(1,0,0));profile.harvestCycleDays=2;
+        profile.farms.add(new Farm("second",new Pos(4,0,0),new Pos(5,0,0)));
+        profile.nextEligibleDay.put("harvest:first",373L);profile.nextEligibleDay.put("harvest:second",373L);
+        FakeActions actions=new FakeActions();RecordingNavigation navigation=new RecordingNavigation();
+        Context context=new Context(world,actions,navigation,profile);HarvestModule module=new HarvestModule();
+        assertEquals(WorkResult.State.IDLE,module.tick(context).state());
+        module.reset();world.now+=200;
+        assertEquals(WorkResult.State.IDLE,module.tick(context).state());
+        assertEquals(WorkResult.State.IDLE,new HarvestModule().tick(context).state(),"A recreated module uses the persisted day gates too");
+        assertEquals(Map.of("harvest:first",373L,"harvest:second",373L),profile.nextEligibleDay);
+        assertTrue(actions.submitted.isEmpty(),"The independently ripe second-farm crop must not trigger an early partial harvest");
+        assertTrue(navigation.reaches.isEmpty(),"A future farm deadline must not cause a visit");
+        assertNull(actions.movement);
+    }
+
+    @Test void alignedDay373HarvestConfirmsEveryCropOnceAndSetsBothFarmDeadlinesTo375() {
+        FakeWorld world=new FakeWorld();world.day=373L*24000+5000;world.rejectGroundReads=true;
+        List<Pos> crops=List.of(ORIGIN,new Pos(1,0,0),new Pos(4,0,0),new Pos(5,0,0));
+        for (Pos crop:crops) world.tomato(crop,3);
+        Profile profile=farmProfile(new Pos(1,0,0));profile.harvestCycleDays=2;
+        profile.farms.add(new Farm("second",new Pos(4,0,0),new Pos(5,0,0)));
+        profile.nextEligibleDay.put("harvest:first",373L);profile.nextEligibleDay.put("harvest:second",373L);
+        FakeActions actions=new FakeActions();RecordingNavigation navigation=new RecordingNavigation();
+        Context context=new Context(world,actions,navigation,profile);HarvestModule module=new HarvestModule();
+        WorkResult result=WorkResult.busy("");int acknowledgements=0;
+        for (int tick=0;tick<100;tick++) {
+            result=module.tick(context);
+            assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());
+            if (actions.busy()) {
+                Action.UseBlock use=assertInstanceOf(Action.UseBlock.class,actions.submitted.get(actions.submitted.size()-1));
+                assertEquals(Action.Use.HARVEST,use.purpose());assertTrue(world.block(use.pos()).matureTomato());
+                world.tomato(use.pos(),0);actions.complete(true);acknowledgements++;
+            }
+            world.now++;
+            if (result.state()==WorkResult.State.IDLE) break;
+        }
+        assertEquals(WorkResult.State.IDLE,result.state());assertEquals(4,acknowledgements);
+        assertEquals(crops,actions.submitted.stream().map(action -> ((Action.UseBlock)action).pos()).toList());
+        assertEquals(Map.of("harvest:first",375L,"harvest:second",375L),profile.nextEligibleDay);
+        module.reset();
+        assertEquals(Map.of("harvest:first",375L,"harvest:second",375L),profile.nextEligibleDay);
+    }
+
+    @Test void eligibleButUnripeFarmRechecksEachNextMorningInsteadOfRepeatedTwoDayDeferral() {
+        FakeWorld world=new FakeWorld();world.tomato(ORIGIN,2);
+        Profile profile=farmProfile(ORIGIN);profile.harvestCycleDays=2;
+        profile.nextEligibleDay.put("harvest:first",372L);
+        FakeActions actions=new FakeActions();RecordingNavigation navigation=new RecordingNavigation();
+        Context context=new Context(world,actions,navigation,profile);HarvestModule module=new HarvestModule();
+        for (long day:List.of(372L,373L)) {
+            world.day=day*24000+5000;
+            assertEquals(WorkResult.State.IDLE,module.tick(context).state());
+            assertEquals(day+1,profile.nextEligibleDay.get("harvest:first"));
+            assertTrue(actions.submitted.isEmpty());assertTrue(navigation.reaches.isEmpty());assertNull(actions.movement);
+            module.reset();
+        }
+        world.day=374L*24000+5000;world.tomato(ORIGIN,3);
+        assertEquals(WorkResult.State.BUSY,module.tick(context).state());
+        assertEquals(List.of(new Action.UseBlock(ORIGIN,Action.Use.HARVEST)),actions.submitted);
+        world.tomato(ORIGIN,0);actions.complete(true);
+        WorkResult result=WorkResult.busy("");
+        for (int tick=0;tick<20 && result.state()!=WorkResult.State.IDLE;tick++) {world.now++;result=module.tick(context);}
+        assertEquals(WorkResult.State.IDLE,result.state());assertEquals(376L,profile.nextEligibleDay.get("harvest:first"));
+    }
+
     @Test void fullInventoryRelinquishesWorkWithoutClickingCrop() {
         FakeWorld world = new FakeWorld();
         for (int i = 1; i < 36; i++) world.put(i,new ItemData("minecraft:stone",64,0,null,false,0));

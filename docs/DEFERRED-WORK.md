@@ -7,7 +7,10 @@ workflow before beginning these user-requested improvements:
   current-position/aisle-aware visit selection is now being handled at the user's
   renewed request, together with grouped storage-wall visits. Keep one outstanding
   native action and server acknowledgement, without desktop input interception.
-- Tomato harvesting: continuous tractor-like passes along farm rows.
+- Further tomato throughput tuning after the now-implemented fixed-row sweeps
+  and immediate-next-center movement. The first same-quantity live comparison
+  improved elapsed time; sprint calibration and additional layouts still need
+  separate measurements, not inferred speedups from route geometry alone.
 - Fruit-tree harvesting and commodity storage, using the supplied demonstration
   as evidence rather than replaying every main/off-hand event or incidental click.
 - General storage groups: a name, accepted commodity and container members;

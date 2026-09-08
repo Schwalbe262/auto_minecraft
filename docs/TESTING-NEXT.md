@@ -706,3 +706,56 @@ verification. No new inventory interruption was induced in the running soak test
   establish actual camera behavior, route efficiency, throughput or endurance;
   those need separate post-restart observations. No gameplay safety checks or
   native acknowledgement requirements are waived by these optimizations.
+
+### First post-restart harvest and production results
+
+- The optimized source was installed in the existing Society instance by normal
+  restart. All registrations were retained. A normal in-client reconnect resolved
+  the initial Quick Play unknown-host screen; no second game, OS input or server
+  state adjustment was used. Continuous START uses the same path as F8.
+- One completed harvest stored **1,452 tomatoes**, as in each of the two earlier
+  large-harvest observations. Using the same first-HARVEST to TOMATO_STORAGE
+  boundary, elapsed time fell from **214.114 / 220.110 to 193.110 seconds**:
+  **9.8% / 12.3% shorter**. Harvest-associated interactions fell from 177 to 170.
+  This is one observed improvement, not a controlled or averaged benchmark;
+  starting inventory, grade rolls and server timing were not held constant.
+- Observed movement included sustained two-axis diagonal travel with the view
+  settling at approximately -45 degrees during harvest and 135 degrees toward
+  storage. One-second sampling confirms these intervals, not frame-perfect
+  camera smoothness or an isolated contribution to the time improvement.
+- The first complete wine batch consumed 1,152 tomatoes for 384 refills.
+  **No new wine was stored**: after reserve verification, all 384 carried bottles
+  were shipped as surplus. Preserves consumed 720 of 768 acquired tomatoes,
+  returned the other 48 and shipped 144 preserves. Each production module surveyed
+  the 32 tomato containers once, without another survey during its funded batch.
+  These are confirmed item transfers, not independently attributed money income.
+- All **1,407 consecutive actions** through the subsequent bed entry succeeded.
+  Five actual sleeping samples preceded the next game day. Through the fixed
+  **2026-09-08 03:39:20 UTC** checkpoint, 706 samples stayed ON/connected without
+  native failure/late-reply flags, navigation errors or trace loss. This initial
+  approximately twelve-minute interval is not a three-hour endurance pass.
+
+### Two-day harvest alignment for the observed fields
+
+- A separate read-only, fully loaded field inspection found weak fertilized soil
+  beneath all 800 registered tomato plants. After the harvest, the first field
+  had 512 plants at age 0; the second had **214 at age 0 and 74 at age 2**. The
+  next morning the 74 were ripe while the other 726 remained at age 2. This
+  explains the alternating large/small harvests: two out-of-phase cohorts, not
+  indiscriminate harvesting of unripe targets or different soil between fields.
+- Installed Dew Drop logic advances a weak-fertilized crop from age 0 to 2 on
+  one eligible daily growth and to 3 on the next. The observed profile was set
+  to a two-day harvest interval, with both next dates aligned to the same day,
+  using normal profile persistence after confirming harvest was inactive. Wine
+  and preserves intervals and all registrations were unchanged. This is a
+  profile-specific setting, not a universal two-day default for every fertilizer.
+- The intermediate day was observed waiting despite the 74 ripe plants. The
+  following synchronized harvest still needs its own completion evidence at
+  this checkpoint. Crop age returns to an unripe state after successful harvest;
+  seeing unripe tomatoes then is expected.
+- Three additional cadence regressions pass: no early visit/click despite a
+  ripe subset, unchanged deadlines across module reset, full due-day harvest
+  advancing both field dates, and next-morning checks when no crop was ripe.
+  **719 tests pass**, with no failures, errors or skipped tests. The rebuilt
+  production JAR is byte-identical to the already running optimized artifact;
+  these test/documentation additions do not require a second restart.
