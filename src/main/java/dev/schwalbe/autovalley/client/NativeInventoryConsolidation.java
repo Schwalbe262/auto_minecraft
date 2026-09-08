@@ -153,9 +153,11 @@ final class NativeInventoryConsolidation {
         // This candidate is an actual full-menu server packet, not a live menu
         // or applied single-slot snapshot. An unrelated pickup may be included
         // in the same packet as the native primitive's result. The core still
-        // verifies that exact primitive and rejects its participants and additions
+        // verifies that exact primitive and rejects occupied participants and additions
         // sharing the moved item's native identity. A distinct product in the
         // destination region cannot be part of that native QUICK_MOVE.
+        // An exact outward SWAP into an EMPTY scratch may also be followed by a
+        // distinct pickup in its now-empty source; borrowed-item swaps never qualify.
         var additions=concurrentProductionAdditions(transaction,inventoryAfter,protectedHotbar);
         var confirmation=transaction.acknowledge(inventoryAfter,passiveUpdates,additions);
         if (confirmation!=InventoryConsolidation.Confirmation.WAIT) {
@@ -182,8 +184,10 @@ final class NativeInventoryConsolidation {
         Set<Integer> additions=new HashSet<>();
         var before=transaction.expectedLive();
         for (int index=0;index<36;index++) {
-            if (index!=protectedHotbar && transaction.allowsConcurrentAddition(index,after.items().get(index))
-                && productionAddition(before.items().get(index),after.items().get(index))) additions.add(index);
+            if(index==protectedHotbar)continue;
+            var now=after.items().get(index);
+            if (transaction.allowsConcurrentAddition(index,now) && productionAddition(before.items().get(index),now)
+                || transaction.allowsPostSwapSourceAddition(index,now) && productionAddition(InventoryConsolidation.Stack.EMPTY,now)) additions.add(index);
         }
         return Set.copyOf(additions);
     }

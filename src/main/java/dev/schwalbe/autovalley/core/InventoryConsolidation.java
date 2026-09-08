@@ -74,6 +74,16 @@ public final class InventoryConsolidation {
                 && !after.identity().equals(initial.items().get(plan.sourceIndex()).identity());
     }
 
+    /** The outgoing exact SWAP can empty its source before a distinct pickup arrives there.
+     * Only an originally empty scratch is eligible: no borrowed item may be hidden.
+     * This is structural eligibility, not evidence of either packet origin or item identity. */
+    public boolean allowsPostSwapSourceAddition(int index,Stack after) {
+        return stage==Stage.SWAP_OUT && !plan.direct() && !plan.requiresRestore()
+            && index==plan.sourceIndex() && before.items().get(plan.scratchHotbar()).empty()
+            && after!=null && !after.empty()
+            && !after.identity().equals(before.items().get(plan.sourceIndex()).identity());
+    }
+
     private boolean nonparticipant(int index) {
         return stage!=Stage.DONE && index>=0 && index<36
                 && index!=plan.sourceIndex() && index!=plan.scratchHotbar()
@@ -176,8 +186,8 @@ public final class InventoryConsolidation {
     /**
      * A genuine full server ACK may contain an unrelated production-item pickup.
      * The native caller verifies that item's whitelist and authoritative origin;
-     * only nonparticipant slots with exact positive additions of a different
-     * native identity are eligible here. A temporary comparison baseline removes
+     * only nonparticipant slots or the proven emptied outward-SWAP source with
+     * positive additions of a different native identity are eligible here. A temporary comparison baseline removes
      * those additions from the click proof, but the actual permutation/conserved
      * move must still be present.
      * Failed/no-op ACKs never change the baseline, stage or completed-click count.
@@ -199,6 +209,7 @@ public final class InventoryConsolidation {
         for (Integer index:verifiedProductionAdditions) {
             if (index==null || index<0 || index>=36 || verifiedPassiveUpdates.contains(index)) return Confirmation.WAIT;
             Stack now=after.items().get(index);
+            if (allowsPostSwapSourceAddition(index,now)) continue; // Verify against the post-SWAP empty slot below.
             if (!allowsConcurrentAddition(index,now)) return Confirmation.WAIT;
             comparisonItems.set(index,now);
         }
@@ -207,6 +218,11 @@ public final class InventoryConsolidation {
         if (stage==Stage.SWAP_OUT || stage==Stage.RESTORE) {
             List<Stack> expected=new ArrayList<>(comparisonBefore.items());
             Collections.swap(expected,plan.sourceIndex(),plan.scratchHotbar());
+            if (verifiedProductionAdditions.contains(plan.sourceIndex())
+                && allowsPostSwapSourceAddition(plan.sourceIndex(),after.items().get(plan.sourceIndex()))) {
+                if(!expected.get(plan.sourceIndex()).empty())return Confirmation.WAIT;
+                expected.set(plan.sourceIndex(),after.items().get(plan.sourceIndex()));
+            }
             if (!expected.equals(after.items())) return Confirmation.WAIT;
             before=after;
             stage=stage==Stage.SWAP_OUT ? Stage.MERGE : Stage.DONE;
