@@ -1007,3 +1007,23 @@ landing and complete-routine acceptance are still pending. Java 17 / Gradle 8.8
 errors or skips. This includes the native timing arithmetic regression and
 settled-source, final-landing replan and interrupted-airborne guards; it is not
 live-server acceptance.
+
+#### First live ascent and grounded-centering correction
+
+The first supervised logging run produced one launch, an observed airborne
+arc, and native ground contact one block higher. It then stopped before any
+mining: residual grounded motion crossed the old flight-only limit during
+centering. No tree was chopped and the unfinished six-plot checkpoint remained.
+This proves that one ascent reached ground, not that the logging routine passed.
+
+The correction leaves airborne bounds unchanged. Only after verified ground
+contact at the destination height may centering use the original corridor or
+the same destination cell within 0.45 blocks of its center. Native geometry and
+permission checks remain active. Observed motion chooses ordinary walking,
+coasting or braking; completion requires two distinct centered, grounded
+samples with displacement at most 0.002 blocks per tick.
+
+Java 17 / Gradle 8.8 `test build` passed: 70 suites, 868 tests, zero failures,
+errors or skips. The new tests cover the translated live trajectory and bounded
+ground-motion models. The correction still requires deployment and live retest;
+neither these models nor the earlier ascent establish full-routine acceptance.
