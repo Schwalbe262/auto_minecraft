@@ -1737,3 +1737,15 @@ The diagnostic workflow was also restricted to PID / instance-match projections
 after one internal tool result accidentally included the process launch arguments.
 Those arguments were not copied into repository files or GitHub. Authentication
 data and local coordinates are not part of these verification documents.
+
+Final source `d71f455`, rebuilt after documentation-only source comments:
+candidate SHA-256 `CD8A67D823CF2DA2E318C187F2551BE272A3A23718575073C462E705AE6AE468`.
+It remains a built, uninstalled candidate; restart and live acceptance are pending.
+
+Usage reporting now discovers actual descendant sessions across both UTC and
+host-local task dates, including a reused root in an older folder. The Korean
+date separator cannot alter the numeric session-directory layout. A synthetic
+root / reused child / grandchild / unrelated-session fixture counted exactly
+85 tokens across the three descendants and excluded the unrelated 999-token
+session. Counters include cached input and are agent-workstream totals, not
+exact feature-level usage or attributable weekly-quota shares.

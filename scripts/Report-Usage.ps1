@@ -41,7 +41,26 @@ $rows = @([pscustomobject]@{
     LastRecorded=$rootUsage.Last.timestamp; WeeklyStart=(Weekly $rootUsage.Baseline); WeeklyEnd=(Weekly $rootUsage.Last)
 })
 $taskSessionMetadata = @()
-foreach ($file in Get-ChildItem -LiteralPath (Split-Path -Parent $rootPath) -Filter '*.jsonl' -File) {
+$rootSessionDay = Split-Path -Parent $rootPath
+$sessionDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+[void]$sessionDirectories.Add($rootSessionDay)
+# Reused root sessions may live in an earlier date folder than newly spawned children.
+# Discover the task's UTC and host-local day range, then keep the descendant-ID filter below.
+$sessionsRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $rootSessionDay))
+if ((Split-Path -Leaf $sessionsRoot) -eq 'sessions') {
+    $firstTaskDay = ([DateTimeOffset]$rootUsage.Start).UtcDateTime.Date
+    $lastTaskDay = ([DateTimeOffset]$rootUsage.Last.timestamp).UtcDateTime.Date
+    $firstLocalDay = ([DateTimeOffset]$rootUsage.Start).LocalDateTime.Date
+    $lastLocalDay = ([DateTimeOffset]$rootUsage.Last.timestamp).LocalDateTime.Date
+    if ($firstLocalDay -lt $firstTaskDay) { $firstTaskDay = $firstLocalDay }
+    if ($lastLocalDay -gt $lastTaskDay) { $lastTaskDay = $lastLocalDay }
+    for ($taskDay = $firstTaskDay; $taskDay -le $lastTaskDay; $taskDay = $taskDay.AddDays(1)) {
+        $candidateDirectory = Join-Path $sessionsRoot $taskDay.ToString('yyyy/MM/dd',[Globalization.CultureInfo]::InvariantCulture)
+        if (Test-Path -LiteralPath $candidateDirectory -PathType Container) { [void]$sessionDirectories.Add($candidateDirectory) }
+    }
+}
+$taskSessionFiles = foreach ($directory in $sessionDirectories) { Get-ChildItem -LiteralPath $directory -Filter '*.jsonl' -File }
+foreach ($file in $taskSessionFiles) {
     if ($file.FullName -eq $rootPath) { continue }
     $meta = Get-Content -LiteralPath $file.FullName -TotalCount 1 -Encoding UTF8 | ConvertFrom-Json
     $taskSessionMetadata += [pscustomobject]@{Path=$file.FullName;Meta=$meta}
@@ -75,7 +94,7 @@ $report = [pscustomobject]@{
     IncludesCachedInput=$true; TotalRecordedTokens=($rows | Measure-Object -Property Tokens -Sum).Sum
     WeeklyStart=(Weekly $rootUsage.Baseline); WeeklyEnd=(Weekly $rootUsage.Last)
     ExactPerWorkstreamWeeklyShare=$null
-    Note='Token totals are recorded per agent workstream, including repeated/cached input and review. All descendant sessions found in the same session-day directory are included; reused sessions subtract their last recorded total at or before the task start. Weekly percentages are shared-account snapshots, not attributable per-stream shares. Final response, later-day session files and unflushed events are excluded.'
+    Note='Token totals are recorded per agent workstream, including repeated/cached input and review. Descendant sessions from the root directory and the task UTC/host-local day range are included; reused sessions subtract their last recorded total at or before the task start. Weekly percentages are shared-account snapshots, not attributable per-stream shares. Final response and unflushed events are excluded; workstream totals are not exact per-feature attribution when an agent handled multiple parts.'
     Workstreams=$rows
 }
 $json = $report | ConvertTo-Json -Depth 6
