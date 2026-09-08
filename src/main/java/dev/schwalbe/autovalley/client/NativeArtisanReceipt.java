@@ -27,7 +27,7 @@ final class NativeArtisanReceipt {
         if(!state)return false;
         if(!feeding)return before.flag("mature");
         ItemStack observed=latestSelectedReceipt(selected,menuId,beforeMenu,observations,sequence);
-        return observed!=null && compatibleFeed(recipe,ingredient,observed,before.flag("mature"));
+        return observed!=null && compatibleFeed(recipe,ingredient,observed,before.flag("mature"),before.flag("upgraded"));
     }
     static ServerObservations.NativeBlockSnapshot latestTargetReceipt(ServerObservations observations,Pos target,long sequence) {
         return latestProof(observations.nativeBlocksSince(sequence),sequence,ServerObservations.NativeBlockSnapshot::seq,s->s.pos().equals(target));
@@ -81,19 +81,33 @@ final class NativeArtisanReceipt {
      * The separate working-state receipt proves feed; this bounds compatible
      * native stack changes, rather than pretending to observe a hidden decrement. */
     static boolean compatibleFeed(ArtisanRecipe recipe,ItemStack before,ItemStack after,boolean collected) {
+        return compatibleFeed(recipe,before,after,collected,false);
+    }
+    static boolean compatibleFeed(ArtisanRecipe recipe,ItemStack before,ItemStack after,boolean collected,boolean upgraded) {
         if(recipe==null || before==null || after==null || before.isEmpty()
             || !BuiltInRegistries.ITEM.getKey(before.getItem()).toString().equals(recipe.inputId()) || before.getCount()<recipe.inputCount())return false;
         if(!after.isEmpty() && after.getCount()>after.getMaxStackSize())return false;
         return compatibleFeed(recipe,BuiltInRegistries.ITEM.getKey(before.getItem()).toString(),before.getCount(),
             after.isEmpty() ? "minecraft:air" : BuiltInRegistries.ITEM.getKey(after.getItem()).toString(),after.isEmpty()?0:after.getCount(),
-            ItemStack.isSameItemSameTags(before,after),collected);
+            ItemStack.isSameItemSameTags(before,after),collected,upgraded);
     }
     static boolean compatibleFeed(ArtisanRecipe recipe,String beforeId,int beforeCount,String afterId,int afterCount,boolean sameTags,boolean collected) {
+        return compatibleFeed(recipe,beforeId,beforeCount,afterId,afterCount,sameTags,collected,false);
+    }
+    static boolean compatibleFeed(ArtisanRecipe recipe,String beforeId,int beforeCount,String afterId,int afterCount,boolean sameTags,boolean collected,boolean upgraded) {
         if(recipe==null || !recipe.inputId().equals(beforeId) || beforeCount<recipe.inputCount() || afterCount<0)return false;
-        int remaining=beforeCount-recipe.inputCount(),allowance=collected ? recipe.outputCount() : 0;
+        // KubeJS does not synchronize these machines' recipe/stage BE data. A
+        // full hand and raw working-state completion bound a partial seed fill;
+        // an unchanged slot or unsynchronized client stage never proves success.
+        int remaining=beforeCount-recipe.inputCount();
+        int maximumRemaining=beforeCount-recipe.minimumInputConsumed(collected);
+        int allowance=recipe.maximumCollectedOutput(collected,upgraded);
         if(afterCount==0)return remaining==0;
         if(remaining==0 && allowance>0 && recipe.outputId().equals(afterId))return afterCount<=allowance;
+        if(remaining==0 && collected && upgraded && recipe.separateBonusOutputId()!=null
+                && recipe.separateBonusOutputId().equals(afterId))return afterCount==1;
         return beforeId.equals(afterId) && sameTags && (recipe.sameInputAndOutput()
-            ? afterCount>=remaining && (long)afterCount<=(long)remaining+allowance : afterCount==remaining);
+            ? afterCount>=remaining && (long)afterCount<=(long)remaining+allowance
+            : afterCount>=remaining && afterCount<=maximumRemaining);
     }
 }

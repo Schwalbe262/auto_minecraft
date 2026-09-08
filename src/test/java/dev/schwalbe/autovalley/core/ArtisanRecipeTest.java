@@ -18,6 +18,22 @@ class ArtisanRecipeTest {
         assertThrows(IllegalArgumentException.class,()->new ArtisanJob("job","unknown",List.of(new Pos(1,64,0)),"input","output"));
         assertThrows(IllegalArgumentException.class,()->job.scheduleKey(new Pos(2,64,0)));
     }
+    @Test void onlyAnUnharvestedSeedMakerCanFinishAPartialManualFill() {
+        assertEquals(1,ArtisanRecipe.ANCIENT_SEED.minimumInputConsumed(false));
+        assertEquals(3,ArtisanRecipe.ANCIENT_SEED.minimumInputConsumed(true));
+        assertEquals(3,ArtisanRecipe.ANCIENT_SEED.inputCount(),"minimum prepared hand is not reduced");
+        ArtisanRecipe custom=new ArtisanRecipe("custom",Feature.SEED_MAKER,"test:machine","test:input",3,"test:output",1,1);
+        assertEquals(3,custom.minimumInputConsumed(false));
+        assertEquals(1,custom.maximumCollectedOutput(true,true));assertNull(custom.separateBonusOutputId());
+    }
+    @Test void BonusBoundsRequirePriorMaturityAndUpgradeAndKeepSeparateJadeIdentity() {
+        assertEquals(0,ArtisanRecipe.ANCIENT_SEED.maximumCollectedOutput(false,true));
+        assertEquals(1,ArtisanRecipe.ANCIENT_SEED.maximumCollectedOutput(true,false));
+        assertEquals(2,ArtisanRecipe.ANCIENT_SEED.maximumCollectedOutput(true,true));
+        assertEquals(2,ArtisanRecipe.JADE_CRYSTAL.maximumCollectedOutput(true,true));
+        assertEquals("society:pristine_jade",ArtisanRecipe.JADE_CRYSTAL.separateBonusOutputId());
+        assertNull(ArtisanRecipe.ANCIENT_SEED.separateBonusOutputId());
+    }
     @Test void scheduleKeysSeparateJobsRecipesAndPhysicalMachines() {
         ArtisanJob a=new ArtisanJob("a","ancient_seed",List.of(new Pos(1,64,0),new Pos(2,64,0)),"i","o");
         ArtisanJob b=new ArtisanJob("b","ancient_seed",List.of(new Pos(1,64,0)),"i","o");

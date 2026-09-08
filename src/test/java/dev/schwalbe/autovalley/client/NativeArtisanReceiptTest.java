@@ -12,6 +12,9 @@ class NativeArtisanReceiptTest {
     private static boolean feed(ArtisanRecipe recipe,int before,String afterId,int after,boolean sameTags,boolean collected) {
         return NativeArtisanReceipt.compatibleFeed(recipe,recipe.inputId(),before,afterId,after,sameTags,collected);
     }
+    private static boolean feed(ArtisanRecipe recipe,int before,String afterId,int after,boolean sameTags,boolean collected,boolean upgraded) {
+        return NativeArtisanReceipt.compatibleFeed(recipe,recipe.inputId(),before,afterId,after,sameTags,collected,upgraded);
+    }
     private static NativeArtisanReceipt.SlotProof<String> slot(long seq,int menu,int slot,String value) {
         return new NativeArtisanReceipt.SlotProof<>(seq,menu,slot,false,true,value);
     }
@@ -29,6 +32,51 @@ class NativeArtisanReceiptTest {
         for(int count:List.of(-1,0,1,2))assertFalse(feed(SEED,count,"minecraft:air",0,true,true));
         assertFalse(NativeArtisanReceipt.compatibleFeed(SEED,JADE.inputId(),3,"minecraft:air",0,true,true));
         assertFalse(NativeArtisanReceipt.compatibleFeed(null,SEED.inputId(),3,"minecraft:air",0,true,true));
+    }
+    @Test void partialSeedStagesCanConsumeOneTwoOrThreeButStillRequireAFullPreparedHand() {
+        for(int consumed:List.of(1,2,3))for(int before:List.of(3,16))
+            assertTrue(feed(SEED,before,SEED.inputId(),before-consumed,true,false));
+        for(int before:List.of(1,2))
+            assertFalse(feed(SEED,before,"minecraft:air",0,false,false));
+        for(int after:List.of(0,12,16,17))assertFalse(feed(SEED,16,SEED.inputId(),after,true,false));
+        for(int after:List.of(13,14,15))assertFalse(feed(SEED,16,SEED.inputId(),after,false,false));
+        assertFalse(feed(SEED,16,"minecraft:apple",15,true,false));
+    }
+    @Test void previouslyMatureSeedHarvestResetsPartialStageAndStillRequiresExactlyThree() {
+        assertTrue(feed(SEED,16,SEED.inputId(),13,true,true,true));
+        assertFalse(feed(SEED,16,SEED.inputId(),14,true,true,true));
+        assertFalse(feed(SEED,16,SEED.inputId(),15,true,true,true));
+    }
+    @Test void extraSeedReplacementRequiresBothPriorMaturityAndUpgrade() {
+        assertTrue(feed(SEED,3,SEED.outputId(),2,false,true,true));
+        assertFalse(feed(SEED,3,SEED.outputId(),2,false,true,false));
+        assertFalse(feed(SEED,3,SEED.outputId(),2,false,false,true));
+        assertFalse(feed(SEED,3,SEED.outputId(),3,false,true,true));
+        assertFalse(feed(SEED,4,SEED.outputId(),2,false,true,true),"remaining input cannot be replaced");
+        assertFalse(feed(SEED,3,"society:pristine_jade",1,false,true,true));
+    }
+    @Test void pristineJadeCanOnlyReplaceOneFullyConsumedInputDuringAnUpgradedMatureHarvest() {
+        String bonus="society:pristine_jade";
+        assertTrue(feed(JADE,1,bonus,1,false,true,true));
+        assertFalse(feed(JADE,1,bonus,1,false,true,false));
+        assertFalse(feed(JADE,1,bonus,1,false,false,true));
+        assertFalse(feed(JADE,1,bonus,2,false,true,true));
+        assertFalse(feed(JADE,2,bonus,1,false,true,true));
+        assertFalse(feed(JADE,1,"society:pristine_ruby",1,false,true,true));
+        assertFalse(feed(JADE,1,JADE.outputId(),3,false,true,true),"upgrade does not enlarge ordinary jade count");
+    }
+    @Test void aDifferentPartialRecipeServerRejectionCannotReleaseTheSameTargetFence() {
+        var fence=new ArtisanAttemptFence<String>(8);int sends=0;
+        if(!fence.blocked(TARGET,1,a->false) && fence.sent(TARGET,1,"foreign partial recipe"))sends++;
+        var idle=new NativeArtisanReceipt.StateProof(101,TARGET,SEED.machineId(),"false","false");
+        var latest=NativeArtisanReceipt.latestProof(List.of(idle),100,NativeArtisanReceipt.StateProof::seq,p->p.pos().equals(TARGET));
+        int selectedAfter=16; // Actual selected-slot response was unchanged; client BE recipe/stage is not used.
+        boolean confirmed=NativeArtisanReceipt.validState(SEED.machineId(),latest.id(),latest.mature(),latest.working(),true)
+            && feed(SEED,16,SEED.inputId(),selectedAfter,true,false);
+        assertFalse(confirmed);
+        for(int i=0;i<600;i++)if(!fence.blocked(TARGET,1,a->confirmed) && fence.sent(TARGET,1,"retry"))sends++;
+        assertEquals(1,sends);assertEquals(1,fence.size());
+        assertFalse(fence.blocked(OTHER,1,a->confirmed));
     }
     @Test void lastSeedBatchCanLeaveEmptyOrItsOneOldOutputButNotAnUnrelatedReplacement() {
         assertTrue(feed(SEED,3,"minecraft:air",0,false,true));

@@ -27,6 +27,51 @@ class ArtisanModuleTest {
         assertEquals(16,f.chests.get(f.input)[0].count());assertEquals(9,f.chests.get(f.input)[2].count());
         assertEquals(6,f.storedGrade(f.input,f.recipe.inputId(),1));assertEquals(1,f.withdrawals);
     }
+    @Test void partialManualSeedFillConsumesOnlyItsMissingInputsAndPersistsOneCompletedBatch() {
+        for(int cost:List.of(1,2,3)) {
+            Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.inventory[1]=item(f.recipe.inputId(),3,0);f.seedConsumption=cost;
+            f.machineStates.replaceAll((p,b)->f.state(p,false,false));
+            WorkResult result=f.run(new ArtisanModule(f.recipe.feature()),300);
+            assertEquals(WorkResult.State.IDLE,result.state(),result.message());assertEquals(1,f.uses);
+            assertEquals(List.of(3),f.handCounts);assertEquals(cost,f.consumed);
+            assertEquals(3-cost,f.stored(f.input,f.recipe.inputId()));assertEquals(0,f.stored(f.output,f.recipe.outputId()));
+            assertEquals(List.of(436L),List.copyOf(f.profile.nextEligibleDay.values()));
+        }
+    }
+    @Test void partialSeedFillCannotAuthorizeNoConsumptionOrAnExcessiveDecrease() {
+        for(int cost:List.of(0,4)) {
+            Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.inventory[1]=item(f.recipe.inputId(),8,0);f.seedConsumption=cost;
+            f.machineStates.replaceAll((p,b)->f.state(p,false,false));
+            assertEquals(WorkResult.State.BLOCKED,f.run(new ArtisanModule(f.recipe.feature()),300).state());
+            assertEquals(1,f.uses);assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+    @Test void upgradedSeedBonusIsStoredWithoutChangingFeedCostOrSchedule() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.inventory[1]=item(f.recipe.inputId(),3,0);f.upgraded=true;f.emitBonus=true;
+        f.machineStates.replaceAll((p,b)->f.state(p,true,false));
+        assertEquals(WorkResult.State.IDLE,f.run(new ArtisanModule(f.recipe.feature()),300).state());
+        assertEquals(3,f.consumed);assertEquals(2,f.stored(f.output,f.recipe.outputId()));
+        assertEquals(1,f.uses);assertEquals(List.of(436L),List.copyOf(f.profile.nextEligibleDay.values()));
+    }
+    @Test void pristineJadeBonusRemainsInInventoryWithExplicitStatusAndNoExtraStoragePermission() {
+        Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);f.inventory[1]=item(f.recipe.inputId(),1,0);f.upgraded=true;f.emitBonus=true;
+        f.machineStates.replaceAll((p,b)->f.state(p,true,false));
+        assertEquals(WorkResult.State.IDLE,f.run(new ArtisanModule(f.recipe.feature()),300).state());
+        assertEquals(1,f.consumed);assertEquals(2,f.stored(f.output,f.recipe.outputId()));
+        assertEquals(1,Arrays.stream(f.inventory).filter(i->i.is("society:pristine_jade")).mapToInt(ItemData::count).sum());
+        assertEquals(0,f.stored(f.output,"society:pristine_jade"));assertEquals(0,f.stored(f.input,"society:pristine_jade"));
+        assertTrue(f.statuses.stream().anyMatch(s->s.contains("보너스 비취")&&s.contains("자동 보관·판매하지 않습니다")));
+        assertEquals(1,f.uses);assertEquals(List.of(440L),List.copyOf(f.profile.nextEligibleDay.values()));
+    }
+    @Test void serverRejectionOfADifferentPartialRecipeYieldsAndNeverRetriesTheTarget() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.inventory[1]=item(f.recipe.inputId(),6,0);f.foreignRecipeReject=true;
+        f.machineStates.replaceAll((p,b)->f.state(p,false,false));
+        assertEquals(WorkResult.State.DEFERRED,f.run(new ArtisanModule(f.recipe.feature()),300).state());
+        assertEquals(1,f.uses);assertEquals(0,f.consumed);assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(6,f.stored(f.input,f.recipe.inputId()));
+        assertEquals(WorkResult.State.DEFERRED,f.run(new ArtisanModule(f.recipe.feature()),300).state());
+        assertEquals(1,f.uses);assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
     @Test void emptyInventoryCrystalCollectionBootstrapsRefillAndStoresOnlyItsNetSurplus() {
         Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,3);
         WorkResult result=f.run(new ArtisanModule(f.recipe.feature()),500);
@@ -185,8 +230,10 @@ class ArtisanModuleTest {
         final List<Action> history=new ArrayList<>();final Map<Long,ActionOutcome> outcomes=new HashMap<>();
         final Map<Pos,Integer> opens=new HashMap<>();final List<Integer> usedGrades=new ArrayList<>(),handCounts=new ArrayList<>();
         final List<Delayed> delayed=new ArrayList<>();
+        final List<String> statuses=new ArrayList<>();
         long now=100,dayTime=435L*24000+5000,lastTicket;int selected=1,menuId,uses,consumed,withdrawals,pickupDelay,sleepUses;
-        boolean holdUse,suppressMutation,failCheckpoint,wrongOpen,uncertainArtisan,navigationBlocked,sleeping,grounded=true;Pos opened;
+        int seedConsumption=-1;
+        boolean holdUse,suppressMutation,failCheckpoint,wrongOpen,uncertainArtisan,navigationBlocked,sleeping,grounded=true,upgraded,emitBonus,foreignRecipeReject;Pos opened;
         ItemData cursor=ItemData.EMPTY;String actionFence;
         Fixture(ArtisanRecipe recipe,int count) {
             this.recipe=recipe;Arrays.fill(inventory,ItemData.EMPTY);inventory[0]=new ItemData("minecraft:golden_hoe",1,0,null,true,99);
@@ -198,9 +245,9 @@ class ArtisanModuleTest {
             profile.artisanJobs.put("job",new ArtisanJob("job",recipe.id(),List.copyOf(machineStates.keySet()),"input","output"));
         }
         private ItemData[] emptyChest(){ItemData[] items=new ItemData[27];Arrays.fill(items,ItemData.EMPTY);return items;}
-        BlockData state(Pos pos,boolean mature,boolean working){return new BlockData(pos,recipe.machineId(),Map.of("mature",""+mature,"working",""+working,"upgraded","false"));}
+        BlockData state(Pos pos,boolean mature,boolean working){return new BlockData(pos,recipe.machineId(),Map.of("mature",""+mature,"working",""+working,"upgraded",""+upgraded));}
         Context context(){return new Context(this,this,new Navigation(){public Result moveTo(Pos p,double reach,Context c){return navigationBlocked?Result.BLOCKED:Result.ARRIVED;}public boolean retryableFailure(){return navigationBlocked;}public Failure failureKind(){return navigationBlocked?Failure.NO_PATH:Failure.NONE;}public void reset(){}},profile,new SessionState(),()->{if(failCheckpoint)throw new IllegalStateException("checkpoint failed");});}
-        WorkResult run(ArtisanModule module,int limit){WorkResult r=WorkResult.busy("");for(int i=0;i<limit;i++){for(Iterator<Delayed> it=delayed.iterator();it.hasNext();){Delayed d=it.next();if(now>=d.at){put(inventory,d.item);it.remove();}}r=module.tick(context());now++;if(r.state()!=WorkResult.State.BUSY)return r;}return r;}
+        WorkResult run(ArtisanModule module,int limit){WorkResult r=WorkResult.busy("");for(int i=0;i<limit;i++){for(Iterator<Delayed> it=delayed.iterator();it.hasNext();){Delayed d=it.next();if(now>=d.at){put(inventory,d.item);it.remove();}}r=module.tick(context());statuses.add(r.message());now++;if(r.state()!=WorkResult.State.BUSY)return r;}return r;}
         int stored(Pos p,String id){return Arrays.stream(chests.get(p)).filter(i->i.is(id)).mapToInt(ItemData::count).sum();}
         int storedGrade(Pos p,String id,int q){return Arrays.stream(chests.get(p)).filter(i->i.is(id)&&i.quality()==q).mapToInt(ItemData::count).sum();}
         public long tick(){return now;}public long dayTime(){return dayTime;}
@@ -221,7 +268,9 @@ class ArtisanModuleTest {
                 else if(use.purpose()==Action.Use.ARTISAN){
                     uses++;ItemData held=inventory[selected];handCounts.add(held.count());boolean feed=held.is(recipe.inputId())&&held.count()>=recipe.inputCount();
                     if(feed)usedGrades.add(held.quality());BlockData before=machineStates.get(use.pos());
-                    if(!suppressMutation){if(feed){consumed+=recipe.inputCount();inventory[selected]=withCount(held,held.count()-recipe.inputCount());}
+                    if(foreignRecipeReject){uncertainArtisan=true;outcomes.put(id,new ActionOutcome(ActionOutcome.State.FAILED,"unchanged raw idle block and selected input"));return id;}
+                    if(!suppressMutation){if(feed){int cost=seedConsumption>=0 && !before.flag("mature") ? seedConsumption : recipe.inputCount();consumed+=cost;inventory[selected]=withCount(held,held.count()-cost);}
+                        if(before.flag("mature")&&before.flag("upgraded")&&emitBonus)put(inventory,item(recipe.sameInputAndOutput()?"society:pristine_jade":recipe.outputId(),1,0));
                         if(before.flag("mature")){ItemData produced=item(recipe.outputId(),recipe.outputCount(),0);if(pickupDelay>0)delayed.add(new Delayed(now+pickupDelay,produced));else put(inventory,produced);}
                         machineStates.put(use.pos(),state(use.pos(),false,feed));}
                     if(holdUse){outcomes.put(id,new ActionOutcome(ActionOutcome.State.PENDING,"waiting"));return id;}

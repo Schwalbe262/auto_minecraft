@@ -25,4 +25,18 @@ public record ArtisanRecipe(String id, Feature feature, String machineId, String
         return recipe;
     }
     public boolean sameInputAndOutput() { return inputId.equals(outputId); }
+
+    /** The seed maker can finish a manually filled stage. Harvesting first resets that stage to zero. */
+    public int minimumInputConsumed(boolean previouslyMature) {
+        return equals(ANCIENT_SEED) && !previouslyMature ? 1 : inputCount;
+    }
+    /** Only a mature upgraded seed maker can roll one extra seed before its ordinary harvest. */
+    public int maximumCollectedOutput(boolean previouslyMature,boolean previouslyUpgraded) {
+        if (!previouslyMature) return 0;
+        return outputCount+(equals(ANCIENT_SEED) && previouslyUpgraded ? 1 : 0);
+    }
+    /** Recognition is not storage, sale, or recipe authorization for this separate bonus item. */
+    public String separateBonusOutputId() {
+        return equals(JADE_CRYSTAL) ? "society:pristine_jade" : null;
+    }
 }

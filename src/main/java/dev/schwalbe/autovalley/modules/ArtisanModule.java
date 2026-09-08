@@ -199,7 +199,11 @@ public final class ArtisanModule implements AutomationModule {
                 // selected-slot server receipt with the target's working-state
                 // receipt; it cannot isolate consumption from simultaneous pickup.
                 // This projection checks the allowed aggregate net range only.
-                boolean inputConfirmed=!feeding || (!recipe.sameInputAndOutput() ? after==inputBefore-recipe.inputCount()
+                // A non-mature seed maker may already hold one or two manually
+                // inserted fruits. Its unsynchronized client BE is not evidence:
+                // require the native working+selected-slot ACK and a 1..3 decrease.
+                boolean inputConfirmed=!feeding || (!recipe.sameInputAndOutput()
+                    ? after>=inputBefore-recipe.inputCount() && after<=inputBefore-recipe.minimumInputConsumed(collected)
                     : after>=inputBefore-recipe.inputCount() && after<=inputBefore-recipe.inputCount()+(collected ? recipe.outputCount() : 0));
                 if (!block.flag("mature") && block.flag("working")==feeding && inputConfirmed) {
                     if (feeding) { schedule(c,recipe.cycleDays());stockReady=false;scanPasses=0; }
@@ -232,6 +236,9 @@ public final class ArtisanModule implements AutomationModule {
                 }
                 if (deferredAfterCleanup!=null) return deferClean(c,deferredAfterCleanup);
                 jobIndex++;stage=Stage.JOB;
+                String bonusId=recipe.separateBonusOutputId();
+                if (bonusId!=null && ModuleSupport.count(c,i -> i.is(bonusId))>0)
+                    return WorkResult.busy(status("보너스 비취는 인벤토리에 남겨 둡니다 — 이 작업은 자동 보관·판매하지 않습니다"));
             }
         }
         return WorkResult.busy(status(phaseLabel()));
