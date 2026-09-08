@@ -39,7 +39,7 @@ public final class DisposalModule implements AutomationModule {
         if (sites.isEmpty()) return fail("Server inventory TrashSlot is unavailable; enable it or register a safe disposal point");
         Pos site = sites.get(0).pos();
         Navigation.Result nav = c.navigation().moveTo(site,0.7,c);
-        if (nav == Navigation.Result.BLOCKED) return fail("Disposal point cannot be reached");
+        if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Disposal point cannot be reached");
         if (nav == Navigation.Result.ARRIVED) {
             ItemSlot rotten = ModuleSupport.menuPlayerItem(c,i -> i.is(ItemData.ROTTEN));
             if (rotten == null) return fail("Rotten tomato inventory has not synchronized");

@@ -68,7 +68,7 @@ abstract class DepositModule implements AutomationModule {
             case APPROACH -> {
                 if (c.world().menu().container()) { ticket = c.actions().submit(new Action.CloseContainer(c.world().menu().id())); return WorkResult.busy("Closing previous container"); }
                 Navigation.Result nav = approachDestination(c,candidates.get(candidate));
-                if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Registered storage cannot be reached"));
+                if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Registered storage cannot be reached");
                 if (nav == Navigation.Result.ARRIVED) { stage = Stage.OPEN; ticket = c.actions().submit(new Action.UseBlock(candidates.get(candidate).pos(),Action.Use.OPEN_CONTAINER)); }
             }
             case OPEN -> { return fail("Storage open acknowledgement was lost"); }

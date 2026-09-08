@@ -84,6 +84,13 @@ class StorageSurveyModuleTest {
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertTrue(f.actions.isEmpty());
         assertEquals(0,f.session.storageSurveyTotal);
     }
+    @Test void unloadedWarehouseIsObservedBeforeAnyOpenAndStillNeedsItsRealMenuEvidence() {
+        Fixture f=new Fixture();Pos target=f.add(tomato(2));f.unloaded.add(target);f.observeLoads=true;
+        assertEquals(WorkResult.State.BUSY,f.step().state());assertEquals(List.of(target),f.observed);
+        assertTrue(f.actions.isEmpty());assertTrue(f.session.storageSurveyObservations.isEmpty());assertFalse(f.session.storageSurveyComplete);
+        assertEquals(WorkResult.State.IDLE,f.finish().state());assertEquals(2,f.actions.size());
+        assertTrue(f.session.storageSurveyComplete);assertEquals(PoiKind.TOMATO_CHEST,f.poi(target).kind());
+    }
     @Test void incompleteOrDuplicateStorageSlotsFailClosed() {
         for (boolean duplicate:List.of(false,true)) {
             Fixture f=new Fixture(); f.add(tomato(1)); f.badShape=!duplicate; f.duplicateSlot=duplicate;
@@ -99,7 +106,8 @@ class StorageSurveyModuleTest {
         final Set<Pos> blocked=new HashSet<>(),unloaded=new HashSet<>();
         MenuData menu=new MenuData(0,0,List.of(),ItemData.EMPTY,false);
         String blockId="minecraft:barrel"; long tick; int checkpoints,nextMenu=1;
-        boolean failSave,failAck,badShape,duplicateSlot;
+        boolean failSave,failAck,badShape,duplicateSlot,observeLoads;
+        final List<Pos> observed=new ArrayList<>();
         final Context context=new Context(this,this,this,profile,session,() -> {
             checkpoints++; if (failSave) throw new IllegalStateException("save failed");
         });
@@ -141,6 +149,9 @@ class StorageSurveyModuleTest {
         public ActionOutcome outcome(long ticket) { return new ActionOutcome(failAck?ActionOutcome.State.FAILED:ActionOutcome.State.SUCCEEDED,"test ACK"); }
         public void move(Movement movement) { } public void stopMovement() { } public void cancel() { }
         public Result moveTo(Pos pos,double reach,Context c) { assertEquals(2.5,reach); return blocked.contains(pos)?Result.BLOCKED:Result.ARRIVED; }
+        public Result moveToObserve(Pos pos,double reach,Context c) {
+            if(!observeLoads)return Result.BLOCKED;observed.add(pos);unloaded.remove(pos);return Result.MOVING;
+        }
         public void reset() { }
     }
 }

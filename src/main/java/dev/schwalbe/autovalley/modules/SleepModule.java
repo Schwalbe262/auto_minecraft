@@ -50,7 +50,7 @@ public final class SleepModule implements AutomationModule {
             return WorkResult.busy("Closing container before sleeping");
         }
         Navigation.Result nav = c.navigation().moveTo(beds.get(0).pos(),2.5,c);
-        if (nav == Navigation.Result.BLOCKED) return WorkResult.blocked("Registered bed cannot be reached");
+        if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Registered bed cannot be reached");
         if (nav == Navigation.Result.ARRIVED) {
             attempts++; attemptDay = day; startedDay = day; trying = true; observedSleeping = false; sleepingSince = c.world().tick();
             ticket = c.actions().submit(new Action.UseBlock(beds.get(0).pos(),Action.Use.SLEEP));

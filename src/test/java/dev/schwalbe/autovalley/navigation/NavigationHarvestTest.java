@@ -11,6 +11,7 @@ class NavigationHarvestTest {
 
     @Test void corridorsFollowConsecutiveWaypointsWithoutCuttingAcrossSites() {
         Profile profile = new Profile();
+        profile.navigationMode=NavigationMode.WAYPOINTS;
         profile.corridorRadius = 1;
         profile.pois.add(new Poi(ORIGIN, PoiKind.WAYPOINT, "a", null));
         profile.pois.add(new Poi(new Pos(20,0,0), PoiKind.WAYPOINT, "b", null));
@@ -38,6 +39,7 @@ class NavigationHarvestTest {
     @Test void unregisteredGapBetweenWorkSitesCannotBeTraversed() {
         FakeWorld world = new FakeWorld();
         Profile profile = new Profile();
+        profile.navigationMode=NavigationMode.WAYPOINTS;
         profile.corridorRadius = 1;
         profile.pois.add(new Poi(ORIGIN, PoiKind.BED, "a", null));
         profile.pois.add(new Poi(new Pos(10,0,0), PoiKind.BED, "b", null));
@@ -583,7 +585,7 @@ class NavigationHarvestTest {
         assertTrue(actions.submitted.isEmpty());
     }
 
-    @Test void unreachableRipeFarmStopsBeforeClickOrCompletionDeadline() {
+    @Test void unreachableRipeFarmDefersBeforeClickOrCompletionDeadline() {
         FakeWorld world = new FakeWorld();
         for (int z=-1;z<=1;z++) world.obstacles.add(new Pos(2,0,z));
         Pos crop = new Pos(5,0,0);
@@ -591,7 +593,7 @@ class NavigationHarvestTest {
         FakeActions actions = new FakeActions();
         Profile profile = farmProfile(crop);
         Context context = new Context(world,actions,new LocalNavigator(),profile);
-        assertEquals(WorkResult.State.BLOCKED,new HarvestModule().tick(context).state());
+        assertEquals(WorkResult.State.DEFERRED,new HarvestModule().tick(context).state());
         assertTrue(actions.submitted.isEmpty());
         assertNull(actions.movement);
         assertFalse(profile.nextEligibleDay.containsKey("harvest:first"));
@@ -850,8 +852,55 @@ class NavigationHarvestTest {
 
     private static Profile farmProfile(Pos end) {
         Profile profile = new Profile();
+        profile.navigationMode=NavigationMode.WAYPOINTS;
         profile.farms.add(new Farm("first",ORIGIN,end));
         return profile;
+    }
+
+    @Test void distantFieldsAreObservedAndHarvestedSeparatelyWithoutRequiringBothChunksLoaded() {
+        FakeWorld world=new FakeWorld(); Pos far=new Pos(200,0,0); world.tomato(ORIGIN,3); world.tomato(far,3); world.unloaded.add(far);
+        Profile profile=farmProfile(ORIGIN); profile.farms.add(new Farm("far",far,far)); profile.harvestCycleDays=2;
+        FakeActions actions=new FakeActions(); List<Pos> observed=new ArrayList<>();
+        Navigation navigation=new Navigation() {
+            public Result moveTo(Pos target,double reach,Context c){assertTrue(world.loaded(target));return Result.ARRIVED;}
+            public Result moveToObserve(Pos target,double reach,Context c){observed.add(target);world.unloaded.remove(target);world.unloaded.add(ORIGIN);return Result.MOVING;}
+            public void reset(){}
+        };
+        Context context=new Context(world,actions,navigation,profile); HarvestModule module=new HarvestModule(); WorkResult result=null;
+        for(int tick=0;tick<80;tick++) {
+            result=module.tick(context); assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());
+            if(actions.busy()) { Action.UseBlock use=assertInstanceOf(Action.UseBlock.class,actions.submitted.get(actions.submitted.size()-1));world.tomato(use.pos(),0);actions.complete(true); }
+            world.now++; if(result.state()==WorkResult.State.IDLE)break;
+        }
+        assertEquals(WorkResult.State.IDLE,result.state()); assertEquals(List.of(far),observed);
+        assertEquals(List.of(ORIGIN,far),actions.submitted.stream().map(a -> ((Action.UseBlock)a).pos()).toList());
+        assertEquals(Map.of("harvest:first",2L,"harvest:far",2L),profile.nextEligibleDay);
+        module.reset(); assertEquals(WorkResult.State.IDLE,module.tick(context).state()); assertEquals(2,actions.submitted.size());
+    }
+
+    @Test void unloadedFutureFieldNeverStartsAnObservationVisit() {
+        FakeWorld world=new FakeWorld();world.unloaded.add(ORIGIN);Profile profile=farmProfile(ORIGIN);profile.nextEligibleDay.put("harvest:first",2L);
+        Navigation navigation=new Navigation(){ public Result moveTo(Pos p,double r,Context c){throw new AssertionError();}
+            public Result moveToObserve(Pos p,double r,Context c){throw new AssertionError("Future field must not be visited");}public void reset(){} };
+        assertEquals(WorkResult.State.IDLE,new HarvestModule().tick(new Context(world,new FakeActions(),navigation,profile)).state());
+        assertEquals(2L,profile.nextEligibleDay.get("harvest:first"));
+    }
+
+    @Test void aValidThinFieldLargerThanTheLoadedWindowDefersInsteadOfShuttlingForever() {
+        FakeWorld world=new FakeWorld();Pos far=new Pos(200,0,0);world.tomato(ORIGIN,3);world.tomato(far,3);world.unloaded.add(far);
+        Profile profile=farmProfile(far);FakeActions actions=new FakeActions();List<Pos> observed=new ArrayList<>();
+        Navigation navigation=new Navigation(){
+            public Result moveTo(Pos p,double reach,Context c){assertTrue(world.unloaded.isEmpty(),"No harvest before complete field observation");return Result.ARRIVED;}
+            public Result moveToObserve(Pos p,double reach,Context c){observed.add(p);world.unloaded.remove(p);world.unloaded.add(p.equals(far)?ORIGIN:far);return Result.MOVING;}
+            public void reset(){}
+        };
+        HarvestModule module=new HarvestModule();Context c=new Context(world,actions,navigation,profile);
+        assertEquals(WorkResult.State.BUSY,module.tick(c).state());world.now++;
+        assertEquals(WorkResult.State.BUSY,module.tick(c).state());world.now++;
+        WorkResult deferred=module.tick(c);assertEquals(WorkResult.State.DEFERRED,deferred.state());
+        assertEquals(List.of(far,ORIGIN),observed);assertTrue(profile.nextEligibleDay.isEmpty());assertTrue(actions.submitted.isEmpty());
+        module.reset();world.unloaded.clear();assertEquals(WorkResult.State.BUSY,module.tick(c).state());
+        assertEquals(1,actions.submitted.size(),"An explicit retry with real loaded coverage must not retain a sticky preflight failure");
     }
 
     private static final class ArrivedNavigation implements Navigation {

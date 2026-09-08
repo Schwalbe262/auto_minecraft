@@ -51,13 +51,13 @@ public final class StorageSurveyModule implements AutomationModule {
         switch (stage) {
             case APPROACH -> {
                 if (!c.profile().pois.contains(target)) return fail(c,"Warehouse registration changed during inspection");
-                if (!c.world().loaded(target.pos())) return fail(c,"Warehouse is unloaded");
+                if (!c.world().loaded(target.pos())) return navigationResult(c,ModuleSupport.observe(c,target.pos(),8,"창고 조사 위치 확인"));
                 BlockData block=c.world().block(target.pos());
                 if (!StorageSurveyRules.ordinaryStorage(block)) return fail(c,"Only ordinary barrels and chests may be surveyed");
                 MenuData menu=c.world().menu();
                 if (menu==null || menu.container() || !menu.carried().empty()) return fail(c,"Close the current screen and clear the cursor first");
                 Navigation.Result navigation=c.navigation().moveTo(target.pos(),2.5,c);
-                if (navigation==Navigation.Result.BLOCKED) return fail(c,ModuleSupport.navigationFailure(c,"Registered warehouse cannot be reached"));
+                if (navigation==Navigation.Result.BLOCKED) return navigationResult(c,ModuleSupport.navigationResult(c,"Registered warehouse cannot be reached"));
                 if (navigation==Navigation.Result.ARRIVED) {
                     openedBlockId=block.id(); opening=true;
                     ticket=c.actions().submit(new Action.UseBlock(target.pos(),Action.Use.OPEN_CONTAINER));
@@ -113,6 +113,11 @@ public final class StorageSurveyModule implements AutomationModule {
         c.session().storageSurveyComplete=false; c.session().storageSurveyBlockedAt=blocked;
         c.session().storageSurveyStatus=reason+(blocked==null ? "" : " at "+blocked.x()+", "+blocked.y()+", "+blocked.z());
         return WorkResult.blocked(c.session().storageSurveyStatus);
+    }
+    private WorkResult navigationResult(Context c,WorkResult result) {
+        if (result.state()==WorkResult.State.BUSY) return result;
+        WorkResult reported=fail(c,result.message());
+        return new WorkResult(result.state(),reported.message());
     }
     @Override public void reset() {
         stage=Stage.START; targets=List.of(); index=0; menuId=-1; ticket=-1; opening=false; openedBlockId=null;

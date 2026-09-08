@@ -15,6 +15,9 @@ public final class MachineModule implements AutomationModule {
     private long useSettleAt = -1;
     private List<Poi> machines = List.of(), sources = List.of();
     private final Map<Poi,int[]> stock = new LinkedHashMap<>();
+    private final Map<Pos,BlockData> wineObservations=new LinkedHashMap<>();
+    private Set<Pos> wineObservationTargets=Set.of();
+    private long wineObservationDay=Long.MIN_VALUE,wineObservationRetry;
     private static final int OUTPUT_SETTLE_TICKS = 5;
     private static final int PRESERVES_MORNING_SNAPSHOT_TICK = 240;
     private static final int RESERVED_OUTPUT_SLOTS = 2;
@@ -130,7 +133,7 @@ public final class MachineModule implements AutomationModule {
                     selectedMachineIndex=machineIndex;
                 }
                 Navigation.Result nav = c.navigation().moveTo(target().pos(),4.0,c);
-                if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Registered production machine cannot be reached"));
+                if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Registered production machine cannot be reached");
                 if (nav != Navigation.Result.ARRIVED) return WorkResult.busy(machineStatus("설비로 이동 중"));
                 BlockData block = machine(c);
                 if (!block.id().equals(blockId())) return fail("Registered production machine no longer matches its type");
@@ -151,7 +154,7 @@ public final class MachineModule implements AutomationModule {
                 }
                 source = sources.get(sourceIndex);
                 Navigation.Result nav = c.navigation().moveTo(source.pos(),2.5,c);
-                if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Registered tomato source cannot be reached"));
+                if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Registered tomato source cannot be reached");
                 if (nav == Navigation.Result.ARRIVED) submit(c,new Action.UseBlock(source.pos(),Action.Use.OPEN_CONTAINER),Pending.OPEN_SCAN);
             }
             case SNAPSHOT -> {
@@ -216,7 +219,7 @@ public final class MachineModule implements AutomationModule {
             }
             case FETCH_SOURCE -> {
                 Navigation.Result nav = c.navigation().moveTo(source.pos(),2.5,c);
-                if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Selected tomato source cannot be reached"));
+                if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Selected tomato source cannot be reached");
                 if (nav == Navigation.Result.ARRIVED) submit(c,new Action.UseBlock(source.pos(),Action.Use.OPEN_CONTAINER),Pending.OPEN_FETCH);
             }
             case FETCH -> {
@@ -258,7 +261,7 @@ public final class MachineModule implements AutomationModule {
             }
             case RETURN -> {
                 Navigation.Result nav = c.navigation().moveTo(target().pos(),4.0,c);
-                if (nav == Navigation.Result.BLOCKED) return fail(ModuleSupport.navigationFailure(c,"Production machine cannot be reached with ingredients"));
+                if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Production machine cannot be reached with ingredients");
                 if (nav == Navigation.Result.ARRIVED) {
                     BlockData block = machine(c);
                     if (!block.id().equals(blockId())) return fail("Production machine changed");
@@ -423,17 +426,25 @@ public final class MachineModule implements AutomationModule {
         for (Poi poi:c.profile().pois(PoiKind.WINE_KEG)) registered.put(poi.pos(),poi);
         List<Pos> targets=schedule.active() ? schedule.remaining() : new ArrayList<>(registered.keySet());
         if (targets.isEmpty()) return fail("Registered wine rack is empty; review the common production schedule");
+        Set<Pos> targetSet=Set.copyOf(targets);
+        if (wineObservationDay!=gameDay(c) || !targetSet.equals(wineObservationTargets)) {
+            wineObservations.clear(); wineObservationTargets=targetSet; wineObservationDay=gameDay(c); wineObservationRetry=0;
+        }
+        if (c.world().tick()<wineObservationRetry && targets.stream().anyMatch(p -> !c.world().loaded(p)))
+            return WorkResult.idle();
         boolean processing=false;
         for (Pos pos:targets) {
             if (!registered.containsKey(pos)) return fail("An unfinished wine batch member is no longer registered; restore or review the rack registration");
-            if (!c.world().loaded(pos)) return fail("Wine rack member is not loaded; the whole-rack batch has not been completed");
-            BlockData block=c.world().block(pos);
+            if (c.world().loaded(pos)) wineObservations.put(pos,c.world().block(pos));
+            BlockData block=wineObservations.get(pos);
+            if (block==null) return ModuleSupport.observe(c,pos,8,"와인 전체 랙 생산 상태 확인");
             if (!block.id().equals(blockId())) return fail("Registered production machine no longer matches its type");
             if (!block.properties().containsKey("working") || !block.properties().containsKey("mature")) return fail("Wine rack state is not synchronized");
             processing|=block.flag("working") && !block.flag("mature");
         }
         if (processing) {
             if (schedule.active()) return unfinishedWine();
+            wineObservations.clear(); wineObservationRetry=c.world().tick()+1200;
             return new WorkResult(WorkResult.State.IDLE,"와인 랙 전체 완료 대기 — 아직 생산 중인 통이 있어 공통 작업을 시작하지 않습니다");
         }
         if (!schedule.active()) WineBatchRules.open(c,targets);
@@ -630,6 +641,7 @@ public final class MachineModule implements AutomationModule {
     }
     @Override public void reset() { clearRun(); unresolvedInteraction = null; rejectedInputMerge=null; rejectedOutputMerge=null; repositionedInputState=null; }
     private void clearRun() {
+        wineObservations.clear(); wineObservationTargets=Set.of(); wineObservationDay=Long.MIN_VALUE; wineObservationRetry=0;
         stage = Stage.START; afterClose = null; pending = null; ticket = -1; verifySince = 0; useSettleAt = -1;
         machines = List.of(); sources = List.of(); stock.clear(); machineIndex = 0; selectedMachineIndex = -1; sourceIndex = 0;
         stockReady = false; freshForHaul = false; stockDay = 0;

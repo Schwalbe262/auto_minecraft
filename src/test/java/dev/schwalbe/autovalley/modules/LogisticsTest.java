@@ -2011,6 +2011,58 @@ class LogisticsTest {
     }
 
     /** Normally applies server changes on advance(); an explicit immediate mode tests write-ahead ordering. */
+    @Test void initiallyUnloadedWineReserveMustBeReachedAndVerifiedBeforeSurplusSales() {
+        Fixture f=new Fixture(); f.inventory[1]=wine(8,3,0); f.observeLoads=true;
+        Pos reserve=f.fullWineReserve(200,8,27); f.unloaded.add(reserve);f.chest(PoiKind.SHIPPING_BIN,220,null,ItemData.EMPTY);
+        assertEquals(WorkResult.State.IDLE,f.run(new WineSurplusShippingModule(),100).state());
+        assertEquals(3,f.soldWine);assertEquals(0,f.withdrawnWine);assertFalse(f.unloaded.contains(reserve));
+        assertTrue(f.opens.containsKey(reserve));assertTrue(f.session.wineSalePermits.isEmpty());
+    }
+
+    @Test void wholeSiteObservationHasAnActualTickDeadlineAndResetStartsAFreshAttempt() {
+        Fixture f=new Fixture(); f.observeLoads=true; f.observeNeverLoads=true; Pos target=new Pos(200,64,0);f.unloaded.add(target);
+        ModuleSupport.ObservationWindow window=new ModuleSupport.ObservationWindow();
+        assertEquals(WorkResult.State.BUSY,window.observe(f.context(),target,8,"worksite").state());
+        f.ticks=2399;assertEquals(WorkResult.State.BUSY,window.observe(f.context(),target,8,"worksite").state());
+        f.ticks=2400;assertEquals(WorkResult.State.DEFERRED,window.observe(f.context(),target,8,"worksite").state());
+        assertEquals(2,f.observed.size());assertTrue(f.history.isEmpty());assertTrue(f.profile.nextEligibleDay.isEmpty());
+        window.clear();assertEquals(WorkResult.State.BUSY,window.observe(f.context(),target,8,"worksite").state());
+    }
+
+    @Test void distantWineRackMembersAreObservedBeforeOpeningOneWholeBatch() {
+        Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(1,12); f.observeLoads=true;
+        Pos first=f.machine(PoiKind.WINE_KEG,0,false,false,false),far=f.machine(PoiKind.WINE_KEG,200,false,false,false);
+        f.unloaded.add(far); f.unloadPreviousObservation=first;
+        MachineModule module=new MachineModule(Feature.WINE);
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+        assertEquals(List.of(far),f.observed); assertFalse(f.profile.wineBatchSchedule.active()); assertEquals(0,f.machineClicks());
+        assertEquals(WorkResult.State.IDLE,f.run(module,200).state());
+        assertEquals(2,f.machineClicks()); assertEquals(6,f.consumed); assertFalse(f.profile.wineBatchSchedule.active());
+        assertEquals(6L,f.profile.wineBatchSchedule.nextDueDay()); assertTrue(f.profile.wineBatchSchedule.remaining().isEmpty());
+    }
+
+    @Test void commonWineFutureDateSkipsEvenUnloadedRackObservation() {
+        Fixture f=new Fixture(); Pos target=f.machine(PoiKind.WINE_KEG,200,false,false,false); f.unloaded.add(target); f.observeLoads=true;
+        f.profile.nextEligibleDay.put(WineBatchRules.key(target),6L);
+        assertEquals(WorkResult.State.IDLE,new MachineModule(Feature.WINE).tick(f.context()).state());
+        assertTrue(f.observed.isEmpty()); assertEquals(0,f.navigationCalls); assertEquals(6L,f.profile.wineBatchSchedule.nextDueDay());
+    }
+
+    @Test void deferredWineResumeKeepsConfirmedMembersRemovedAndRevalidatesHeldIngredients() {
+        Fixture f=new Fixture(); f.equipHoe(); f.inventory[1]=tomato(1,12); f.retryablePaths=true;
+        Pos first=f.machine(PoiKind.WINE_KEG,0,false,false,false),second=f.machine(PoiKind.WINE_KEG,10,false,false,false);
+        AutomationEngine engine=new AutomationEngine(List.of(new MachineModule(Feature.WINE)));
+        engine.startOnce(f.context(),Feature.WINE);
+        for(int i=0;i<150 && f.consumed<3;i++){engine.tick(f.context());f.advance();}
+        f.blockedPaths.add(second);
+        for(int i=0;i<150 && engine.state()!=AutomationEngine.State.WAITING;i++){engine.tick(f.context());f.advance();}
+        assertEquals(AutomationEngine.State.WAITING,engine.state()); assertEquals(List.of(second),f.profile.wineBatchSchedule.remaining());
+        assertEquals(6L,f.profile.nextEligibleDay.get(WineBatchRules.key(first))); assertEquals(1,f.machineClicks());
+        f.blockedPaths.clear(); Arrays.fill(f.inventory,ItemData.EMPTY); f.equipHoe(); f.inventory[7]=tomato(2,6); f.ticks+=1200;
+        f.runUntilStopped(engine,200); assertEquals(AutomationEngine.State.COMPLETE,engine.state());
+        assertEquals(2,f.machineClicks()); assertEquals(List.of(1,2),f.usedGrades); assertFalse(f.profile.wineBatchSchedule.active());
+    }
+
     private static final class Fixture implements WorldAccess, ActionPort, Navigation {
         private record NavVisit(Pos target,double reach) { }
         final Profile profile = new Profile();
@@ -2031,6 +2083,7 @@ class LogisticsTest {
         final List<GroundItem> ground=new ArrayList<>();
         final Deque<ItemData> tomatoRefills=new ArrayDeque<>();
         final Set<Pos> unloaded=new HashSet<>(), blockedPaths=new HashSet<>(), unstandable=new HashSet<>();
+        final List<Pos> observed=new ArrayList<>(); boolean observeLoads,observeNeverLoads,retryablePaths; Pos unloadPreviousObservation,lastDestination;
         Integer wineClockYear=20;
         long ticks, dayTime=1000, sequence;
         double playerX=.5;
@@ -2243,9 +2296,20 @@ class LogisticsTest {
         @Override public void stopMovement() { }
         @Override public void cancel() { action = null; outcome = new ActionOutcome(ActionOutcome.State.CANCELLED,""); }
         @Override public Navigation.Result moveTo(Pos target,double reach,Context context) {
+            lastDestination=target;
             navigationCalls++; navigationHistory.add(new NavVisit(target,reach));
+            if(observeLoads && unloaded.remove(target)) return Navigation.Result.MOVING;
             return blockedPaths.contains(target) || reach<minimumReaches.getOrDefault(target,0.0) ? Navigation.Result.BLOCKED : Navigation.Result.ARRIVED;
         }
+        @Override public Navigation.Result moveToObserve(Pos target,double reach,Context context) {
+            lastDestination=target;
+            if(!observeLoads)return Navigation.Result.BLOCKED;
+            observed.add(target);if(observeNeverLoads)return Navigation.Result.MOVING;unloaded.remove(target);
+            if(unloadPreviousObservation!=null) {unloaded.add(unloadPreviousObservation);unloadPreviousObservation=null;}
+            return Navigation.Result.MOVING;
+        }
+        @Override public boolean retryableFailure(){return retryablePaths;}
+        @Override public Pos failureDestination(){return lastDestination;}
         @Override public void reset() { }
     }
 }

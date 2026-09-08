@@ -472,6 +472,30 @@ class LoggingModuleTest {
         assertEquals(WorkResult.State.BLOCKED,foreign.step().state()); assertTrue(foreign.actions.isEmpty());
     }
 
+    @Test void loggingObservesAnUnloadedPlotBeforeCreatingItsDurableCutBatch() {
+        Fixture f=new Fixture(2); f.observeLoads=true;
+        Pos far=f.profile.loggingPlots.get(1).corner(); f.unloaded.add(far);
+        assertEquals(WorkResult.State.BUSY,f.step().state()); assertEquals(List.of(far),f.observed);
+        assertFalse(f.profile.loggingRunActive); assertTrue(f.actions.isEmpty());
+        assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(4,f.chops); assertEquals(8,f.plants);
+    }
+
+    @Test void dailyLoggingFutureGateNeverVisitsItsUnloadedPlots() {
+        Fixture f=new Fixture(1); f.continuous(); f.profile.loggingMode=LoggingMode.DAILY_GROWN; f.observeLoads=true;
+        f.profile.nextEligibleDay.put(LoggingRules.DUE_KEY,11L); f.unloaded.add(f.profile.loggingPlots.get(0).corner());
+        assertEquals(WorkResult.State.IDLE,f.step().state()); assertTrue(f.observed.isEmpty()); assertTrue(f.actions.isEmpty());
+    }
+
+    @Test void retryableObservationFailureDuringDurableReplantStillPausesTheEngine() {
+        Fixture f=new Fixture(1); Pos corner=f.profile.loggingPlots.get(0).corner(); f.setPlot(0,"minecraft:air");
+        f.profile.loggingRunActive=true;f.profile.loggingRemainingPlots.add(corner);f.profile.loggingReplantingPlots.add(corner);
+        f.unloaded.add(corner);f.retryableObserve=true;
+        AutomationEngine engine=new AutomationEngine(List.of(f.module));engine.startOnce(f.context,Feature.LOGGING);
+        engine.tick(f.context);f.ticks++;engine.tick(f.context);
+        assertEquals(AutomationEngine.State.PAUSED,engine.state());assertTrue(f.profile.loggingRunActive);
+        assertEquals(List.of(corner),f.profile.loggingReplantingPlots);assertTrue(f.actions.isEmpty());
+    }
+
     @Test void cleanupWaitsForTwentyUnchangedTicksAndUsesTheLateThirtyFourSaplings() {
         Fixture f=cleanupFixture(); f.add(LoggingRules.SAPLING,28); enterCleanup(f);
         quietTicks(f,19); assertTrue(f.actions.isEmpty());
@@ -578,7 +602,8 @@ class LoggingModuleTest {
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
         double playerX=.5;
         int fingerprintCalls,fingerprintEpoch,omittedInventorySlot=-1;
-        boolean fingerprintSupported=true,duplicateInventorySlot,manualCraftBatches;
+        boolean fingerprintSupported=true,duplicateInventorySlot,manualCraftBatches,observeLoads,retryableObserve;
+        final List<Pos> observed=new ArrayList<>();
         int containerId,nextContainer=1; Pos opened;
         Action pending; ActionOutcome outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
         boolean craftingGridEmpty=true,failNextCheckpoint,failCompletionCheckpoint,blockPlantingApproach,keepPlantingOccluded;
@@ -743,6 +768,11 @@ class LoggingModuleTest {
             assertTrue(profile.loggingRunActive); assertTrue(session.allows(profile,Feature.LOGGING));
             loggingMoves++; loggingTargets.add(pos); return moveTo(pos,reach,c);
         }
+        public Result moveToObserve(Pos pos,double reach,Context c) {
+            if(!observeLoads)return Result.BLOCKED;
+            observed.add(pos);unloaded.remove(pos);return Result.MOVING;
+        }
+        public boolean retryableFailure(){return retryableObserve;}
         public Result moveToLoggingPlanting(List<Pos> targets,Context c) {
             assertTrue(profile.loggingRunActive); assertTrue(session.allows(profile,Feature.LOGGING));
             assertFalse(targets.isEmpty()); assertTrue(targets.size()<=4);

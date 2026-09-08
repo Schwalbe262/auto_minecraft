@@ -64,7 +64,11 @@ public final class WineSurplusShippingModule implements AutomationModule {
                 revoke();
                 return finish(c,WorkResult.blocked("Wine reserve registrations or game day changed; verification must restart"));
             }
-            if (reservePositions.stream().anyMatch(p -> !c.world().loaded(p))) return finish(c,WorkResult.blocked("A wine reserve is unloaded; surplus sales are paused"));
+            // Travel/observe reserves one at a time, but NEVER grant or exercise a
+            // sale permit while any registered reserve is currently unloaded.
+            if ((stage==Stage.PERMIT || stage==Stage.SHIPPING || stage==Stage.TRANSFER)
+                && reservePositions.stream().anyMatch(p -> !c.world().loaded(p)))
+                return finish(c,WorkResult.blocked("A wine reserve is unloaded; surplus sales are paused"));
         }
         switch (stage) {
             case FIND -> {
@@ -100,7 +104,7 @@ public final class WineSurplusShippingModule implements AutomationModule {
             case RESERVE -> {
                 if (reserveIndex>=reserves.size()) { stage=Stage.PERMIT; break; }
                 Navigation.Result nav=c.navigation().moveTo(reserves.get(reserveIndex).pos(),2.5,c);
-                if (nav==Navigation.Result.BLOCKED) return finish(c,WorkResult.blocked("A wine reserve cannot be reached; surplus sales are paused"));
+                if (nav==Navigation.Result.BLOCKED) return finish(c,ModuleSupport.navigationResult(c,"A wine reserve cannot be reached; surplus sales are paused"));
                 if (nav==Navigation.Result.ARRIVED) submit(c,new Action.UseBlock(reserves.get(reserveIndex).pos(),Action.Use.OPEN_CONTAINER),Pending.OPEN_RESERVE);
             }
             case INSPECT -> {
@@ -127,7 +131,7 @@ public final class WineSurplusShippingModule implements AutomationModule {
             case SHIPPING -> {
                 if (!permitFresh(c)) return finish(c,WorkResult.blocked("Surplus wine permission expired; reserve verification must restart"));
                 Navigation.Result nav=c.navigation().moveTo(shipping.get(shippingIndex).pos(),2.5,c);
-                if (nav==Navigation.Result.BLOCKED) return finish(c,WorkResult.blocked("Surplus wine shipping bin cannot be reached"));
+                if (nav==Navigation.Result.BLOCKED) return finish(c,ModuleSupport.navigationResult(c,"Surplus wine shipping bin cannot be reached"));
                 if (nav==Navigation.Result.ARRIVED) submit(c,new Action.UseBlock(shipping.get(shippingIndex).pos(),Action.Use.OPEN_CONTAINER),Pending.OPEN_SHIPPING);
             }
             case TRANSFER -> {
