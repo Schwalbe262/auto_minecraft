@@ -1616,3 +1616,18 @@ including 14 disabled-feature suspension regressions. Final candidate SHA-256:
 `BECBCA6F1347E698D6928A1EEB3C83F603FBDF7F52E781A58A9227D6DCF619C7`.
 This engine candidate is built but intentionally not installed while the user
 plays; the running client remains on `0DFD52E2…77990EDE`.
+
+### Requested deployment and reconnect — 2026-09-09 02:00 KST
+
+After the user requested a restart, source `60c15fb` / the `BECBCA6F…619C7`
+candidate above was installed into the existing Society Sunlit Valley instance.
+The previous client closed normally and exactly one replacement Society client
+was verified. The installed JAR hash matches the tested build. The entire saved
+profile is byte-identical to its pre-restart backup, including logging OFF and
+the five pending logging plots.
+
+A fresh diagnostic at `2026-09-08T17:00:30.318944600Z` confirmed connection to the
+configured server and the real player in-world at Y=72, with health and food 20.
+Automation was left OFF; no start command or work action was issued. This verifies
+installation and reconnection only, not native acceptance of logging-goal access,
+queued replanting, stair timing, or the disabled-logging execution path.
