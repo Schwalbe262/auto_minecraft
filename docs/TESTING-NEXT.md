@@ -1269,3 +1269,14 @@ were absent from the final player inventory and the next wine batch was six
 game days later. Shipping confirms inputs, not money payout. A deliberate pause
 in the subsequent idle state allowed normal same-instance route deployment;
 neither this short cycle nor the restart is multi-hour uninterrupted acceptance.
+
+On the deployed dense-rack build, the first 32-minute continuous observation
+covered two due harvest/storage/delivery cycles, one full preserves cycle and
+three actual sleep/day transitions. The 1,920 one-second samples contained no
+OFF state, disconnect, navigation failure, failure fence or trace-write failure.
+All 832 observed final receipts succeeded, with contiguous IDs; the final
+inventory had no tracked work products, normal menu/cursor and full health/food.
+The preserves cycle retained its ordinary three-day deadline. Wine correctly
+remained pending until its six-day common batch deadline; this interval does
+not yet establish live wine routing on the changed build. No restart or manual
+control occurred within this window. Multi-hour acceptance remains open.
