@@ -101,7 +101,7 @@ final class NativeInventoryConsolidation {
             verifiedInventoryIndices.add(index);
         }
         // This cannot acknowledge a click or change the next primitive. The
-        // core excludes the source and implicit receivers. Only after an exact
+        // core excludes participants and same-identity implicit receivers. Only after an exact
         // MERGE may a verified pickup fill the EMPTY borrowed scratch: the next
         // exact inverse SWAP preserves that pickup and restores the borrowed item.
         if (!transaction.rebaseVerifiedUpdates(inventory(live),verifiedInventoryIndices,verifiedProductionAdditions)) return false;
@@ -150,7 +150,9 @@ final class NativeInventoryConsolidation {
         // This candidate is an actual full-menu server packet, not a live menu
         // or applied single-slot snapshot. An unrelated pickup may be included
         // in the same packet as the native primitive's result. The core still
-        // verifies that exact primitive and rejects its participants/receivers.
+        // verifies that exact primitive and rejects its participants and additions
+        // sharing the moved item's native identity. A distinct product in the
+        // destination region cannot be part of that native QUICK_MOVE.
         var additions=concurrentProductionAdditions(transaction,inventoryAfter,protectedHotbar);
         var confirmation=transaction.acknowledge(inventoryAfter,passiveUpdates,additions);
         if (confirmation!=InventoryConsolidation.Confirmation.WAIT) {
@@ -158,12 +160,26 @@ final class NativeInventoryConsolidation {
         }
         return confirmation;
     }
+    /** A real full reply can prove manual inverse restoration, never a resend or successful merge. */
+    boolean acknowledgeCancelledRestoration(ServerObservations.NativeMenuSnapshot acknowledgement) {
+        if (acknowledgement==null || !acknowledgement.carried().isEmpty()) return false;
+        List<InventoryConsolidation.Stack> after=stacks(acknowledgement.items());
+        if (after.size()!=expectedMenu.size()) return false;
+        for (int slot=0;slot<after.size();slot++) {
+            boolean inventorySlot=false;
+            for (int index:menuSlots) if (index==slot) { inventorySlot=true; break; }
+            if (!inventorySlot && !expectedMenu.get(slot).equals(after.get(slot))) return false;
+        }
+        if (!transaction.acknowledgeCancelledRestoration(inventory(after))) return false;
+        expectedMenu=after;acknowledgedSequence=acknowledgement.seq();
+        return true;
+    }
     static Set<Integer> concurrentProductionAdditions(InventoryConsolidation transaction,
             InventoryConsolidation.Snapshot after,int protectedHotbar) {
         Set<Integer> additions=new HashSet<>();
         var before=transaction.expectedLive();
         for (int index=0;index<36;index++) {
-            if (index!=protectedHotbar && transaction.allowsConcurrentAddition(index)
+            if (index!=protectedHotbar && transaction.allowsConcurrentAddition(index,after.items().get(index))
                 && productionAddition(before.items().get(index),after.items().get(index))) additions.add(index);
         }
         return Set.copyOf(additions);

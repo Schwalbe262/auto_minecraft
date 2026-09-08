@@ -51,11 +51,16 @@ class NativeConsolidationConcurrentPickupTest {
         assertEquals(WAIT,transaction.acknowledge(new Snapshot(items),Set.of(),classify(transaction,items)));
         assertEquals(before,transaction.expectedLive());assertEquals(click,transaction.click());
     }
-    @Test void everyImplicitReceiverAndProtectedHoeSlotStayOutsideTheException() {
-        for (int index:new int[]{4,6,9,18,19,35}) {
+    @Test void participantsExistingReceiversAndProtectedHoeStayOutsideTheException() {
+        for (int index:new int[]{4,6,18,19}) {
             var items=initial();var transaction=transaction(items);swapOut(transaction,items);
             items.set(index,wine(1));
             assertFalse(classify(transaction,items).contains(index));
+        }
+        for (int index:new int[]{9,35}) {
+            var items=initial();var transaction=transaction(items);swapOut(transaction,items);
+            items.set(index,wine(1));
+            assertTrue(classify(transaction,items).contains(index),"Distinct wine cannot receive a tomato QUICK_MOVE");
         }
     }
     @Test void nativeItemWhitelistIsNotAnyPositiveInventoryChange() {

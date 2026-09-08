@@ -87,16 +87,17 @@ class InventoryConsolidationConcurrentAdditionTest {
         assertEquals(before,operation.expectedLive());
     }
 
-    @Test void sourceScratchAndTheEntireImplicitMergeDestinationRegionAreIneligible() {
+    @Test void sourceAndScratchStayExcludedAndReceiverRegionRequiresDistinctIdentityEvidence() {
         var items=initial(); var operation=transaction(items);
         for(int index:new int[]{-1,36,18,6}) assertFalse(operation.allowsConcurrentAddition(index));
         assertTrue(operation.allowsConcurrentAddition(19),"An untouched main slot is eligible for a SWAP only");
         swapOut(operation,items);
         for(int index=9;index<36;index++) assertFalse(operation.allowsConcurrentAddition(index));
         assertFalse(operation.allowsConcurrentAddition(6)); assertTrue(operation.allowsConcurrentAddition(5));
-        for(int index:new int[]{5,6,18,19,35}) {
+        assertTrue(operation.allowsConcurrentAddition(35,stack("wine{Year:10}",1)));
+        assertFalse(operation.allowsConcurrentAddition(35,stack("tomato",1)));
+        for(int index:new int[]{6,18,19}) {
             var after=new ArrayList<>(items); moved(after); after.set(index,stack("wine{Year:10}",1));
-            if(index==5) continue;
             var before=operation.expectedLive();
             assertEquals(WAIT,operation.acknowledge(snapshot(after),Set.of(),Set.of(index)));
             assertEquals(before,operation.expectedLive());

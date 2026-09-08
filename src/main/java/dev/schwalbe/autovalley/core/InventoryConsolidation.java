@@ -41,6 +41,10 @@ public final class InventoryConsolidation {
     }
     public Snapshot expectedLive() { return before; }
     public boolean complete() { return stage==Stage.DONE; }
+    /** A confirmed outward SWAP keeps its borrowed item owed until exact restoration. */
+    public boolean requiresRestoration() {
+        return !plan.direct() && plan.requiresRestore() && acknowledgedPrimitives>0 && stage!=Stage.DONE;
+    }
     public int freedSlots() { return Math.max(0,before.emptySlots()-initial.emptySlots()); }
     public Click click() {
         return switch(stage) {
@@ -52,10 +56,28 @@ public final class InventoryConsolidation {
 
     /** Read-only structural eligibility; never proves packet origin or item type. */
     public boolean allowsConcurrentAddition(int index) {
-        if (stage==Stage.DONE || index<0 || index>=36
-                || index==plan.sourceIndex() || index==plan.scratchHotbar()) return false;
+        if (!nonparticipant(index)) return false;
         return stage!=Stage.MERGE || index!=plan.quickMoveIndex()
                 && (index<9)==(plan.quickMoveIndex()<9);
+    }
+
+    /**
+     * A different native identity cannot be a receiver of this QUICK_MOVE, even
+     * in its destination region. It may therefore be separated from the exact
+     * conserved move when an actual server reply proves a positive addition.
+     * The native caller still proves the item whitelist and packet origin.
+     */
+    public boolean allowsConcurrentAddition(int index,Stack after) {
+        if (!nonparticipant(index) || after==null || after.empty()) return false;
+        Stack old=before.items().get(index);
+        return after.count()>old.count() && (old.empty() || old.sameKind(after))
+                && !after.identity().equals(initial.items().get(plan.sourceIndex()).identity());
+    }
+
+    private boolean nonparticipant(int index) {
+        return stage!=Stage.DONE && index>=0 && index<36
+                && index!=plan.sourceIndex() && index!=plan.scratchHotbar()
+                && (stage!=Stage.MERGE || index!=plan.quickMoveIndex());
     }
 
     /**
@@ -65,8 +87,10 @@ public final class InventoryConsolidation {
      * deltas; this pure transaction has no packet or item-type information.
      *
      * The original source and borrowed hotbar slot remain exact throughout the
-     * transaction. Before QUICK_MOVE, its entire implicit destination region also
-     * remains exact, not merely the planner's advertised partial stacks. Before
+     * transaction. Before QUICK_MOVE, its implicit destination region also remains
+     * exact unless a separately verified positive production pickup has a native
+     * identity that cannot receive that move. The legacy overload grants no such
+     * exception. Before
      * RESTORE, only the two exact swap partners participate in the remaining click.
      * A rejected refresh leaves both the baseline and progress untouched.
      */
@@ -99,7 +123,9 @@ public final class InventoryConsolidation {
             if (index==plan.scratchHotbar() && (!allowsRestoreScratchPickup()
                     || !verifiedProductionAdditions.contains(index) || after.items().get(index).limit()>64)) return false;
             if (stage==Stage.MERGE && (index==plan.quickMoveIndex()
-                    || (index<9)!=(plan.quickMoveIndex()<9))) return false;
+                    || (index<9)!=(plan.quickMoveIndex()<9)
+                        && (!verifiedProductionAdditions.contains(index)
+                            || !allowsConcurrentAddition(index,after.items().get(index))))) return false;
         }
         for (int index=0;index<36;index++) {
             if (!before.items().get(index).equals(after.items().get(index))
@@ -114,6 +140,20 @@ public final class InventoryConsolidation {
                 && !initial.items().get(plan.scratchHotbar()).empty()
                 && before.items().get(plan.scratchHotbar()).empty()
                 && before.items().get(plan.sourceIndex()).equals(initial.items().get(plan.scratchHotbar()));
+    }
+
+    /**
+     * Resolves only a cancelled transaction's confirmed borrowed item using an
+     * independently observed exact inverse SWAP. This does not prove a merge,
+     * retry an operation, or change the failed/cancelled action's outcome.
+     */
+    public boolean acknowledgeCancelledRestoration(Snapshot after) {
+        if (!requiresRestoration() || after==null || before.equals(after)) return false;
+        List<Stack> restored=new ArrayList<>(before.items());
+        Collections.swap(restored,plan.sourceIndex(),plan.scratchHotbar());
+        if (!restored.equals(after.items())) return false;
+        before=after;stage=Stage.DONE;
+        return true;
     }
 
     /** An unrelated/unchanged refresh never authorizes a subsequent primitive. */
@@ -136,9 +176,10 @@ public final class InventoryConsolidation {
     /**
      * A genuine full server ACK may contain an unrelated production-item pickup.
      * The native caller verifies that item's whitelist and authoritative origin;
-     * only structurally untouched slots with exact positive additions are eligible
-     * here. A temporary comparison baseline removes those additions from the click
-     * proof, but the actual permutation/conserved move must still be present.
+     * only nonparticipant slots with exact positive additions of a different
+     * native identity are eligible here. A temporary comparison baseline removes
+     * those additions from the click proof, but the actual permutation/conserved
+     * move must still be present.
      * Failed/no-op ACKs never change the baseline, stage or completed-click count.
      */
     public Confirmation acknowledge(Snapshot after,Set<Integer> verifiedPassiveUpdates,
@@ -156,10 +197,9 @@ public final class InventoryConsolidation {
             comparisonItems.set(index,now);
         }
         for (Integer index:verifiedProductionAdditions) {
-            if (index==null || !allowsConcurrentAddition(index) || verifiedPassiveUpdates.contains(index)) return Confirmation.WAIT;
-            Stack old=before.items().get(index),now=after.items().get(index);
-            if (now.empty() || now.count()<=old.count() || !old.empty() && !old.sameKind(now)
-                    || now.identity().equals(initial.items().get(plan.sourceIndex()).identity())) return Confirmation.WAIT;
+            if (index==null || index<0 || index>=36 || verifiedPassiveUpdates.contains(index)) return Confirmation.WAIT;
+            Stack now=after.items().get(index);
+            if (!allowsConcurrentAddition(index,now)) return Confirmation.WAIT;
             comparisonItems.set(index,now);
         }
         Snapshot comparisonBefore=new Snapshot(comparisonItems);
