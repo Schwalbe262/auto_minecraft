@@ -567,3 +567,16 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   receipts, monetary payout, or recurrence of the prior rare merge race. The
   requested three hours remain incomplete; the earliest qualifying end for this
   window is **2026-09-08 02:54:25 UTC**, with earlier interrupted time excluded.
+
+### Manual handoff boundary found during the continuous observation
+
+Ordinary manual pause followed by F8 uses fresh module/navigation state while
+retaining registered locations and persisted production deadlines. The operator's
+recent manual movement and F8 restart succeeded, but that is not an inventory-
+transaction interruption test. Read-only review found a remaining limitation:
+late consolidation acknowledgement handling can release a cancelled transaction
+after an intermediate primitive, without preserving its remaining borrowed-slot
+restoration. Cancellation sends no cleanup input. Do not claim that arbitrary
+mid-transaction handoff is fully supported, or silently replay/clear an uncertain
+operation. Safe pause/resume restoration still needs implementation and dedicated
+verification. No new inventory interruption was induced in the running soak test.
