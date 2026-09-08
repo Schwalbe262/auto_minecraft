@@ -3,7 +3,11 @@ package dev.schwalbe.autovalley.core;
 import java.util.*;
 
 public final class Profile {
-    public int schemaVersion = 3;
+    public int schemaVersion = 4;
+    public NavigationMode navigationMode = NavigationMode.TERRAIN;
+    public boolean useWaypointHints = true;
+    /** Coordinate drafts remain separate from registered, authorized work locations. */
+    public List<CoordinateDestination> coordinateDestinations = new ArrayList<>();
     public List<Poi> pois = new ArrayList<>();
     public Map<String,MachineGroup> machineGroups = new LinkedHashMap<>();
     public List<Farm> farms = new ArrayList<>();

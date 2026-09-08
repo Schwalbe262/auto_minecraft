@@ -10,6 +10,25 @@ public final class RegistrationRules {
     private RegistrationRules() {}
 
     public enum Group { ALL, FARMS, MACHINES, CONTAINERS, BEDS }
+    public enum CoordinateState { MOVE_ONLY, UNLOADED, TYPE_MISMATCH, READY_TO_CONFIRM }
+
+    public static int coordinateRows(int height) { return Math.max(1, (height - 57 - 104) / 23); }
+    public static CoordinateDestination coordinateDraft(String name, String x, String y, String z, PoiKind kind,
+            String classifier, Integer formYear, Integer currentYear, boolean contentsChecked) {
+        if (requiresContentsConfirmation(kind) && !contentsChecked)
+            throw new IllegalArgumentException("autovalley.error.container_unchecked");
+        Integer cohort = kind == PoiKind.WINE_CHEST ? WineCohortRules.parseChecked(classifier, formYear, currentYear) : null;
+        CoordinateDestination draft = new CoordinateDestination(name == null ? "" : name.trim(),
+                CoordinateDestinationRules.parsePosition(x, y, z), kind, cohort, contentsChecked);
+        CoordinateDestinationRules.validate(draft); return draft;
+    }
+    public static CoordinateState coordinateState(CoordinateDestination draft, Predicate<Pos> loaded, Function<Pos, BlockData> blocks) {
+        if (draft.facilityKind() == null) return CoordinateState.MOVE_ONLY;
+        if (!loaded.test(draft.pos())) return CoordinateState.UNLOADED;
+        BlockData block = blocks.apply(draft.pos());
+        return block != null && draft.pos().equals(block.pos()) && CoordinateDestinationRules.matches(draft.facilityKind(), block)
+                ? CoordinateState.READY_TO_CONFIRM : CoordinateState.TYPE_MISMATCH;
+    }
 
     public static Group group(BlockData block) {
         if (block.tomato()) return Group.FARMS;
@@ -21,15 +40,7 @@ public final class RegistrationRules {
     }
 
     public static List<PoiKind> kinds(BlockData block) {
-        return switch (block.id()) {
-            case "society:wine_keg" -> List.of(PoiKind.WINE_KEG);
-            case "society:preserves_jar" -> List.of(PoiKind.PRESERVES_JAR);
-            case "shippingbin:smart_shipping_bin" -> List.of(PoiKind.SHIPPING_BIN);
-            case "minecraft:crafting_table" -> List.of(PoiKind.LOGGING_CRAFTING_TABLE);
-            default -> block.id().endsWith("_bed") ? List.of(PoiKind.BED)
-                    : StorageSurveyRules.ordinaryStorage(block) ? List.of(PoiKind.STORAGE_CANDIDATE, PoiKind.TOMATO_CHEST, PoiKind.WINE_CHEST, PoiKind.WOOD_CHEST)
-                    : block.flag("container") ? List.of(PoiKind.TOMATO_CHEST, PoiKind.WINE_CHEST) : List.of();
-        };
+        return CoordinateDestinationRules.kinds(block);
     }
 
     public static Integer classifier(PoiKind kind, String text) {
@@ -72,7 +83,7 @@ public final class RegistrationRules {
     }
 
     public static boolean requiresContentsConfirmation(PoiKind kind) {
-        return kind == PoiKind.TOMATO_CHEST || kind == PoiKind.WINE_CHEST || kind == PoiKind.WOOD_CHEST;
+        return CoordinateDestinationRules.requiresContentsConfirmation(kind);
     }
 
     public static int loggingCheckTicks(String seconds) {

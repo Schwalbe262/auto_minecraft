@@ -175,19 +175,19 @@ class ProfileStoreTest {
         String legacy="{\"schemaVersion\":1,\"wineCycleDays\":7}";
         Files.writeString(file,legacy);
         ProfileStore store=new ProfileStore(directory); Profile loaded=store.load(key);
-        assertEquals(3,loaded.schemaVersion); assertEquals(7,loaded.wineCycleDays);
+        assertEquals(4,loaded.schemaVersion); assertEquals(7,loaded.wineCycleDays);
         assertEquals(legacy,Files.readString(file),"reading must not overwrite the user's original profile");
         PendingMachineOutput output=pending(Feature.WINE,PendingMachineOutput.Phase.AWAITING_PICKUP);
         loaded.pendingMachineOutputs.put(output.id(),output); store.save(key,loaded);
         Profile saved=store.load(key);
-        assertEquals(3,saved.schemaVersion,"older schemas must not silently ignore durable output or logging progress");
+        assertEquals(4,saved.schemaVersion,"older schemas must not silently ignore navigation drafts or durable work progress");
         assertEquals(Map.of(output.id(),output),saved.pendingMachineOutputs);
         assertEquals(legacy,Files.readString(directory.resolve(key+".json.bak")));
     }
 
     @Test void futureProfileSchemaIsPreservedAndRejected() throws Exception {
         String key=ProfileStore.key("future-schema"); Path file=directory.resolve(key+".json");
-        String future="{\"schemaVersion\":4}"; Files.writeString(file,future);
+        String future="{\"schemaVersion\":5}"; Files.writeString(file,future);
         assertThrows(IOException.class,() -> new ProfileStore(directory).load(key));
         assertEquals(future,Files.readString(file));
     }
