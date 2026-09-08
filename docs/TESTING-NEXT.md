@@ -1233,3 +1233,28 @@ checks, the interrupted logging routine has now completed through disposal,
 hotbar restoration, crafting, storage and byproduct delivery. These are staged
 live acceptance results across fixes/restarts, not a claim of one uninterrupted
 full-cycle run or several hours of endurance on the latest build.
+
+## Dense production-rack visit preference — 2026-09-08
+
+A synthetic two-aisle fixture exposed a bounded-search quality failure: a
+16-wide, four-high rack hidden behind a wall consumed the entire 512 visibility
+checks, returning the nearest occluded machine instead of a slightly farther
+machine in the current aisle. Removing only the origin's nearest-64 target cap
+did not fix the exhausted visibility budget.
+
+The preference now considers all loaded pending machines from each reached
+standing cell, checking at most the nearest eight there before exploring onward.
+The total 512 visibility-check and 512 visited-node limits remain. No pending
+machine is removed, and normal navigation, registered bounds, loaded geometry,
+reach and native clipping remain authoritative before an action. This is a
+bounded next-visit heuristic, not a globally shortest route guarantee.
+
+The regression selects the same-aisle machine with 170 checks rather than the
+old 512-check occluded fallback. Counts refer to interaction-check calls, not
+individual native raycasts. Reflection, shuffled registration and a modeled
+four-block-reach upper-rack case pass; the existing simple wall and immediately
+usable-machine cases retain their check counts. These are fixture measurements,
+not native clipping equivalence, live travel-distance or elapsed-time savings.
+Java 17 / Gradle 8.8 integrated
+`test build`: 75 suites, 951 tests, zero failures, errors or skips. Deployment
+and supervised route retesting follow separately.

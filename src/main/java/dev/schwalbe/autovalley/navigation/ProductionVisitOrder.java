@@ -10,7 +10,7 @@ import java.util.*;
  * machines are never removed, including unloaded or locally unreachable ones.
  */
 public final class ProductionVisitOrder {
-    static final int MAX_GOALS=64;
+    static final int MAX_CHECKS_PER_STANDING_CELL=8;
     static final int MAX_VISITED=512;
     static final int MAX_INTERACTION_CHECKS=512;
     private static final int[][] DIRECTIONS={{1,0},{0,1},{-1,0},{0,-1}};
@@ -49,7 +49,7 @@ public final class ProductionVisitOrder {
             if (world.canInteract(candidate.pos(),reach)) return candidate.index();
         }
         if (!world.canStand(feet) || !world.loaded(feet.offset(0,1,0)) || !world.loaded(feet.offset(0,-1,0))) return fallback;
-        List<Candidate> goals=remaining.stream().filter(candidate -> world.loaded(candidate.pos())).limit(MAX_GOALS).toList();
+        List<Candidate> goals=remaining.stream().filter(candidate -> world.loaded(candidate.pos())).toList();
         if (goals.isEmpty()) return fallback;
         PriorityQueue<Node> open=new PriorityQueue<>(Comparator.comparingDouble(Node::cost).thenComparingLong(Node::order));
         Map<Pos,Double> costs=new HashMap<>();Set<Pos> closed=new HashSet<>();
@@ -57,10 +57,18 @@ public final class ProductionVisitOrder {
         double goalRadiusSquared=(reach+2.5)*(reach+2.5);
         while (!open.isEmpty() && closed.size()<MAX_VISITED) {
             Node node=open.remove();if (!closed.add(node.pos())) continue;
-            // Shared Dijkstra visits candidate standing cells in real walk-cost
-            // order, so a close block behind a wall cannot beat a nearer aisle.
-            for (Candidate goal:goals) {
-                if (node.pos().distanceSquared(goal.pos())>goalRadiusSquared) continue;
+            // Consider all remaining loaded targets from each standing cell,
+            // rather than permanently excluding those outside the origin's
+            // nearest 64. A dense occluded rack must not spend the whole ray
+            // budget before the search can advance along the current aisle.
+            // This bounded preference is not a shortest-route guarantee: each
+            // cell checks only its nearest few targets, then explores onward.
+            List<Candidate> nearby=goals.stream()
+                .filter(goal -> node.pos().distanceSquared(goal.pos())<=goalRadiusSquared)
+                .sorted(Comparator.comparingDouble((Candidate goal) -> node.pos().distanceSquared(goal.pos()))
+                    .thenComparingInt(Candidate::index))
+                .limit(MAX_CHECKS_PER_STANDING_CELL).toList();
+            for (Candidate goal:nearby) {
                 if (interactionChecks++>=MAX_INTERACTION_CHECKS) return fallback;
                 if (world.canInteractFrom(node.pos(),goal.pos(),reach)) return goal.index();
             }
