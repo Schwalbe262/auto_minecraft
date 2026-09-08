@@ -1343,3 +1343,29 @@ live-retested. New-build stair, coordinate-UI and at-least-three-hour continuous
 acceptance remain open. Earlier old-build observations, operator-controlled
 F8 sessions and simulated gravity/drag tests must not be reported as that
 acceptance window.
+
+### Supervised descent retest — 2026-09-08
+
+This dated result supersedes the preceding not-yet-installed status. With the
+operator's approval, the same Society instance was normally restarted with the
+corrected JAR, SHA-256
+`6CEC3E5D806C12E71E8AA07EA33243FB7B24FFBCDDB7765444D7017CDB97C171`.
+Terrain navigation retained disabled waypoint hints and existing registrations.
+
+The previously failing descent passed twice, and two return trips also completed.
+These were movement-only tests: no inventory work or interaction action tickets
+were issued. The second downward trip took 21.118 seconds and completed without
+a last-failure record. A bounded high-frequency observer captured 415 of its
+423 client ticks. All 34 observed airborne ticks had no movement intent; active
+descent intents used the reduced 0.08 input strength. Six landing sequences
+completed. Five directly showed the final two quiet ticks; one had an unobserved
+tick at that boundary, so complete per-tick proof is not claimed.
+
+A separate explicit local-control pause during movement returned automation to
+OFF, with position stable for fourteen seconds afterward. This checks the local
+pause/control path, not physical F8 key dispatch through the game UI.
+
+A separate continuous observation began at 13:24:14 UTC and was still in progress
+at this retest checkpoint. It has not passed the three-hour acceptance criterion.
+Coordinate-UI acceptance also remains open; the supervised trips do not close
+either requirement.
