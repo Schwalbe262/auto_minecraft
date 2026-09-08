@@ -542,3 +542,28 @@ and the remaining production-to-storage/sale/sleep flow is still pending.
   `6D7E0389AE99F2F58346011D1ED9C3732138E8A4308856504F7D354CC245C8B5`.
   Build success and the bounded restoration do not establish post-installation
   stability. A new uninterrupted observation window must be verified separately.
+
+### User-started continuous cycle after the final F8 enable
+
+- After manual play, the operator confirmed deliberately enabling automation
+  with F8. The new window starts at its first final-ON sample,
+  **2026-09-07 23:54:24 UTC**. Earlier manual/off and preflight activity is
+  excluded; resetting this observation anchor is not a newly diagnosed bug.
+- The 681-test build waited normally until bedtime, received a bed-entry
+  acknowledgement, and showed four consecutive sleeping samples before day 353.
+  It then harvested and stored 556 tomatoes, confirmed deletion of 26 rotten
+  tomatoes, and deposited 4 pine tar into shipping.
+- One 32-container survey and two source visits acquired 766 grade-2 tomatoes.
+  All 144 preserves jars were processed: 720 tomatoes consumed, 46 returned, and
+  all 144 preserves shipped as **64 + 64 + 16**. Full-rack mature→working changes
+  and ingredient/product conservation corroborate 144 production acknowledgements.
+  First preserves activity through post-shipping waiting took **172.096 seconds**.
+- Through **2026-09-08 00:03:31 UTC**, all 350 consecutive post-preflight actions
+  reached success with none missing. All 548 state samples remained ON/connected,
+  with no native inventory/TrashSlot failure or late-reply flag, navigation error,
+  or trace-write failure. The largest sample gap was 1.010911 seconds. Final
+  inventory had no tracked ingredients/products, empty cursor and no pending output.
+- This verifies an early automatic cycle, not a per-position audit from generic
+  receipts, monetary payout, or recurrence of the prior rare merge race. The
+  requested three hours remain incomplete; the earliest qualifying end for this
+  window is **2026-09-08 02:54:25 UTC**, with earlier interrupted time excluded.
