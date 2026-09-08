@@ -1578,3 +1578,41 @@ including 17 new frontier, logging-approach and final-landing regressions.
 Candidate SHA-256:
 `0DFD52E2DCED6122B3E23C2B3D2829A14D12A2C839ED0F5CD6E5953077990EDE`.
 Native recovery and repeat logging/stair acceptance are pending for this artifact.
+
+### Recovery result and disabled-logging isolation — 2026-09-09 KST
+
+The `0DFD52E2…77990EDE` artifact was normally installed and the same client
+automatically reconnected. All 12 compared profile groups remained unchanged.
+The native 65-node ascent returned from the lower boundary to the surface in
+12.123 seconds from the first observed ON sample. No wrong-way descent occurred.
+The subsequent surface-to-tree search still exhausted 65,536 nodes after another
+42.893 seconds. No chopping, planting or work action receipt was observed. Thus
+boundary recovery is verified, but access to the actual logging goal remains
+unresolved; neither the new sapling queue nor matched stair descent speed has
+passed native acceptance in this session. The high-frequency interval observed
+1,055 of 1,101 ticks, with 46 missing ticks.
+
+Later manual movement, settings changes and F8 activation are outside that test.
+The user disabled logging, revealing a separate engine guard that treated its
+five remaining plots as a global lock despite no replanting, borrowed slot or
+unconfirmed action. The engine now grants a transient disabled-feature suspension
+only at a clean native boundary. Durable lists, schedules and the saved OFF toggle
+are not cleared or rewritten. Other modules may work and retry ordinary navigation;
+re-enabling logging waits until their active work yields. A different one-shot
+remains isolated. Action uncertainty, hotbar leases and output obligations remain
+blocking conditions. An OFF transition from an existing sapling resource wait
+also takes effect at the other module's clean DEFERRED boundary without querying
+the disabled logging plot to approve that unrelated retry.
+
+The user is now playing manually, so no further live control or restart is being
+performed. A private read-only goal probe correctly refused the open settings
+screen before querying geometry. Native goal/entrance inspection and installation
+of the disabled-feature change remain pending; do not credit manual activity or
+the older installed artifact as verification of this new engine behavior.
+
+Final Java 17 / Gradle `test build` passed **1,127 tests across 89 suites** with
+zero failures, errors or skips. The focused logging/engine suite passed 132 tests,
+including 14 disabled-feature suspension regressions. Final candidate SHA-256:
+`BECBCA6F1347E698D6928A1EEB3C83F603FBDF7F52E781A58A9227D6DCF619C7`.
+This engine candidate is built but intentionally not installed while the user
+plays; the running client remains on `0DFD52E2…77990EDE`.

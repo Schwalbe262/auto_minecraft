@@ -11,6 +11,7 @@ public final class AutomationEngine {
     private AutomationModule resourceWaiting;
     private String resourceWaitMessage;
     private long resourceCheckAt;
+    private boolean loggingSuspended;
     private long lastTick=Long.MIN_VALUE;
     private AutomationModule active;
     private State state=State.OFF;
@@ -49,20 +50,26 @@ public final class AutomationEngine {
         if (!c.profile().allowBackground && !c.world().player().focused()) { status="Focus the game first"; return false; }
         if (c.world().menu()==null || !c.world().menu().carried().empty()) { status="Put down the item on the cursor first"; return false; }
         if (c.world().menu().container()) { status="Close the container before starting"; return false; }
-        AutomationModule logging=null;
-        if (c.profile().loggingRunActive) {
-            if (mode==RunMode.ONCE && oneShotFeature!=Feature.LOGGING
-                || mode==RunMode.CONTINUOUS && !c.profile().enabled(Feature.LOGGING)) {
-                status=unfinishedLoggingMessage(); return false;
-            }
-            logging=modules.stream().filter(module -> module.feature()==Feature.LOGGING).findFirst().orElse(null);
-            if (logging==null) { status="미완료 벌목이 있지만 실행 모듈이 없어 재개할 수 없습니다."; return false; }
-        }
         String actionRejection=c.actions().startRejection();
         if (actionRejection!=null) { status=actionRejection; return false; }
         try { MachineOutputLedger.reconcile(c); }
         catch (RuntimeException e) { stop(c,State.ERROR,"Could not save machine output verification; no work started"); return false; }
         if (MachineOutputLedger.hasPending(c)) { status=pendingOutputMessage(c); return false; }
+        AutomationModule logging=null;
+        if (c.profile().loggingRunActive) {
+            if (mode==RunMode.ONCE && oneShotFeature!=Feature.LOGGING
+                || mode==RunMode.CONTINUOUS && !c.profile().enabled(Feature.LOGGING)) {
+                if (c.profile().enabled(Feature.LOGGING) || !resourceBoundary(c)) {
+                    status=unfinishedLoggingMessage(); return false;
+                }
+                // OFF suspends this feature, not its durable obligations. Native
+                // uncertainty, borrowed slots and output debt still prevent a grant.
+                loggingSuspended=true;
+            } else {
+                logging=modules.stream().filter(module -> module.feature()==Feature.LOGGING).findFirst().orElse(null);
+                if (logging==null) { status="미완료 벌목이 있지만 실행 모듈이 없어 재개할 수 없습니다."; return false; }
+            }
+        }
         retryAt=0;
         // A parked hotbar item may itself be a tomato, wine, or shipping product.
         // Resume its whole durable logging routine before any ordinary consumer.
@@ -76,7 +83,7 @@ public final class AutomationEngine {
         c.navigation().reset();
         for (AutomationModule module : modules) module.reset();
         blockedThisSweep.clear();
-        deferred.clear(); clearResourceWait(); lastTick=Long.MIN_VALUE;
+        deferred.clear(); clearResourceWait(); loggingSuspended=false; lastTick=Long.MIN_VALUE;
         active=null;
         c.session().oneShotFeature=null;
         c.session().activeMachineOutputId=null;
@@ -98,17 +105,7 @@ public final class AutomationEngine {
             if (MachineOutputLedger.hasPending(c) && (active==null || !MachineOutputLedger.ownsActive(c,active.feature()))) {
                 stop(c,State.PAUSED,pendingOutputMessage(c)); return;
             }
-            if (c.profile().loggingRunActive) {
-                if (mode==RunMode.ONCE && oneShotFeature!=Feature.LOGGING
-                    || mode==RunMode.CONTINUOUS && !c.profile().enabled(Feature.LOGGING)) {
-                    stop(c,State.PAUSED,unfinishedLoggingMessage()); return;
-                }
-                AutomationModule logging=modules.stream().filter(module -> module.feature()==Feature.LOGGING).findFirst().orElse(null);
-                if (logging==null || resourceWaiting!=logging && active!=null && active!=logging) {
-                    stop(c,State.PAUSED,"미완료 벌목을 먼저 재개해야 합니다. 다른 작업은 진행하지 않았습니다."); return;
-                }
-                if (resourceWaiting!=logging) active=logging;
-            }
+            if (!refreshLoggingOwnership(c)) return;
             if (!refreshResourceWait(c)) return;
             if (mode==RunMode.ONCE) { tickOnce(c); return; }
             deferred.keySet().removeIf(module -> !c.profile().enabled(module.feature()));
@@ -133,6 +130,7 @@ public final class AutomationEngine {
             }
             // Never preempt another module's BUSY/native transaction. Once it yields,
             // supplied saplings take priority over starting another ordinary consumer.
+            if (!refreshLoggingOwnership(c)) return;
             if (!refreshResourceWait(c)) return;
             if (active!=null) { state=State.RUNNING; status="미완료 벌목 재식재 다시 확인"; retryAt=0; return; }
             String blocked=blockedThisSweep.values().stream().findFirst().orElseGet(() -> deferred.values().stream().map(DeferredRetry::message).findFirst().orElse(null));
@@ -209,6 +207,46 @@ public final class AutomationEngine {
         // Keep the module's confirmed PLANT phase, not an action ticket or an outcome.
         return true;
     }
+    private boolean refreshLoggingOwnership(Context c) {
+        if (!c.profile().loggingRunActive) { loggingSuspended=false; return true; }
+        boolean explicitLogging=mode==RunMode.ONCE && oneShotFeature==Feature.LOGGING;
+        if (loggingSuspended) {
+            if (c.profile().loggingHotbarLease!=null) {
+                stop(c,State.PAUSED,"벌목 보류 중 임시 단축바 복원이 필요해 중지했습니다."); return false;
+            }
+            // A selected one-shot stays isolated even if the saved switch changes.
+            if (mode==RunMode.ONCE && !explicitLogging) return true;
+            if (!c.profile().enabled(Feature.LOGGING) && !explicitLogging) return true;
+            // Let the current module finish its own BUSY/acknowledged work first.
+            if (active!=null && active.feature()!=Feature.LOGGING) return true;
+            if (!resourceBoundary(c)) {
+                stop(c,State.PAUSED,"벌목 재개 전 현재 조작을 안전하게 마무리해야 합니다."); return false;
+            }
+            loggingSuspended=false;
+        }
+        if (!c.profile().enabled(Feature.LOGGING) && !explicitLogging) {
+            // An existing resource wait already yielded to this ordinary module;
+            // postpone the new OFF grant until that module reaches its boundary.
+            if (resourceWaiting!=null && active!=null && active!=resourceWaiting) return true;
+            if (!resourceBoundary(c)) {
+                stop(c,State.PAUSED,"벌목을 껐지만 미확인 조작 또는 임시 아이템 복원이 남아 있습니다."); return false;
+            }
+            if (active!=null && active.feature()==Feature.LOGGING) {
+                c.actions().stopMovement(); c.navigation().reset(); active.reset(); active=null;
+            }
+            clearResourceWait(); loggingSuspended=true;
+            return true;
+        }
+        if (mode==RunMode.ONCE && !explicitLogging) {
+            stop(c,State.PAUSED,unfinishedLoggingMessage()); return false;
+        }
+        AutomationModule logging=modules.stream().filter(module -> module.feature()==Feature.LOGGING).findFirst().orElse(null);
+        if (logging==null || resourceWaiting!=logging && active!=null && active!=logging) {
+            stop(c,State.PAUSED,"미완료 벌목을 먼저 재개해야 합니다. 다른 작업은 진행하지 않았습니다."); return false;
+        }
+        if (resourceWaiting!=logging) active=logging;
+        return true;
+    }
     private boolean refreshResourceWait(Context c) {
         if (resourceWaiting==null || active!=null && active!=resourceWaiting) return true;
         if (!c.profile().loggingRunActive || !resourceBoundary(c)) {
@@ -230,8 +268,16 @@ public final class AutomationEngine {
     }
     private void clearResourceWait() { resourceWaiting=null; resourceWaitMessage=null; resourceCheckAt=0; }
     private boolean defer(Context c,AutomationModule module,WorkResult result) {
-        boolean loggingAllowsOtherRetry=resourceWaiting!=null && resourceWaiting!=module
-            && resourceWaiting.resourceReadiness(c)!=AutomationModule.ResourceReadiness.UNSAFE;
+        // OFF may arrive while an ordinary module owns work after a resource
+        // wait. Its DEFERRED result is now the safe yield boundary: do not ask
+        // disabled logging's changed terrain to authorize this unrelated retry.
+        if (c.profile().loggingRunActive && !c.profile().enabled(Feature.LOGGING)
+            && resourceWaiting!=null && resourceWaiting!=module && resourceBoundary(c)) {
+            clearResourceWait(); loggingSuspended=true;
+        }
+        boolean loggingAllowsOtherRetry=loggingSuspended && module.feature()!=Feature.LOGGING
+            || resourceWaiting!=null && resourceWaiting!=module
+                && resourceWaiting.resourceReadiness(c)!=AutomationModule.ResourceReadiness.UNSAFE;
         if (!c.world().player().onGround() || c.actions().busy() || c.world().menu()==null || c.world().menu().container()
             || !c.world().menu().carried().empty() || c.profile().loggingRunActive && !loggingAllowsOtherRetry
             || c.profile().loggingHotbarLease!=null || MachineOutputLedger.hasPending(c)) {
