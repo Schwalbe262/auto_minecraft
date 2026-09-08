@@ -16,6 +16,7 @@ public final class MachineModule implements AutomationModule {
     private List<Poi> machines = List.of(), sources = List.of();
     private final Map<Poi,int[]> stock = new LinkedHashMap<>();
     private static final int OUTPUT_SETTLE_TICKS = 5;
+    private static final int PRESERVES_MORNING_SNAPSHOT_TICK = 240;
     private static final int RESERVED_OUTPUT_SLOTS = 2;
     private boolean stockReady, freshForHaul;
     private long stockDay;
@@ -96,8 +97,22 @@ public final class MachineModule implements AutomationModule {
                 if (feature==Feature.WINE) {
                     WorkResult waiting=prepareWineRun(c);
                     if (waiting!=null) return waiting;
-                } else machines = new ArrayList<>(ModuleSupport.nearest(c,c.profile().pois(PoiKind.PRESERVES_JAR)
-                    .stream().filter(p -> eligible(c,p)).toList()));
+                } else {
+                    List<Poi> jars = c.profile().pois(PoiKind.PRESERVES_JAR);
+                    // Native artisan updates are spread over ticks 20..219. Taking
+                    // a snapshot during that window starts a tiny partial batch and
+                    // repeats the whole supply survey for the remaining jars. Allow
+                    // one more second for client updates before testing eligibility
+                    // (which may move a still-working jar's deadline to tomorrow).
+                    // Only new due runs wait; in-flight actions and future-only
+                    // schedules retain their normal behavior. BUSY keeps one-shots
+                    // alive instead of falsely reporting completion at dawn.
+                    if (Math.floorMod(c.world().dayTime(),24000) < PRESERVES_MORNING_SNAPSHOT_TICK
+                        && jars.stream().anyMatch(p -> gameDay(c) >= c.profile().nextEligibleDay
+                            .getOrDefault(scheduleKey(p),Long.MIN_VALUE)))
+                        return WorkResult.busy("절임통 아침 생산 상태 갱신 대기");
+                    machines = new ArrayList<>(ModuleSupport.nearest(c,jars.stream().filter(p -> eligible(c,p)).toList()));
+                }
                 if (machines.isEmpty()) return WorkResult.idle();
                 machineIndex = 0; stage = Stage.MACHINE;
             }

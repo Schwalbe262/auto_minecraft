@@ -1838,6 +1838,104 @@ class LogisticsTest {
         assertEquals(1,f.machineClicks());
     }
 
+    @Test void duePreservesOneShotWaitsThroughStaggeredMorningUpdatesThenServicesAll144JarsOnce() {
+        Fixture f=new Fixture(); f.equipHoe(); f.dayTime=374*24000L+35;
+        for (int slot=1;slot<=12;slot++) f.inventory[slot]=tomato(2,slot==12 ? 16 : 64);
+        List<Pos> jars=new ArrayList<>();
+        for (int i=0;i<144;i++) {
+            Pos jar=f.machine(PoiKind.PRESERVES_JAR,10+i,true,i<4,false); jars.add(jar);
+            f.profile.nextEligibleDay.put("preserves:"+jar.x()+":"+jar.y()+":"+jar.z(),374L);
+        }
+        Map<String,Long> deadlines=Map.copyOf(f.profile.nextEligibleDay);
+        AutomationEngine engine=isolatedMachineEngine(Feature.PRESERVES);
+        engine.startOnce(f.context(),Feature.PRESERVES);
+        for (int dayTick:new int[]{35,219,233,239}) {
+            f.dayTime=374*24000L+dayTick;
+            int mature=dayTick<219 ? 4 : dayTick<233 ? 143 : 144;
+            for (int i=0;i<jars.size();i++) {
+                Pos jar=jars.get(i);
+                f.blocks.put(jar,new BlockData(jar,"society:preserves_jar",
+                    Map.of("working","true","mature",""+(i<mature),"upgraded","false","facing","north")));
+            }
+            engine.tick(f.context()); f.advance();
+            assertTrue(engine.running(),"A date-due one-shot must not finish while morning updates are still arriving");
+            assertEquals(0,f.navigationCalls); assertTrue(f.history.isEmpty());
+            assertEquals(deadlines,f.profile.nextEligibleDay,"Waiting must not postpone an apparently working jar to tomorrow");
+            assertTrue(f.savedOutputs.isEmpty());
+        }
+        f.dayTime=374*24000L+240;
+        f.runUntilStopped(engine,5000);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(144,f.machineClicks()); assertEquals(720,f.consumed);
+        assertEquals(144,ModuleSupport.count(f.context(),item -> item.is(ItemData.PRESERVES)));
+        assertEquals(0,ModuleSupport.count(f.context(),item -> item.is(ItemData.TOMATO)));
+        for (Pos jar:jars) {
+            assertEquals(1,f.history.stream().filter(action -> action instanceof Action.UseBlock use
+                && use.purpose()==Action.Use.MACHINE && use.pos().equals(jar)).count());
+            assertEquals(377L,f.profile.nextEligibleDay.get("preserves:"+jar.x()+":"+jar.y()+":"+jar.z()));
+            assertTrue(f.blocks.get(jar).flag("working")); assertFalse(f.blocks.get(jar).flag("mature"));
+        }
+        assertTrue(f.opens.isEmpty(),"The fully funded rack needs no second batch or warehouse survey");
+        assertTrue(f.profile.pendingMachineOutputs.isEmpty());
+    }
+
+    @Test void morningPreservesWaitDoesNotBlockEmptyOrFutureOnlyRegistrations() {
+        for (boolean registered:new boolean[]{false,true}) for (int dayTick:new int[]{0,35,219,233,239}) {
+            Fixture f=new Fixture(); f.dayTime=374*24000L+dayTick;
+            if (registered) {
+                Pos jar=f.machine(PoiKind.PRESERVES_JAR,10,true,true,false);
+                f.profile.nextEligibleDay.put("preserves:"+jar.x()+":"+jar.y()+":"+jar.z(),375L);
+            }
+            Map<String,Long> deadlines=Map.copyOf(f.profile.nextEligibleDay);
+            assertEquals(WorkResult.State.IDLE,new MachineModule(Feature.PRESERVES).tick(f.context()).state());
+            AutomationEngine engine=isolatedMachineEngine(Feature.PRESERVES);
+            engine.startOnce(f.context(),Feature.PRESERVES); f.runUntilStopped(engine,5);
+            assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+            assertEquals(deadlines,f.profile.nextEligibleDay); assertEquals(0,f.navigationCalls);
+            assertTrue(f.history.isEmpty()); assertTrue(f.savedOutputs.isEmpty());
+        }
+    }
+
+    @Test void stillWorkingDueJarWaitSurvivesResetButEndsAtTheBoundedMorningDeadline() {
+        Fixture f=new Fixture(); f.dayTime=374*24000L+239;
+        Pos jar=f.machine(PoiKind.PRESERVES_JAR,10,true,false,false);
+        String key="preserves:"+jar.x()+":"+jar.y()+":"+jar.z();
+        f.profile.nextEligibleDay.put(key,374L);
+        MachineModule module=new MachineModule(Feature.PRESERVES);
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+        assertEquals(374L,f.profile.nextEligibleDay.get(key));
+        module.reset();
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+        assertEquals(374L,f.profile.nextEligibleDay.get(key));
+        MachineModule recreated=new MachineModule(Feature.PRESERVES);
+        assertEquals(WorkResult.State.BUSY,recreated.tick(f.context()).state());
+        assertEquals(374L,f.profile.nextEligibleDay.get(key));
+        f.dayTime=374*24000L+240;
+        assertEquals(WorkResult.State.IDLE,recreated.tick(f.context()).state(),"The grace is bounded, not an all-mature gate");
+        assertEquals(375L,f.profile.nextEligibleDay.get(key));
+        assertEquals(0,f.navigationCalls); assertTrue(f.history.isEmpty()); assertTrue(f.savedOutputs.isEmpty());
+    }
+
+    @Test void activePreservesBatchContinuesAcrossMidnightWithItsNativeAcknowledgementPending() {
+        Fixture f=new Fixture(); f.equipHoe(); f.dayTime=373*24000L+23999; f.inventory[1]=tomato(2,10);
+        f.machine(PoiKind.PRESERVES_JAR,10,true,true,false); f.machine(PoiKind.PRESERVES_JAR,11,true,true,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.PRESERVES);
+        engine.startOnce(f.context(),Feature.PRESERVES);
+        for (int tick=0;tick<100 && f.machineClicks()==0;tick++) {
+            engine.tick(f.context()); if (f.machineClicks()==0) f.advance();
+        }
+        assertEquals(1,f.machineClicks()); assertEquals(0,f.consumed,"The first request is still awaiting its native reply");
+        assertInstanceOf(Action.UseBlock.class,f.action);
+        f.dayTime=374*24000L; f.advance();
+        f.runUntilStopped(engine,150);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(2,f.machineClicks()); assertEquals(10,f.consumed);
+        assertEquals(2,ModuleSupport.count(f.context(),item -> item.is(ItemData.PRESERVES)));
+        assertEquals(374*24000L,f.dayTime,"The active run must finish without waiting for the next morning grace period");
+        assertTrue(f.profile.nextEligibleDay.values().stream().allMatch(day -> day==377L));
+        assertTrue(f.profile.pendingMachineOutputs.isEmpty()); assertTrue(f.opens.isEmpty());
+    }
+
     @Test void maturePreservesCanStillCollectWithEmptyHandWithoutIngredients() {
         Fixture f = new Fixture(); f.machine(PoiKind.PRESERVES_JAR,0,true,true,false);
         assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.PRESERVES),40).state());
@@ -1934,7 +2032,7 @@ class LogisticsTest {
         final Deque<ItemData> tomatoRefills=new ArrayDeque<>();
         final Set<Pos> unloaded=new HashSet<>(), blockedPaths=new HashSet<>(), unstandable=new HashSet<>();
         Integer wineClockYear=20;
-        long ticks, dayTime, sequence;
+        long ticks, dayTime=1000, sequence;
         double playerX=.5;
         int selected, consumed, navigationCalls, soldWine, withdrawnWine, tomatoWithdrawals;
         Pos open, emptyOnSecondOpen;

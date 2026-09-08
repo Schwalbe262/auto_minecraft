@@ -781,3 +781,28 @@ verification. No new inventory interruption was induced in the running soak test
   error or trace loss. Three actual sleep transitions were observed. The local
   harvest-setting adjustment occurred during this interval; this is workflow
   validation, not an unchanged-configuration or three-hour endurance claim.
+
+### Dawn preserves batching follow-up
+
+- On the next preserves date, the client selected four mature jars while the
+  other 140 were still receiving the native morning update. All 144 appeared
+  mature by observed day tick 233, but the first list was already fixed at four.
+  This caused two complete 32-container stock surveys and two production trips.
+  Both batches did finish: 768 tomatoes withdrawn, 720 consumed, 48 returned,
+  and **4 + 140 preserves shipped**. All 331 consecutive receipts including
+  the preceding bed succeeded, with no missing ID or terminal pending action.
+- New PRESERVES runs with a date-due registration wait until day tick 240
+  before taking their eligibility snapshot: the native ticks 20..219 update
+  window plus a short client-update margin. The wait happens before eligibility
+  can postpone an apparently working jar. It returns BUSY so one-shot execution
+  does not falsely finish. Future-only/empty registrations remain idle, and
+  already active runs, native acknowledgements and wine scheduling are unchanged.
+- Four regressions cover staggered 4-to-144 maturity through tick 233, exactly
+  one use per jar from tick 240, no early navigation or deadline changes,
+  future-only/empty runs, reset/recreation, the bounded end of the wait when a
+  jar is still working, and an active transaction crossing midnight.
+  The full build passes **723 tests**, with no failures, errors or skipped tests.
+- This margin addresses the observed morning split; it is not a guarantee
+  against arbitrary network delays. Deployment and a new actual dawn run must
+  be checked separately. Earlier observation windows cannot establish endurance
+  for the changed build.
