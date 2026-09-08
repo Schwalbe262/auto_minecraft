@@ -29,6 +29,14 @@ public final class MinecraftWorld implements WorldAccess {
     public HarvestFootprint harvestFootprint(Pos target) { return NativeHarvestFootprint.inspect(mc.player,mc.level,target); }
     public String loggingTreeRejection(Pos target,List<LoggingPlot> plots) { return NativeLoggingTree.inspect(mc.level,target,plots).rejection(); }
     public boolean canPlantLoggingSapling(Pos target) { return NativeLoggingActions.canPlant(mc,target); }
+    public boolean canPlantLoggingSapling(Pos target,double reach) { return NativeLoggingActions.canPlant(mc,target,reach); }
+    public boolean canPlantLoggingSaplingFrom(Pos feet,Pos target,double reach) {
+        if (mc.player==null || feet==null || !loaded(feet) || !canStand(feet)) return false;
+        double surface=standingY(feet);
+        if (!Double.isFinite(surface)) return false;
+        Vec3 eye=new Vec3(feet.x()+.5,surface+mc.player.getEyeHeight(),feet.z()+.5);
+        return NativeLoggingActions.canPlantFrom(mc,target,eye,reach);
+    }
     public boolean canLoggingJump(LoggingJumpEdge edge,Profile profile) { return NativeLoggingJump.mayTraverse(mc,this,edge,profile); }
     public boolean loggingAxe(int inventoryIndex) {
         return mc.player!=null && inventoryIndex>=0 && inventoryIndex<9

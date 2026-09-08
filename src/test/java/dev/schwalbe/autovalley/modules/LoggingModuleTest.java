@@ -110,8 +110,8 @@ class LoggingModuleTest {
 
     @Test void restartAfterPartialReplantKeepsReplantPhaseEvenIfThePlantedSaplingAlreadyRegrew() {
         Fixture f=new Fixture(2); f.until(() -> f.plants==1);
-        Pos first=f.profile.loggingPlots.get(0).corner();
-        assertTrue(f.profile.loggingReplantingPlots.contains(first)); f.blocks.put(first,LoggingRules.LOG);
+        Pos first=f.actions.stream().filter(a -> a instanceof Action.PlantSapling).map(a -> ((Action.PlantSapling)a).pos()).findFirst().orElseThrow();
+        assertTrue(f.profile.loggingReplantingPlots.contains(f.profile.loggingPlots.get(0).corner())); f.blocks.put(first,LoggingRules.LOG);
         f.restart();
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(4,f.chops,"Regrown first planting is not recut");
         assertEquals(8,f.plants); assertEquals(LoggingRules.LOG,f.id(first));
@@ -130,6 +130,135 @@ class LoggingModuleTest {
         assertEquals(0,f.trashed); assertEquals(0,f.crafted); assertTrue(f.profile.nextEligibleDay.isEmpty());
         f.inventory[9]=item(LoggingRules.SAPLING,4); f.restart();
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(2,f.chops); assertEquals(4,f.plants);
+    }
+
+    @Test void saplingsArrivingAfterTheEightyTickFallDelayResumeWithoutAnyAdditionalChop() {
+        Fixture f=new Fixture(1); long firstWait=startSeedWait(f);
+        int sent=f.actions.size(),moves=f.moves;
+        f.ticks=firstWait+160;
+        WorkResult waiting=f.step();
+        assertEquals(WorkResult.State.BUSY,waiting.state()); assertTrue(waiting.message().contains("묘목 도착 대기"));
+        assertEquals(sent,f.actions.size()); assertEquals(moves,f.moves); assertEquals(2,f.chops);
+        assertEquals(0,f.plants); assertEquals(0,f.trashed); assertEquals(0,f.crafted);
+        f.add(LoggingRules.SAPLING,9);
+        assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertEquals(2,f.chops); assertEquals(4,f.plants); assertFalse(f.profile.loggingRunActive);
+    }
+
+    @Test void absentSaplingsBlockExactlyAtTheAdditionalFourHundredTickDeadline() {
+        Fixture f=new Fixture(1); long firstWait=startSeedWait(f);
+        int sent=f.actions.size(),moves=f.moves;
+        // Repeated calls in one client tick cannot consume or extend elapsed time.
+        for(int i=0;i<500;i++) assertEquals(WorkResult.State.BUSY,f.step().state());
+        f.ticks=firstWait+399; assertEquals(WorkResult.State.BUSY,f.step().state());
+        f.ticks=firstWait+400;
+        WorkResult stopped=f.step(); assertEquals(WorkResult.State.BLOCKED,stopped.state());
+        assertTrue(stopped.message().contains("20초 추가 대기"));
+        assertEquals(sent,f.actions.size()); assertEquals(moves,f.moves); assertEquals(2,f.chops);
+        assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingRemainingPlots.size());
+        assertEquals(1,f.profile.loggingReplantingPlots.size()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        f.add(LoggingRules.SAPLING,4); f.ticks++;
+        assertEquals(WorkResult.State.BLOCKED,f.step().state(),"a timed-out run does not silently restart when drops arrive later");
+        f.restart(); assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertEquals(2,f.chops); assertEquals(4,f.plants);
+    }
+
+    @Test void partialSeedArrivalDoesNotPlantEarlyOrRenewThePlotsDeadline() {
+        Fixture f=new Fixture(1); long firstWait=startSeedWait(f);
+        f.ticks=firstWait+300; f.add(LoggingRules.SAPLING,2);
+        assertEquals(WorkResult.State.BUSY,f.step().state()); assertNull(f.pending);
+        f.ticks=firstWait+400;
+        assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertEquals(2,f.chops); assertEquals(0,f.plants); assertEquals(0,f.trashed); assertEquals(0,f.crafted);
+        assertEquals(1,f.profile.loggingReplantingPlots.size());
+    }
+
+    @Test void twoArrivalsWaitForTheOtherTwoAndAllFourPlantingsPrecedeTheNextTree() {
+        Fixture f=new Fixture(2); long firstWait=startSeedWait(f);
+        Pos first=f.profile.loggingPlots.get(0).corner();
+        f.ticks=firstWait+100; f.add(LoggingRules.SAPLING,2);
+        int sent=f.actions.size(),moves=f.moves;
+        assertEquals(WorkResult.State.BUSY,f.step().state());
+        f.ticks=firstWait+200; assertEquals(WorkResult.State.BUSY,f.step().state());
+        assertEquals(0,f.plants); assertEquals(2,f.chops); assertEquals(sent,f.actions.size()); assertEquals(moves,f.moves);
+        assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.loggingReplantingPlots.contains(first));
+        // Fragmented inventory stacks count as stock but no native use is fabricated.
+        f.inventory[10]=item(LoggingRules.SAPLING,2);
+        f.until(() -> f.profile.loggingRemainingPlots.size()==1);
+        assertEquals(4,f.plants); assertEquals(2,f.chops);
+        assertFalse(f.profile.loggingRemainingPlots.contains(first));
+        assertTrue(f.profile.loggingPlots.get(0).plantingPositions().stream().allMatch(p -> f.id(p).equals(LoggingRules.SAPLING)));
+        f.saplingDrops=8;
+        assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(4,f.chops); assertEquals(8,f.plants);
+    }
+
+    @Test void protectedSlotsDoNotFalselySatisfyTheFourSaplingRequirement() {
+        Fixture f=new Fixture(1); long firstWait=startSeedWait(f);
+        f.add(LoggingRules.SAPLING,2); f.inventory[f.profile.hoeHotbarSlot]=item(LoggingRules.SAPLING,2);
+        f.ticks=firstWait+100; assertEquals(WorkResult.State.BUSY,f.step().state());
+        assertEquals(0,f.plants); assertNull(f.pending); assertEquals(2,f.chops);
+    }
+
+    @Test void jointUpFaceApproachUsesOneStanceAndStableFarToNearPlantingOrder() {
+        Fixture f=new Fixture(1); Pos corner=f.profile.loggingPlots.get(0).corner();
+        f.until(() -> f.plants==1);
+        assertEquals(1,f.plantingApproaches.size()); assertEquals(4,f.plantingApproaches.get(0).size());
+        f.playerX=.49; // Tiny drift reverses the middle-distance tie, not the saved batch order.
+        assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertEquals(List.of(corner.offset(1,0,1),corner.offset(0,0,1),corner.offset(1,0,0),corner),
+            f.actions.stream().filter(a -> a instanceof Action.PlantSapling).map(a -> ((Action.PlantSapling)a).pos()).toList());
+        assertEquals(1,f.plantingApproaches.size(),"no re-navigation while every remaining UP face remains visible");
+    }
+
+    @Test void newlyOccludedSoilReplansOnlyTheThreeRemainingPlantings() {
+        Fixture f=new Fixture(1); f.until(() -> f.plants==1);
+        Pos planted=f.actions.stream().filter(a -> a instanceof Action.PlantSapling).map(a -> ((Action.PlantSapling)a).pos()).findFirst().orElseThrow();
+        Pos remaining=f.profile.loggingPlots.get(0).plantingPositions().stream().filter(p -> !p.equals(planted)).findFirst().orElseThrow();
+        f.occludedPlanting.add(remaining);
+        assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertEquals(2,f.plantingApproaches.size()); assertEquals(3,f.plantingApproaches.get(1).size());
+        assertFalse(f.plantingApproaches.get(1).contains(planted)); assertEquals(4,f.plants); assertEquals(2,f.chops);
+    }
+
+    @Test void genericSoilReachCannotReplaceTheDedicatedAllUpFaceGoal() {
+        Fixture f=new Fixture(1); f.blockPlantingApproach=true;
+        assertEquals(WorkResult.State.BLOCKED,f.finish().state());
+        assertEquals(0,f.plants); assertEquals(2,f.chops); assertEquals(0,f.trashed); assertEquals(0,f.crafted);
+        assertEquals(1,f.profile.loggingReplantingPlots.size()); assertTrue(f.profile.loggingRunActive);
+    }
+
+    @Test void claimedArrivalStillRequiresEveryActualUpFaceBeforePlantUse() {
+        Fixture f=new Fixture(1); f.keepPlantingOccluded=true;
+        Pos blocked=f.profile.loggingPlots.get(0).corner(); f.occludedPlanting.add(blocked);
+        f.until(() -> !f.plantingApproaches.isEmpty());
+        for(int i=0;i<5;i++) { f.advance(); assertEquals(WorkResult.State.BUSY,f.step().state()); }
+        assertEquals(0,f.plants); assertNull(f.pending);
+        assertTrue(f.actions.stream().noneMatch(a -> a instanceof Action.PlantSapling));
+        assertEquals(1,f.profile.loggingReplantingPlots.size());
+    }
+
+    @Test void explicitResetDuringSeedWaitRestoresOnlyReplantAndStartsAFreshBoundedWait() {
+        Fixture f=new Fixture(1); long firstWait=startSeedWait(f);
+        f.ticks=firstWait+390; f.module.reset();
+        assertEquals(WorkResult.State.BUSY,f.step().state()); // Restore durable active batch.
+        assertEquals(WorkResult.State.BUSY,f.step().state()); // Restore durable replant phase.
+        assertEquals(WorkResult.State.BUSY,f.step().state()); // New bounded wait, no mining.
+        long resumed=f.ticks;
+        f.ticks=resumed+399; assertEquals(WorkResult.State.BUSY,f.step().state());
+        f.ticks=resumed+400; assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertEquals(2,f.chops); assertEquals(0,f.plants); assertTrue(f.profile.loggingRunActive);
+        assertEquals(1,f.profile.loggingReplantingPlots.size()); assertEquals(0,f.trashed);
+    }
+
+    private static long startSeedWait(Fixture f) {
+        f.saplingDrops=0; f.until(() -> f.chops==2); f.step();
+        long fell=f.ticks; f.ticks=fell+79;
+        assertEquals(WorkResult.State.BUSY,f.step().state()); assertTrue(f.plantingReaches.isEmpty());
+        f.ticks=fell+80; assertEquals(WorkResult.State.BUSY,f.step().state());
+        f.ticks++; WorkResult waiting=f.step();
+        assertEquals(WorkResult.State.BUSY,waiting.state()); assertTrue(waiting.message().contains("묘목 도착 대기"));
+        assertNull(f.pending); assertEquals(0,f.plants); assertEquals(1,f.profile.loggingReplantingPlots.size());
+        return f.ticks;
     }
 
     @Test void reserveIsNeverRoundedDownByWholeStackTrashAndUnrelatedItemsAreUntouched() {
@@ -298,12 +427,15 @@ class LoggingModuleTest {
         final Map<Pos,ItemData[]> chests=new LinkedHashMap<>(); final Pos tablePos=new Pos(10,64,0),woodPos=new Pos(12,64,0),shippingPos=new Pos(14,64,0);
         final List<Action> actions=new ArrayList<>(); final List<String> events=new ArrayList<>();
         final List<Double> plantingReaches=new ArrayList<>();
+        final List<List<Pos>> plantingApproaches=new ArrayList<>();
+        final Set<Pos> occludedPlanting=new HashSet<>();
         final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
         final Map<Pos,Integer> nativeChops=new HashMap<>(); int strokesPerTree=2;
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
+        double playerX=.5;
         int containerId,nextContainer=1; Pos opened;
         Action pending; ActionOutcome outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
-        boolean craftingGridEmpty=true,failNextCheckpoint,failCompletionCheckpoint;
+        boolean craftingGridEmpty=true,failNextCheckpoint,failCompletionCheckpoint,blockPlantingApproach,keepPlantingOccluded;
         Fixture(int plots) {
             Arrays.fill(inventory,ItemData.EMPTY); inventory[2]=item(LoggingRules.AXE,1);
             inventory[4]=new ItemData("minecraft:golden_hoe",1,0,null,true,1000); profile.hoeHotbarSlot=4; profile.loggingAxeHotbarSlot=2;
@@ -403,7 +535,7 @@ class LoggingModuleTest {
         }
         public long tick() { return ticks; }
         public long dayTime() { return day*24000+1000; }
-        public PlayerState player() { return new PlayerState(.5,64,.5,0,0,true,false,20,20,selected,true,true); }
+        public PlayerState player() { return new PlayerState(playerX,64,.5,0,0,true,false,20,20,selected,true,true); }
         public BlockData block(Pos pos) { return new BlockData(pos,id(pos),Map.of()); }
         public boolean loaded(Pos pos) { return !unloaded.contains(pos); }
         public boolean canStand(Pos pos) { return true; }
@@ -412,6 +544,10 @@ class LoggingModuleTest {
         public List<BlockData> scan(Pos pos,int h,int v) { return List.of(); }
         public String loggingTreeRejection(Pos pos,List<LoggingPlot> plots) { return null; }
         public boolean canPlantLoggingSapling(Pos pos) { return id(pos).equals("minecraft:air") && loaded(pos); }
+        public boolean canPlantLoggingSapling(Pos pos,double reach) {
+            assertEquals(3.25,reach);
+            return canPlantLoggingSapling(pos) && !occludedPlanting.contains(pos);
+        }
         public boolean loggingAxe(int index) { return inventory[index].is(LoggingRules.AXE); }
         public boolean loggingCraftingMenu() { return Objects.equals(opened,tablePos); }
         public boolean loggingCraftingGridEmpty() { return craftingGridEmpty; }
@@ -442,6 +578,17 @@ class LoggingModuleTest {
         public Result moveToLogging(Pos pos,double reach,Context c) {
             assertTrue(profile.loggingRunActive); assertTrue(session.allows(profile,Feature.LOGGING));
             loggingMoves++; loggingTargets.add(pos); return moveTo(pos,reach,c);
+        }
+        public Result moveToLoggingPlanting(List<Pos> targets,Context c) {
+            assertTrue(profile.loggingRunActive); assertTrue(session.allows(profile,Feature.LOGGING));
+            assertFalse(targets.isEmpty()); assertTrue(targets.size()<=4);
+            assertTrue(profile.loggingPlots.stream().anyMatch(plot -> profile.loggingReplantingPlots.contains(plot.corner())
+                && plot.plantingPositions().containsAll(targets)));
+            plantingApproaches.add(List.copyOf(targets)); loggingMoves++; moves++;
+            for(Pos target:targets) { loggingTargets.add(target.offset(0,-1,0)); plantingReaches.add(3.25); }
+            if (blockPlantingApproach || targets.stream().anyMatch(p -> !loaded(p))) return Result.BLOCKED;
+            if (!keepPlantingOccluded) occludedPlanting.removeAll(targets);
+            return Result.ARRIVED;
         }
         public void reset() { }
     }

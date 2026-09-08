@@ -29,6 +29,7 @@ public final class LocalNavigator implements Navigation {
     private int endpointQuietTicks;
     private PlayerState endpointSample;
     private boolean loggingPath;
+    private List<Pos> plantingTargets=List.of();
     private LoggingJumpController loggingJump;
     private boolean interruptedLanding;
     /** A cancelled/uncertain launch is never silently retried by reset or another path search. */
@@ -50,12 +51,24 @@ public final class LocalNavigator implements Navigation {
         return moveTo(target,reach,context,true,true);
     }
 
+    @Override public Result moveToLoggingPlanting(List<Pos> targets,Context context) {
+        if (!LoggingRules.plantingTargets(context.profile(),targets)
+            || context.profile().loggingPlots.stream().noneMatch(p -> p.plantingPositions().containsAll(targets)
+                && context.profile().loggingReplantingPlots.contains(p.corner())))
+            return blocked(context.actions(),"등록된 미완료 2x2 재식재 구역만 접근할 수 있습니다.");
+        return moveTo(targets.get(0).offset(0,-1,0),3.25,context,true,true,List.copyOf(targets));
+    }
+
     /** Harvest lookahead must never open a door while another click is being verified. */
     @Override public Result moveToWithoutInteraction(Pos target,double reach,Context context) {
         return moveTo(target,reach,context,false,false);
     }
 
     private Result moveTo(Pos target,double reach,Context context,boolean allowDoors,boolean logging) {
+        return moveTo(target,reach,context,allowDoors,logging,List.of());
+    }
+
+    private Result moveTo(Pos target,double reach,Context context,boolean allowDoors,boolean logging,List<Pos> planting) {
         WorldAccess world = context.world();
         ActionPort actions = context.actions();
         PlayerState player = world.player();
@@ -64,11 +77,12 @@ public final class LocalNavigator implements Navigation {
             return blocked(actions, "플레이어가 게임을 조작할 수 없습니다.");
         if (logging && (!context.profile().loggingRunActive || !context.session().allows(context.profile(),Feature.LOGGING)))
             return blocked(actions,"벌목 작업이 활성화된 실행에서만 전용 이동을 사용할 수 있습니다.");
-        if (!target.equals(destination) || Double.compare(reach, destinationReach) != 0 || loggingPath!=logging) {
+        if (!target.equals(destination) || Double.compare(reach, destinationReach) != 0 || loggingPath!=logging || !plantingTargets.equals(planting)) {
             reset();
             destination = target;
             destinationReach = reach;
             loggingPath=logging;
+            plantingTargets=planting;
             progressTick = world.tick();
         }
         if (interruptedLanding) {
@@ -95,7 +109,7 @@ public final class LocalNavigator implements Navigation {
             progressTick = world.tick();
         }
         if (endpointSettleTick < 0 && (!logging || player.onGround())
-            && player.distance(target) <= reach + 2.5 && world.canInteract(target, reach)) {
+            && player.distance(target) <= reach + 2.5 && interactionReady(world,target,reach)) {
             actions.stopMovement();
             previousMoving = false;
             path = List.of();
@@ -107,7 +121,8 @@ public final class LocalNavigator implements Navigation {
         if (path.isEmpty()) {
             if (rejectedEndpoints.size() >= MAX_REJECTED_ENDPOINTS)
                 return blocked(actions,"정지 후에도 확인한 접근 위치 4곳에서 목표가 보이지 않거나 손이 닿지 않습니다.");
-            path = logging ? pathfinder.findLogging(walkingFeet,target,reach,world,context.profile(),rejectedEndpoints)
+            path = !plantingTargets.isEmpty() ? pathfinder.findLoggingPlanting(walkingFeet,plantingTargets,reach,world,context.profile(),rejectedEndpoints)
+                : logging ? pathfinder.findLogging(walkingFeet,target,reach,world,context.profile(),rejectedEndpoints)
                 : pathfinder.find(walkingFeet, target, reach, world, context.profile(), rejectedEndpoints);
             if (path.isEmpty()) return blocked(actions, "등록된 통로에 통행 가능한 경로가 없습니다.");
             nextIndex = path.size() > 1 ? 1 : 0;
@@ -194,7 +209,7 @@ public final class LocalNavigator implements Navigation {
             endpointSample=player; endpointSampleTick=world.tick();
         }
         if (endpointQuietTicks>=2 && world.tick()-endpointSettleTick>=2) {
-            if (world.canInteract(target,reach)) {
+            if (interactionReady(world,target,reach)) {
                 clearEndpointSettle(); rejectedEndpoints.clear(); path=List.of(); failure="";
                 return Result.ARRIVED;
             }
@@ -211,6 +226,11 @@ public final class LocalNavigator implements Navigation {
 
     private void clearEndpointSettle() {
         endpointSettleTick=-1; endpointSampleTick=0; endpointQuietTicks=0; endpointSample=null;
+    }
+
+    private boolean interactionReady(WorldAccess world,Pos target,double reach) {
+        return plantingTargets.isEmpty() ? world.canInteract(target,reach)
+            : plantingTargets.stream().allMatch(p -> world.canPlantLoggingSapling(p,reach));
     }
 
     private void observeMotion(PlayerState player) {
@@ -292,6 +312,7 @@ public final class LocalNavigator implements Navigation {
         cancelLoggingJump();
         path = List.of();
         destination = null;
+        plantingTargets=List.of();
         doorTicket = -1;
         lastDistance = Double.POSITIVE_INFINITY;
         progressTick = 0;

@@ -24,6 +24,10 @@ public interface WorldAccess {
     /** Null requires a positive bounded whole-tree proof; unknown adapters fail closed. */
     default String loggingTreeRejection(Pos target,List<LoggingPlot> plots) { return "Logging tree inspection is unavailable"; }
     default boolean canPlantLoggingSapling(Pos target) { return false; }
+    /** Actual-eye planting proof, including the requested reach; never generic soil visibility. */
+    default boolean canPlantLoggingSapling(Pos target,double reach) { return false; }
+    /** Read-only planting goal from a verified standing cell; unknown adapters fail closed. */
+    default boolean canPlantLoggingSaplingFrom(Pos feet,Pos target,double reach) { return false; }
     default boolean loggingAxe(int inventoryIndex) { return false; }
     /** Exact native stack fingerprint for protecting a borrowed hotbar item; unknown is null. */
     default String loggingItemFingerprint(int inventoryIndex) { return null; }

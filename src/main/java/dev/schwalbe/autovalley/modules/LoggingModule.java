@@ -5,11 +5,15 @@ import java.util.*;
 
 /** The registered spruce routine; one acknowledged native operation at a time. */
 public final class LoggingModule implements AutomationModule {
+    private static final int SAPLING_WAIT_TICKS=400;
     private enum Stage { START, PLOT, CHOP, SETTLE, PLANT, WASTE, RESTORE, CRAFT_OPEN, CRAFT, CRAFT_CLOSE, WOOD, BERRIES, FINISH }
     private enum Pending { SELECT, SWAP, BORROW, RESTORE, CHOP, PLANT, TRASH, OPEN, CRAFT, CLOSE }
     private Stage stage=Stage.START;
     private Pending pending;
     private long ticket=-1, settleUntil, nextCheckTick=-1, lastTick=-1;
+    private long saplingWaitUntil=-1;
+    private boolean plantingStanceReady;
+    private List<Pos> plantingOrder=List.of();
     private Pos actionPos;
     private LoggingPlot plot;
     private Poi table;
@@ -24,7 +28,7 @@ public final class LoggingModule implements AutomationModule {
         if (!LoggingRules.allowed(c)) return WorkResult.idle();
         if (failure!=null) return WorkResult.blocked(failure);
         if (!c.world().player().connected()) return fail("벌목 중 연결이 끊겼습니다. 재접속 후 다시 실행하세요.");
-        if (lastTick>c.world().tick()) nextCheckTick=-1;
+        if (lastTick>c.world().tick()) { nextCheckTick=-1; saplingWaitUntil=-1; }
         lastTick=c.world().tick();
         try {
             if (ticket>=0) {
@@ -109,7 +113,8 @@ public final class LoggingModule implements AutomationModule {
                 if (c.profile().loggingRemainingPlots.isEmpty()) { stage=Stage.WASTE; return busy("전체 재식재 확인"); }
                 Pos corner=c.profile().loggingRemainingPlots.get(0);
                 plot=c.profile().loggingPlots.stream().filter(p -> p.corner().equals(corner)).findFirst().orElseThrow();
-                inspect(c,plot); chopStrokes=0;
+                inspect(c,plot); chopStrokes=0; saplingWaitUntil=-1;
+                plantingStanceReady=false; plantingOrder=List.of();
                 // A mixed sapling/log plot can contain a newly regrown planting. Never recut it on resume.
                 if (c.profile().loggingReplantingPlots.contains(corner)
                     || plot.plantingPositions().stream().anyMatch(p -> c.world().block(p).id().equals(LoggingRules.SAPLING))) {
@@ -141,16 +146,30 @@ public final class LoggingModule implements AutomationModule {
             }
             case PLANT -> {
                 inspect(c,plot);
-                Pos missing=plot.plantingPositions().stream().filter(p -> !occupied(c,p)).findFirst().orElse(null);
-                if (missing==null) { completePlot(c,plot.corner()); plot=null; stage=Stage.PLOT; return busy("4칸 재식재 완료 저장"); }
-                if (!air(c.world().block(missing))) return fail("재식재할 칸에 남은 밑동이 있습니다. 등록 구역을 확인하세요.");
-                // The sapling cell is AIR: approach/ray-test its real support, never ray-test empty air.
-                if (!approach(c,missing.offset(0,-1,0),3.25)) return currentProgress();
+                if (c.world().menu().container() || !c.world().menu().carried().empty())
+                    return fail("재식재 중 메뉴나 커서가 바뀌었습니다. 식재 의무를 보존하고 중단했습니다.");
+                List<Pos> missingCells=plot.plantingPositions().stream().filter(p -> !occupied(c,p)).toList();
+                if (missingCells.isEmpty()) { completePlot(c,plot.corner()); plot=null; stage=Stage.PLOT; return busy("4칸 재식재 완료 저장"); }
+                if (missingCells.stream().anyMatch(p -> !air(c.world().block(p))))
+                    return fail("재식재할 칸에 남은 밑동이 있습니다. 등록 구역을 확인하세요.");
+                // Have every currently missing 2x2 planting covered BEFORE the first
+                // use. Planting one or two early can let a small tree grow before
+                // the other seeds arrive. Existing plantings/logs are never recut.
+                int seeds=availableSaplings(c).stream().mapToInt(s -> s.item().count()).sum();
+                if (seeds<missingCells.size()) return waitForSaplings(c,seeds,missingCells.size());
+                // Find one native stance exposing every remaining soil UP face.
+                // Keep that stance and its far-to-near order while all faces remain
+                // visible; only replan if a newly planted sapling actually occludes one.
+                if (!plantingStanceReady || missingCells.stream().anyMatch(p -> !c.world().canPlantLoggingSapling(p,3.25)))
+                    if (!approachPlanting(c,missingCells)) return currentProgress();
+                plantingOrder=plantingOrder.stream().filter(missingCells::contains).toList();
+                if (plantingOrder.size()!=missingCells.size())
+                    return fail("재식재 순서와 남은 등록 칸이 달라졌습니다. 식재 의무를 보존했습니다.");
+                Pos missing=plantingOrder.get(0);
                 int selected=c.world().player().selectedSlot();
                 if (!item(c,selected).is(LoggingRules.SAPLING) || selected==c.profile().hoeHotbarSlot || selected==c.profile().loggingAxeHotbarSlot) {
-                    ItemSlot sapling=inventory(c).stream().filter(s -> s.item().is(LoggingRules.SAPLING)
-                        && s.inventoryIndex()!=c.profile().hoeHotbarSlot && s.inventoryIndex()!=c.profile().loggingAxeHotbarSlot).findFirst().orElse(null);
-                    if (sapling==null) return fail("재식재용 가문비나무 묘목이 부족합니다. 미완료 구역은 보존했습니다.");
+                    ItemSlot sapling=availableSaplings(c).stream().findFirst().orElse(null);
+                    if (sapling==null) return waitForSaplings(c,0,missingCells.size());
                     if (sapling.inventoryIndex()<9) submit(c,new Action.SelectHotbar(sapling.inventoryIndex()),Pending.SELECT);
                     else {
                         int target=-1;
@@ -245,7 +264,38 @@ public final class LoggingModule implements AutomationModule {
         if (result!=Navigation.Result.ARRIVED || !c.world().canInteract(target,reach)) return false;
         c.actions().stopMovement(); return true;
     }
+    private boolean approachPlanting(Context c,List<Pos> remaining) {
+        plantingStanceReady=false; plantingOrder=List.of();
+        if (remaining.stream().anyMatch(p -> !c.world().loaded(p) || !c.world().loaded(p.offset(0,-1,0)))) {
+            fail("재식재할 등록 칸의 청크가 로드되지 않았습니다."); return false;
+        }
+        Navigation.Result result=c.navigation().moveToLoggingPlanting(remaining,c);
+        if (result==Navigation.Result.BLOCKED) {
+            fail(ModuleSupport.navigationFailure(c,"남은 2x2 식재 칸의 윗면을 함께 볼 수 있는 위치에 접근할 수 없습니다.")); return false;
+        }
+        if (result!=Navigation.Result.ARRIVED || remaining.stream().anyMatch(p -> !c.world().canPlantLoggingSapling(p,3.25))) return false;
+        c.actions().stopMovement();
+        PlayerState stance=c.world().player();
+        plantingOrder=remaining.stream().sorted(Comparator.<Pos>comparingDouble(stance::distance).reversed()
+            .thenComparingInt(Pos::x).thenComparingInt(Pos::z).thenComparingInt(Pos::y)).toList();
+        plantingStanceReady=true;
+        return true;
+    }
     private WorkResult currentProgress() { return failure==null ? busy("등록한 작업 위치로 이동") : WorkResult.blocked(failure); }
+    private static List<ItemSlot> availableSaplings(Context c) {
+        return inventory(c).stream().filter(s -> s.item().is(LoggingRules.SAPLING)
+            && s.inventoryIndex()!=c.profile().hoeHotbarSlot && s.inventoryIndex()!=c.profile().loggingAxeHotbarSlot).toList();
+    }
+    private WorkResult waitForSaplings(Context c,int available,int required) {
+        c.actions().stopMovement();
+        // Existing 80-tick falling animation delay is unchanged. This is a further
+        // maximum 400 client ticks (20 seconds at 20 TPS) from first missing seed,
+        // shared by the entire plot, not renewed per empty cell or partial pickup.
+        if (saplingWaitUntil<0) saplingWaitUntil=Math.addExact(c.world().tick(),SAPLING_WAIT_TICKS);
+        if (c.world().tick()>=saplingWaitUntil)
+            return fail("재식재용 가문비나무 묘목이 부족합니다. 20초 추가 대기 후에도 도착하지 않아 미완료 구역을 보존하고 중단했습니다.");
+        return busy("가문비나무 묘목 도착 대기 ("+available+"/"+required+"개, "+((saplingWaitUntil-c.world().tick()+19)/20)+"초 남음)");
+    }
     private void submit(Context c,Action action,Pending kind) { pending=kind; ticket=c.actions().submit(action); }
     private static boolean once(Context c) { return c.session().oneShotFeature==Feature.LOGGING; }
     private static long day(Context c) { return Math.floorDiv(c.world().dayTime(),24000L); }
@@ -336,7 +386,10 @@ public final class LoggingModule implements AutomationModule {
         stage=Stage.START; pending=null; ticket=-1; actionPos=null; plot=null; table=null; craftingMenu=-1;
         // Scheduler resets must not turn the bounded ALL_GROWN readiness poll into
         // a per-tick scan. Explicit one-shot and durable active resumes bypass it.
-        chopStrokes=trashOperations=craftOperations=0; settleUntil=0; failure=null;
+        chopStrokes=trashOperations=craftOperations=0; settleUntil=0; saplingWaitUntil=-1; failure=null;
+        plantingStanceReady=false; plantingOrder=List.of();
+        // Explicit stop/reconnect may start a fresh bounded seed wait. The durable
+        // replant phase, remaining plots and hotbar lease are never cleared here.
         wood.reset(); berries.reset();
     }
 

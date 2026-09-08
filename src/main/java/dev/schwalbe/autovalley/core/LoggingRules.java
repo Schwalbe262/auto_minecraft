@@ -57,6 +57,12 @@ public final class LoggingRules {
     public static boolean base(Profile p,Pos pos) {
         return pos!=null && p.loggingPlots.stream().anyMatch(plot -> plot.plantingPositions().contains(pos));
     }
+    /** Geometry-only target validation; execution additionally requires an active replant obligation. */
+    public static boolean plantingTargets(Profile p,List<Pos> targets) {
+        return p!=null && targets!=null && !targets.isEmpty() && targets.size()<=4
+            && targets.stream().noneMatch(Objects::isNull) && new HashSet<>(targets).size()==targets.size()
+            && p.loggingPlots.stream().anyMatch(plot -> plot.plantingPositions().containsAll(targets));
+    }
     public static boolean wood(ItemData item) { return item.is(LOG) || item.is(FIRE_LOG); }
     public static boolean byproduct(ItemData item) { return item.is(BERRY); }
     public static boolean waste(ItemData item) { return item.is(SAPLING) || item.is(TWIG); }

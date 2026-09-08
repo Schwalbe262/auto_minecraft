@@ -28,6 +28,16 @@ public final class LocalPathfinder {
     }
 
     private List<Pos> find(Pos start,Pos target,double reach,WorldAccess world,Profile profile,Set<Pos> excludedGoals,boolean logging) {
+        return find(start,target,reach,world,profile,excludedGoals,logging,List.of());
+    }
+
+    /** Every remaining soil UP face must be plantable from the same candidate stance. */
+    public List<Pos> findLoggingPlanting(Pos start,List<Pos> targets,double reach,WorldAccess world,Profile profile,Set<Pos> excludedGoals) {
+        if (!LoggingRules.plantingTargets(profile,targets)) return List.of();
+        return find(start,targets.get(0).offset(0,-1,0),reach,world,profile,excludedGoals,true,List.copyOf(targets));
+    }
+
+    private List<Pos> find(Pos start,Pos target,double reach,WorldAccess world,Profile profile,Set<Pos> excludedGoals,boolean logging,List<Pos> plantingTargets) {
         ProfileBounds bounds = new ProfileBounds(profile);
         if (!world.loaded(start) || !bounds.contains(start)) return List.of();
         PriorityQueue<Node> open = new PriorityQueue<>(Comparator.comparingDouble(Node::score));
@@ -41,7 +51,8 @@ public final class LocalPathfinder {
             if (!closed.add(node.pos())) continue;
             // LOS checks can trace many blocks; only candidate cells near the interaction volume need them.
             if (!excludedGoals.contains(node.pos()) && node.pos().distanceSquared(target) <= Math.pow(reach + 2.5,2)
-                && world.canInteractFrom(node.pos(), target, reach)) return unwind(node.pos(), parent);
+                && (plantingTargets.isEmpty() ? world.canInteractFrom(node.pos(),target,reach)
+                    : plantingTargets.stream().allMatch(p -> world.canPlantLoggingSaplingFrom(node.pos(),p,reach)))) return unwind(node.pos(), parent);
             for (int[] direction : DIRECTIONS) {
                 boolean diagonal=direction[0]!=0 && direction[1]!=0;
                 for (int dy : new int[]{0, 1, -1}) {

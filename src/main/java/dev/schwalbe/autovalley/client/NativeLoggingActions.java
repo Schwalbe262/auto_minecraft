@@ -19,8 +19,8 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.CollisionContext;
 
 /** One narrowly admitted native mining stroke or one UP-face sapling use. */
 final class NativeLoggingActions {
@@ -169,17 +169,28 @@ final class NativeLoggingActions {
         } catch (ReflectiveOperationException failure) { throw new IllegalStateException("Native mining sequence unavailable",failure); }
     }
     static boolean canPlant(Minecraft mc,Pos target) {
-        if (mc.level==null || mc.player==null || target==null || !mc.level.hasChunkAt(MinecraftWorld.nativePos(target))
-            || !mc.level.hasChunkAt(MinecraftWorld.nativePos(target).below()) || !mc.level.getBlockState(MinecraftWorld.nativePos(target)).isAir()) return false;
-        return Blocks.SPRUCE_SAPLING.defaultBlockState().canSurvive(mc.level,MinecraftWorld.nativePos(target)) && plantHit(mc,target)!=null;
+        return canPlant(mc,target,3.25);
+    }
+    static boolean canPlant(Minecraft mc,Pos target,double reach) {
+        return mc!=null && mc.player!=null && canPlantFrom(mc,target,mc.player.getEyePosition(),reach);
+    }
+    /** Geometry-only query for a candidate stance; this does not authorize or send an action. */
+    static boolean canPlantFrom(Minecraft mc,Pos target,Vec3 eye,double reach) {
+        return plantHitFrom(mc,target,eye,reach)!=null;
     }
     private static BlockHitResult plantHit(Minecraft mc,Pos target) {
-        if (mc.level==null || mc.player==null) return null;
-        var soil=MinecraftWorld.nativePos(target).below();
-        Vec3 point=new Vec3(target.x()+.5,target.y(),target.z()+.5),eye=mc.player.getEyePosition();
-        if (eye.distanceTo(point)>Math.min(4,mc.gameMode.getPickRange())) return null;
-        var ray=mc.level.clip(new ClipContext(eye,point.add(0,-.001,0),ClipContext.Block.OUTLINE,ClipContext.Fluid.NONE,mc.player));
-        return ray.getType()==HitResult.Type.BLOCK && ray.getBlockPos().equals(soil) && ray.getDirection()==Direction.UP
-            ? new BlockHitResult(point,Direction.UP,soil,false) : null;
+        return mc==null || mc.player==null ? null : plantHitFrom(mc,target,mc.player.getEyePosition(),3.25);
+    }
+    private static BlockHitResult plantHitFrom(Minecraft mc,Pos target,Vec3 eye,double reach) {
+        if (mc==null || mc.level==null || mc.player==null || mc.gameMode==null || target==null) return null;
+        var base=MinecraftWorld.nativePos(target);
+        var soil=base.below();
+        if (!mc.level.hasChunkAt(base) || !mc.level.hasChunkAt(soil) || !mc.level.getBlockState(base).isAir()) return null;
+        try {
+            if (!Blocks.SPRUCE_SAPLING.defaultBlockState().canSurvive(mc.level,base)) return null;
+            var shape=mc.level.getBlockState(soil).getShape(mc.level,soil,CollisionContext.of(mc.player));
+            return NativeLoggingPlantHit.nearest(soil,eye,shape.toAabbs(),Math.min(reach,mc.gameMode.getPickRange()),
+                end -> mc.level.clip(new ClipContext(eye,end,ClipContext.Block.OUTLINE,ClipContext.Fluid.NONE,mc.player)));
+        } catch (RuntimeException unknownGeometry) { return null; }
     }
 }

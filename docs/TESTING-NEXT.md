@@ -1049,3 +1049,45 @@ sampler, occlusion and reach rejection, shape changes, and module restart after
 six of twenty-four acknowledgements. Another fixture needs thirty-one chops:
 completion follows the observed fallen tree, not a fixed count of twenty-four.
 These are code/fixture results; the new aiming change still needs live retest.
+
+#### Live stump retest and incomplete 2x2 planting follow-up
+
+After normal same-instance deployment, Quick Play reported an unknown host.
+A subsequent normal in-client reconnect succeeded. The resumed partial tree
+received seventeen additional successful native chopping acknowledgements and
+actually fell. Receipt totals are not the TreeChop tooltip's absolute progress
+counter; do not infer that counter by adding action acknowledgements.
+
+The next stop exposed a separate timing problem: the fixed eighty-tick settling
+window ended around the arrival of saplings. The one-second observer saw the
+stop and the first nine-sapling inventory in the same interval, so their exact
+ordering cannot be reconstructed. A later explicit retry successfully planted
+two saplings before the next planting precondition rejected the attempt. No
+native failure or unresolved action reply was observed. Replanting and the
+borrowed-hotbar checkpoint remained active; no crafting or delivery completed.
+
+The operator reported that one of the two saplings grew into a small tree and
+chose to repair that plot manually. Later native inspection found all four
+bases occupied by spruce logs; that is manual-repair/growth evidence, not an
+automated four-sapling success. A current read-only probe cannot reconstruct
+the earlier obstruction. Code inspection establishes that generic soil
+visibility and the former single-point soil-UP planting test were different
+conditions; all-face approach and delayed-sapling handling are being tested
+separately before another routine run.
+
+The follow-up keeps the eighty-tick fall delay and waits up to another four
+hundred client ticks from the first insufficient-sapling observation. All missing
+cells must have usable inventory saplings available before any planting starts;
+partial arrivals do not extend that plot's deadline. The planting-only navigator
+requires every remaining soil UP face to be reachable from one stance, using
+matching native geometry for planned and actual eyes. The module keeps a
+far-to-near order while the remaining faces stay visible and confirms one
+native use at a time. Current terrain still wins: this is not an atomic four-use
+operation or permission to ignore a new obstruction. Explicit pause/reconnect
+preserves the replant obligation and never resends a confirmed planting.
+
+Java 17 / Gradle 8.8 integrated `test build` passed: 73 suites, 907 tests,
+zero failures, errors or skips. Native UP-face clipping, all-goal navigation,
+delayed/partial inventory arrivals and fixed planting order have regression
+coverage. Full live 2x2 replanting and the rest of the logging routine still
+require supervised acceptance after deployment.
