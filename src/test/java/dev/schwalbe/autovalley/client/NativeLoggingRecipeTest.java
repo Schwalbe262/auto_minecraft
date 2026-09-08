@@ -23,6 +23,34 @@ class NativeLoggingRecipeTest {
     private static ArrayList<Stack> done(int quantity) {
         var slots=empty(); slots.set(10,item(LoggingRules.FIRE_LOG,quantity)); slots.set(45,item("minecraft:netherite_axe",1)); return slots;
     }
+    @Test void synchronizedKnownRecipeDoesNotRequireAClientRecipeBookEntry() {
+        // No client-book flag enters the native recipe-data guard. The server
+        // independently accepts or refuses the ordinary place-recipe packet.
+        assertTrue(NativeLoggingRecipe.knownRecipe(true,true,LoggingRules.FIRE_LOG,1,Collections.nCopies(6,true)));
+    }
+    @Test void removingClientBookPrecheckDoesNotBroadenRecipeShapeOutputOrIngredients() {
+        var spruce=Collections.nCopies(6,true);
+        assertFalse(NativeLoggingRecipe.knownRecipe(false,true,LoggingRules.FIRE_LOG,1,spruce));
+        assertFalse(NativeLoggingRecipe.knownRecipe(true,false,LoggingRules.FIRE_LOG,1,spruce));
+        assertFalse(NativeLoggingRecipe.knownRecipe(true,true,"minecraft:spruce_planks",1,spruce));
+        for (int count:List.of(0,2,64)) assertFalse(NativeLoggingRecipe.knownRecipe(true,true,LoggingRules.FIRE_LOG,count,spruce));
+        for (int size:List.of(0,5,7,9))
+            assertFalse(NativeLoggingRecipe.knownRecipe(true,true,LoggingRules.FIRE_LOG,1,Collections.nCopies(size,true)));
+        var wrongIngredient=new ArrayList<>(spruce); wrongIngredient.set(4,false);
+        assertFalse(NativeLoggingRecipe.knownRecipe(true,true,LoggingRules.FIRE_LOG,1,wrongIngredient));
+        wrongIngredient.set(4,null);
+        assertFalse(NativeLoggingRecipe.knownRecipe(true,true,LoggingRules.FIRE_LOG,1,wrongIngredient));
+        assertFalse(NativeLoggingRecipe.knownRecipe(true,true,null,1,spruce));
+        assertFalse(NativeLoggingRecipe.knownRecipe(true,true,LoggingRules.FIRE_LOG,1,null));
+    }
+    @Test void serverRefusingRecipeBookPlacementCannotBeMistakenForPermissionToTakeOutput() {
+        var original=before(1);
+        assertEquals(0,NativeLoggingRecipe.placement(original,new ArrayList<>(original),OUTPUT),
+            "A true full self-swap ACK of the unchanged grid is still not recipe placement");
+        var onlyPickup=new ArrayList<>(original); onlyPickup.set(20,item(LoggingRules.FIRE_LOG,2));
+        assertEquals(0,NativeLoggingRecipe.placement(original,onlyPickup,OUTPUT));
+        assertFalse(NativeLoggingRecipe.crafted(original,onlyPickup,OUTPUT,1));
+    }
     @Test void exactSixIngredientNativePlacementAndResultCountAreRequired() {
         for(int n:List.of(1,14,64)) {
             assertEquals(n,NativeLoggingRecipe.placement(before(n),placed(n),OUTPUT));

@@ -297,14 +297,14 @@ public final class MinecraftActions implements ActionPort {
     }
     private void tickTrash() {
         if (trash==null || trash.generation!=observations.generation()) {
-            finish(ActionOutcome.State.FAILED,"Connection changed during rotten tomato deletion"); return;
+            finish(ActionOutcome.State.FAILED,"Connection changed during inventory waste deletion"); return;
         }
         if (mc.player.containerMenu!=mc.player.inventoryMenu || !mc.player.inventoryMenu.getCarried().isEmpty()) {
             finish(ActionOutcome.State.FAILED,"Inventory or cursor changed during deletion; no further request was sent"); return;
         }
         if (trash.confirmed(observations)) {
             int removed=trash.quantity; trashInFlight=false;
-            finish(ActionOutcome.State.SUCCEEDED,"Server verified the single rotten tomato stack deletion",removed); return;
+            finish(ActionOutcome.State.SUCCEEDED,"Server verified the single inventory waste stack deletion",removed); return;
         }
         if (world.tick()-started>=context.profile().interactionTimeoutTicks)
             finish(ActionOutcome.State.FAILED,"No exact TrashSlot acknowledgement; inspect before resuming");

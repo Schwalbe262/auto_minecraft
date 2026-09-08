@@ -35,12 +35,14 @@ final class NativeLoggingRecipe {
             throw new IllegalArgumentException("Unexpected crafting-table inventory mapping");
         var candidate=mc.level.getRecipeManager().byKey(new ResourceLocation(LoggingRules.RECIPE)).orElseThrow();
         ItemStack expected=candidate.getResultItem(mc.level.registryAccess());
-        if (!(candidate instanceof ShapelessRecipe) || candidate.getIngredients().size()!=6
-            || !candidate.canCraftInDimensions(3,3) || expected.getCount()!=1
-            || !LoggingRules.FIRE_LOG.equals(BuiltInRegistries.ITEM.getKey(expected.getItem()).toString())
-            || candidate.getIngredients().stream().anyMatch(i -> !i.test(new ItemStack(Items.SPRUCE_LOG)))
-            || !mc.player.getRecipeBook().contains(candidate))
+        if (!knownRecipe(candidate instanceof ShapelessRecipe,candidate.canCraftInDimensions(3,3),
+                BuiltInRegistries.ITEM.getKey(expected.getItem()).toString(),expected.getCount(),
+                candidate.getIngredients().stream().map(i -> i.test(new ItemStack(Items.SPRUCE_LOG))).toList()))
             throw new IllegalArgumentException("The known six-log fire-log recipe is unavailable or changed");
+        // The client recipe book is not server authorization: this pack can have
+        // the actual synchronized recipe but no client-book entry. Normal native
+        // placement still checks the SERVER recipe book; rejection cannot pass
+        // the exact full-menu placement proof and never permits an output click.
         // Recipe-book placement is server-selected. Reject competing raw-log ingredients,
         // rather than assuming the server will choose spruce from a broad recipe tag.
         for (int i=0;i<36;i++) {
@@ -56,6 +58,11 @@ final class NativeLoggingRecipe {
         selfSlot=mc.player.containerMenu.slots.stream().filter(s -> s.container==mc.player.getInventory() && s.getContainerSlot()==selfHotbar)
             .mapToInt(s -> s.index).findFirst().orElseThrow();
         stepStarted=tick;
+    }
+    /** Recipe data only; a missing client-book entry must not replace the server's own placement check. */
+    static boolean knownRecipe(boolean shapeless,boolean canCraft3x3,String outputId,int outputCount,List<Boolean> acceptsSpruce) {
+        return shapeless && canCraft3x3 && LoggingRules.FIRE_LOG.equals(outputId) && outputCount==1
+            && acceptsSpruce!=null && acceptsSpruce.size()==6 && acceptsSpruce.stream().allMatch(Boolean.TRUE::equals);
     }
     static boolean menu(net.minecraft.world.inventory.AbstractContainerMenu menu) {
         return menu instanceof CraftingMenu crafting && crafting.getGridWidth()==3 && crafting.getGridHeight()==3

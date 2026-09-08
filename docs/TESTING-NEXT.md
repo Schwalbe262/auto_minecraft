@@ -1157,3 +1157,24 @@ Java 17 / Gradle 8.8 integrated `test build`: 74 suites, 928 tests, zero
 failures, errors or skips. Regressions cover the observed 28-to-34 pickup,
 unextended timeout, duplicate/gapped samples, interrupted cleanup, subsequent
 inventory changes, fingerprint endpoints and malformed normal-slot mappings.
+
+On deployment, cleanup resumed without further felling/planting: the server
+confirmed disposal of 45 twigs and restoration of the borrowed hotbar item.
+The registered crafting table opened with an empty grid and cursor, but recipe
+construction failed before any material placement. Read-only native inspection
+found the exact six-spruce-compatible shapeless recipe, one fire-log result,
+correct inventory mapping and no competing ingredients. Its client recipe-book
+entry was absent. No ingredients were consumed during that rejection.
+
+Only the client-book precheck is removed. Normal native recipe placement still
+uses the server's own recipe-book authorization, and an unchanged/self-swap
+snapshot cannot satisfy the existing exact six-slot placement proof. Output is
+never taken without that proof. No recipe unlock, alternate crafting primitive
+or server permission override is introduced. A server-side refusal can still
+time out safely and requires diagnosis, not a claim of completed crafting.
+The shared trash receipt now names inventory waste rather than mislabeling
+logging twigs as rotten tomatoes.
+
+Java 17 / Gradle 8.8 integrated `test build` passed: 74 suites, 931 tests,
+zero failures, errors or skips. The three added regressions retain all recipe
+data guards and reject unchanged/pickup-only menus after server refusal.
