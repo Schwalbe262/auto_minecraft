@@ -233,8 +233,16 @@ public final class MinecraftActions implements ActionPort {
                 }
                 case SLEEP -> { if (mc.player.isSleeping()) { finish(ActionOutcome.State.SUCCEEDED,"Entered bed"); return; } }
                 case ARTISAN -> {
-                    if(artisanAttempt!=null && artisanAttempt.confirmed(observations)) {
-                        finish(ActionOutcome.State.SUCCEEDED,"Server confirmed artisan state and participating slot");return;
+                    if(artisanAttempt!=null) {
+                        var confirmation=artisanAttempt.confirmation(observations);
+                        if(confirmation!=NativeArtisanReceipt.Confirmation.NONE) {
+                            // Evidence belongs to this exact still-pending ticket.
+                            // A late fence check can clear a target, but cannot
+                            // manufacture this outcome for an old cancelled use.
+                            var proof=confirmation==NativeArtisanReceipt.Confirmation.CYCLE_ADVANCED
+                                ? ActionOutcome.Proof.ARTISAN_CYCLE_ADVANCED : ActionOutcome.Proof.NONE;
+                            finish(ActionOutcome.State.SUCCEEDED,"Server confirmed artisan state and participating slot",0,proof);return;
+                        }
                     }
                 }
                 case HARVEST, MACHINE, FRUIT, DOOR -> {
@@ -623,11 +631,14 @@ public final class MinecraftActions implements ActionPort {
     }
     private void finish(ActionOutcome.State state,String message) { finishConsolidation(state,message); finishTrash(state,message); finishLogging(state,message); finishArtisan(state); put(pendingTicket,state,message); pending=null; }
     private void finish(ActionOutcome.State state,String message,int quantity) {
+        finish(state,message,quantity,ActionOutcome.Proof.NONE);
+    }
+    private void finish(ActionOutcome.State state,String message,int quantity,ActionOutcome.Proof proof) {
         finishConsolidation(state,message);
         finishTrash(state,message);
         finishLogging(state,message);
         finishArtisan(state);
-        outcomes.put(pendingTicket,new ActionOutcome(state,message,quantity)); pending=null;
+        outcomes.put(pendingTicket,new ActionOutcome(state,message,quantity,proof)); pending=null;
         if (outcomes.size()>512) outcomes.remove(outcomes.keySet().iterator().next());
     }
     private void put(long ticket,ActionOutcome.State state,String message) {

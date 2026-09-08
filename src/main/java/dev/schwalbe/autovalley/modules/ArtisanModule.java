@@ -10,7 +10,7 @@ public final class ArtisanModule implements AutomationModule {
     private final Feature feature;
     private Stage stage=Stage.START,afterClose;
     private Pending pending;
-    private long ticket=-1,verifySince,settledSince=-1;
+    private long ticket=-1,verifySince,settledSince=-1,dispatchDay=Long.MIN_VALUE;
     private List<ArtisanJob> jobs=List.of();
     private ArtisanJob job;
     private ArtisanRecipe recipe;
@@ -21,9 +21,10 @@ public final class ArtisanModule implements AutomationModule {
     private int scanPasses;
     private int inputBefore,outputBefore,withdrawalBefore,expectedOutput;
     private Pos source;
-    private boolean stockReady,feeding,collected;
+    private boolean stockReady,feeding,collected,cycleAdvanced;
     private long stockDay=-1;
     private String deferredAfterCleanup;
+    private final Map<String,Set<String>> uncertainJobs=new LinkedHashMap<>();
     private boolean sleepSafeDefer;
     private CommodityStorageModule outputStorage,inputReturn;
 
@@ -54,7 +55,7 @@ public final class ArtisanModule implements AutomationModule {
             ticket=-1;
             if (!result.success()) {
                 String uncertainty=pending==Pending.USE ? c.actions().artisanRejection(target()) : null;
-                if(uncertainty!=null) { pending=null;return deferAfterCleanup(c,uncertainty); }
+                if(uncertainty!=null) return skipUncertainTarget(c,uncertainty);
                 return fail("가공 조작 실패: "+result.message());
             }
             Pending completed=pending;pending=null;
@@ -69,7 +70,10 @@ public final class ArtisanModule implements AutomationModule {
                     snapshot(c);stage=Stage.FETCH;
                 }
                 case SWAP,SELECT -> stage=Stage.EQUIP;
-                case USE -> { verifySince=c.world().tick();stage=Stage.VERIFY; }
+                case USE -> {
+                    cycleAdvanced=result.proof()==ActionOutcome.Proof.ARTISAN_CYCLE_ADVANCED;
+                    verifySince=c.world().tick();stage=Stage.VERIFY;
+                }
             }
         }
         switch (stage) {
@@ -80,7 +84,14 @@ public final class ArtisanModule implements AutomationModule {
                 jobIndex=0;stage=Stage.JOB;
             }
             case JOB -> {
-                if (jobIndex>=jobs.size()) { reset();return WorkResult.idle(); }
+                if (jobIndex>=jobs.size()) {
+                    if (!uncertainJobs.isEmpty()) {
+                        String unsafe=uncertaintySkipRejection(c);
+                        if (unsafe!=null) return fail(unsafe);
+                        return deferClean(c,"미확정 기계는 재클릭하지 않았습니다. 나머지 가공 작업과 보유품 정리를 마치고 보류합니다");
+                    }
+                    reset();return WorkResult.idle();
+                }
                 job=jobs.get(jobIndex);recipe=job.recipe();
                 inputStore=CommodityStorageRules.store(c.profile(),job.inputStoreId());
                 CommodityStore output=CommodityStorageRules.store(c.profile(),job.outputStoreId());
@@ -98,7 +109,7 @@ public final class ArtisanModule implements AutomationModule {
             case TARGET -> {
                 if (machineIndex>=machines.size()) { stage=Stage.OUTPUT;break; }
                 String uncertainty=c.actions().artisanRejection(target());
-                if(uncertainty!=null)return deferAfterCleanup(c,uncertainty);
+                if(uncertainty!=null)return skipUncertainTarget(c,uncertainty);
                 if (closeIfNeeded(c,Stage.TARGET)) break;
                 Navigation.Result nav=c.navigation().moveTo(target(),4,c);
                 if (nav==Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"등록한 가공 기계에 접근할 수 없습니다");
@@ -190,6 +201,10 @@ public final class ArtisanModule implements AutomationModule {
                 inputBefore=inputCount(c,grade);outputBefore=outputCount(c);
                 expectedOutput=outputBefore+(collected ? recipe.outputCount() : 0)
                     -(feeding && recipe.sameInputAndOutput() ? recipe.inputCount() : 0);
+                // This is only a reinspection calendar anchor. It grants neither
+                // consumption proof nor a schedule until the native ACK and VERIFY succeed.
+                cycleAdvanced=false;
+                dispatchDay=day(c);
                 submit(c,new Action.UseBlock(target(),Action.Use.ARTISAN),Pending.USE);
             }
             case VERIFY -> {
@@ -205,8 +220,17 @@ public final class ArtisanModule implements AutomationModule {
                 boolean inputConfirmed=!feeding || (!recipe.sameInputAndOutput()
                     ? after>=inputBefore-recipe.inputCount() && after<=inputBefore-recipe.minimumInputConsumed(collected)
                     : after>=inputBefore-recipe.inputCount() && after<=inputBefore-recipe.inputCount()+(collected ? recipe.outputCount() : 0));
-                if (!block.flag("mature") && block.flag("working")==feeding && inputConfirmed) {
-                    if (feeding) { schedule(c,recipe.cycleDays());stockReady=false;scanPasses=0; }
+                // Only this successful ticket's retained native progression proof
+                // permits a cycle that matured before its ACK was consumed. Merely
+                // seeing an initial mature block (or a later working reversal) does not.
+                boolean stateConfirmed=cycleAdvanced
+                    ? feeding && block.flag("mature") && !block.flag("working")
+                    : !block.flag("mature") && block.flag("working")==feeding;
+                if (stateConfirmed && inputConfirmed) {
+                    if (feeding) {
+                        if (dispatchDay==Long.MIN_VALUE) return fail("가공 전송 날짜가 없어 다음 확인일을 저장할 수 없습니다");
+                        scheduleAt(c,Math.addExact(dispatchDay,recipe.cycleDays()));stockReady=false;scanPasses=0;
+                    }
                     stage=collected ? Stage.PICKUP : Stage.TARGET;
                     if (!collected) machineIndex++;
                 } else if (c.world().tick()-verifySince>c.profile().interactionTimeoutTicks)
@@ -264,7 +288,10 @@ public final class ArtisanModule implements AutomationModule {
         return block;
     }
     private void schedule(Context c,int days) {
-        String key=job.scheduleKey(target());Long prior=c.profile().nextEligibleDay.put(key,Math.addExact(day(c),days));
+        scheduleAt(c,Math.addExact(day(c),days));
+    }
+    private void scheduleAt(Context c,long nextDay) {
+        String key=job.scheduleKey(target());Long prior=c.profile().nextEligibleDay.put(key,nextDay);
         try { c.checkpoint().run(); }
         catch (RuntimeException failure) {
             if (prior==null) c.profile().nextEligibleDay.remove(key);else c.profile().nextEligibleDay.put(key,prior);
@@ -353,7 +380,26 @@ public final class ArtisanModule implements AutomationModule {
     private WorkResult deferClean(Context c,String message) {
         if (ticket>=0 || c.actions().busy() || !c.world().player().onGround() || c.world().menu().container() || !c.world().menu().carried().empty())
             return fail("가공 보류 전에 현재 조작을 확인해야 합니다: "+message);
-        c.actions().stopMovement();reset();sleepSafeDefer=true;return WorkResult.deferred(message);
+        String detailed=message;
+        if (!uncertainJobs.isEmpty()) detailed+=" — "+String.join(" / ",uncertainJobs.entrySet().stream()
+            .map(e->e.getKey()+": "+String.join("; ",e.getValue())).toList());
+        c.actions().stopMovement();reset();sleepSafeDefer=true;return WorkResult.deferred(detailed);
+    }
+    /** A target-scoped sent-use uncertainty never grants a skip across a global unsafe boundary. */
+    private String uncertaintySkipRejection(Context c) {
+        if (ticket>=0 || c.actions().busy() || c.actions().pauseReason()!=null
+                || !c.world().player().connected() || !c.world().player().onGround()
+                || c.world().menu()==null || c.world().menu().container() || !c.world().menu().carried().empty()
+                || c.profile().loggingHotbarLease!=null || MachineOutputLedger.hasPending(c))
+            return "미확정 가공 기계를 건너뛰기 전에 현재 조작·메뉴·빌린 슬롯을 안전하게 확인해야 합니다";
+        return null;
+    }
+    private WorkResult skipUncertainTarget(Context c,String reason) {
+        String unsafe=uncertaintySkipRejection(c);
+        if (unsafe!=null) return fail(unsafe);
+        uncertainJobs.computeIfAbsent(job.id(),ignored->new LinkedHashSet<>()).add(reason);
+        c.actions().stopMovement();pending=null;machineIndex++;stage=Stage.TARGET;
+        return WorkResult.busy(status("미확정 기계는 재클릭 없이 보류 — 나머지 등록 기계 확인"));
     }
     @Override public boolean sleepSafeDeferred(Context c) {
         return sleepSafeDefer && ticket<0 && !c.actions().busy() && c.actions().pauseReason()==null
@@ -369,7 +415,7 @@ public final class ArtisanModule implements AutomationModule {
         sleepSafeDefer=false;
         if (outputStorage!=null) outputStorage.reset();if (inputReturn!=null) inputReturn.reset();
         stage=Stage.START;pending=null;ticket=-1;job=null;recipe=null;inputStore=null;jobs=List.of();machines=List.of();sources=List.of();
-        stock.clear();stockReady=false;stockDay=-1;source=null;containerId=-1;settledSince=-1;grade=-1;hotbar=-1;
-        jobIndex=0;machineIndex=0;sourceIndex=0;scanPasses=0;deferredAfterCleanup=null;outputStorage=null;inputReturn=null;
+        stock.clear();stockReady=false;stockDay=-1;source=null;containerId=-1;settledSince=-1;dispatchDay=Long.MIN_VALUE;cycleAdvanced=false;grade=-1;hotbar=-1;
+        jobIndex=0;machineIndex=0;sourceIndex=0;scanPasses=0;deferredAfterCleanup=null;uncertainJobs.clear();outputStorage=null;inputReturn=null;
     }
 }

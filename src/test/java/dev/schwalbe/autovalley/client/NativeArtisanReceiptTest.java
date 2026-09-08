@@ -4,6 +4,7 @@ import dev.schwalbe.autovalley.core.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
+import static dev.schwalbe.autovalley.client.NativeArtisanReceipt.Confirmation.*;
 
 /** Tests the predicates used by detached native receipts, without bootstrapping a game or registries. */
 class NativeArtisanReceiptTest {
@@ -22,6 +23,141 @@ class NativeArtisanReceiptTest {
         return new NativeArtisanReceipt.SlotProof<>(seq,menu,-1,true,cursorEmpty,value);
     }
     private static String latest(List<NativeArtisanReceipt.SlotProof<String>> proofs) { return NativeArtisanReceipt.latestSelected(2,0,38,100,proofs); }
+    private static final Map<String,String> EXTRA=Map.of("facing","north","upgraded","false");
+    private static BlockData before(boolean mature) {
+        Map<String,String> properties=new LinkedHashMap<>(EXTRA);properties.put("mature",Boolean.toString(mature));properties.put("working","false");
+        return new BlockData(TARGET,SEED.machineId(),properties);
+    }
+    private static NativeArtisanReceipt.StateProof state(long seq,boolean mature,boolean working) {
+        return new NativeArtisanReceipt.StateProof(seq,TARGET,SEED.machineId(),Boolean.toString(mature),Boolean.toString(working),EXTRA);
+    }
+    private static NativeArtisanReceipt.Confirmation classify(List<NativeArtisanReceipt.StateProof> proofs) {
+        return NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(true),true,true,100,4,4,proofs);
+    }
+
+    @Test void retainedWorkingThenMatureProvesAdvancedCycleForBothIdleAndMatureOriginalMachines() {
+        for(boolean originallyMature:List.of(false,true)) {
+            assertEquals(CYCLE_ADVANCED,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(originallyMature),true,true,100,4,4,
+                List.of(state(101,false,true),state(102,false,true),state(103,true,false),state(104,true,false))));
+        }
+        assertEquals(CYCLE_ADVANCED,classify(List.of(state(105,true,false),state(101,false,true),state(103,false,true))),"Sequence orders evidence, not list iteration");
+    }
+    @Test void absentEvictedOrPreDispatchWorkingCannotBeBorrowedForAMatureReceipt() {
+        for(List<NativeArtisanReceipt.StateProof> proofs:List.of(
+            List.of(state(101,true,false)),List.of(state(101,true,false),state(102,true,false)),
+            List.of(state(100,false,true),state(101,true,false)),List.of(state(99,false,true),state(101,true,false))))
+            assertEquals(NONE,classify(proofs));
+    }
+    @Test void initialMatureEchoAndAnyReturnToWorkingRejectOnlyTheAdvancedCyclePath() {
+        assertEquals(NONE,classify(List.of(state(101,true,false),state(102,false,true),state(103,true,false))));
+        assertEquals(NONE,classify(List.of(state(101,false,true),state(102,true,false),state(103,false,true),state(104,true,false))));
+        assertEquals(CONFIRMED,classify(List.of(state(101,false,true),state(102,true,false),state(103,false,true))),
+            "Latest valid working retains the old confirmation path, never CYCLE_ADVANCED");
+    }
+    @Test void everyPostDispatchTargetStateMustBelongToTheSameMonotoneCycle() {
+        List<NativeArtisanReceipt.StateProof> invalid=List.of(
+            state(102,false,false),state(102,true,true),
+            new NativeArtisanReceipt.StateProof(102,TARGET,"minecraft:air","false","true",EXTRA),
+            new NativeArtisanReceipt.StateProof(102,TARGET,JADE.machineId(),"false","true",EXTRA),
+            new NativeArtisanReceipt.StateProof(102,TARGET,SEED.machineId(),null,"true",EXTRA),
+            new NativeArtisanReceipt.StateProof(102,TARGET,SEED.machineId(),"false",null,EXTRA),
+            new NativeArtisanReceipt.StateProof(102,TARGET,SEED.machineId(),"FALSE","true",EXTRA),
+            new NativeArtisanReceipt.StateProof(102,TARGET,SEED.machineId(),"false","unknown",EXTRA));
+        for(var bad:invalid) {
+            assertEquals(NONE,classify(List.of(state(101,false,true),bad,state(103,true,false))),bad.toString());
+            assertEquals(NONE,classify(List.of(bad,state(103,false,true),state(104,true,false))),"Do not discard a bad prefix");
+            assertEquals(NONE,classify(List.of(state(101,false,true),state(103,true,false),new NativeArtisanReceipt.StateProof(104,bad.pos(),bad.id(),bad.mature(),bad.working(),bad.properties()))));
+        }
+    }
+    @Test void extraNativePropertiesMustRemainEqualToTheOriginalStateThroughoutTheCycle() {
+        List<Map<String,String>> invalid=Arrays.asList(null,Map.of(),Map.of("facing","south","upgraded","false"),
+            Map.of("facing","north","upgraded","true"),Map.of("facing","north","upgraded","false","waterlogged","false"));
+        for(Map<String,String> changed:invalid) {
+            var working=new NativeArtisanReceipt.StateProof(101,TARGET,SEED.machineId(),"false","true",changed);
+            var mature=new NativeArtisanReceipt.StateProof(102,TARGET,SEED.machineId(),"true","false",changed);
+            assertEquals(NONE,classify(List.of(working,state(103,true,false))));
+            assertEquals(NONE,classify(List.of(state(101,false,true),mature)));
+            assertEquals(NONE,classify(List.of(state(101,false,true),mature,state(103,true,false))),"Reverting an extra property does not erase its change");
+        }
+        assertEquals(CONFIRMED,classify(List.of(new NativeArtisanReceipt.StateProof(101,TARGET,SEED.machineId(),"false","true",Map.of()))),
+            "Do not tighten the existing latest-working confirmation contract here");
+    }
+    @Test void theCycleCannotUseAnotherTargetAnUnknownBaselineOrDifferentGeneration() {
+        var good=List.of(state(101,false,true),state(103,true,false));
+        for(BlockData bad:List.of(new BlockData(OTHER,SEED.machineId(),before(true).properties()),
+            new BlockData(TARGET,JADE.machineId(),before(true).properties()),new BlockData(TARGET,SEED.machineId(),EXTRA),
+            new BlockData(TARGET,SEED.machineId(),Map.of("mature","false","working","true"))))
+            assertEquals(NONE,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,bad,true,true,100,4,4,good));
+        assertEquals(NONE,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(true),true,true,100,4,5,good));
+        assertEquals(NONE,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(true),true,true,100,4,5,List.of(state(101,false,true))),
+            "Generation mismatch also rejects the legacy working path");
+        assertEquals(NONE,classify(List.of(new NativeArtisanReceipt.StateProof(101,OTHER,SEED.machineId(),"false","true",EXTRA),state(103,true,false))));
+    }
+    @Test void unrelatedTargetsAndOldReceiptsDoNotPoisonTheSameTargetCycle() {
+        var unrelated=new NativeArtisanReceipt.StateProof(102,OTHER,"minecraft:air",null,null,null);
+        assertEquals(CYCLE_ADVANCED,classify(List.of(state(99,true,true),state(101,false,true),unrelated,state(103,true,false))));
+    }
+    @Test void duplicateSequenceAndMissingStateEvidenceCannotClaimAdvancedProgress() {
+        assertEquals(NONE,classify(List.of(state(101,false,true),state(101,false,true),state(103,true,false))));
+        assertEquals(NONE,classify(List.of(state(101,false,true),state(101,true,false),state(103,true,false))));
+        assertEquals(NONE,classify(Arrays.asList(state(101,false,true),null,state(103,true,false))));
+        assertEquals(NONE,classify(List.of()));assertEquals(NONE,classify(null));
+    }
+    @Test void collectionOnlyNeverClaimsAnAdvancedCycleAndLegacyEmptyStateStillConfirmsCollection() {
+        assertEquals(NONE,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(true),false,true,100,4,4,
+            List.of(state(101,false,true),state(103,true,false))));
+        assertEquals(CONFIRMED,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(true),false,false,100,4,4,List.of(state(101,false,false))));
+        assertEquals(NONE,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(false),false,true,100,4,4,List.of(state(101,false,false))));
+    }
+    @Test void latestSelectedSlotCompatibilityAndCursorRemainMandatoryForCycleProof() {
+        List<List<NativeArtisanReceipt.SlotProof<String>>> denied=List.of(
+            List.of(slot(101,0,38,"consumed"),full(105,0,false,"consumed")),
+            List.of(slot(101,0,38,"consumed"),full(105,0,true,null)),
+            List.of(slot(101,0,38,"consumed"),slot(105,0,38,"unchanged")),
+            List.of(slot(101,0,37,"consumed")),List.of(full(99,0,true,"consumed")));
+        for(var slots:denied) {
+            boolean compatible="consumed".equals(latest(slots));
+            assertFalse(compatible);
+            assertEquals(NONE,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(true),true,compatible,100,4,4,List.of(state(102,false,true),state(104,true,false))));
+        }
+        assertEquals(CYCLE_ADVANCED,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(true),true,
+            "consumed".equals(latest(List.of(full(105,0,true,"consumed")))),100,4,4,List.of(state(102,false,true),state(104,true,false))));
+    }
+    @Test void cycleProofDoesNotWidenTheExistingExactIngredientPredicate() {
+        for(int after:List.of(12,14,16))assertEquals(NONE,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(true),true,
+            feed(SEED,16,SEED.inputId(),after,true,true),100,4,4,List.of(state(101,false,true),state(103,true,false))));
+        assertEquals(NONE,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(true),true,
+            feed(SEED,16,SEED.inputId(),13,false,true),100,4,4,List.of(state(101,false,true),state(103,true,false))));
+        assertEquals(CYCLE_ADVANCED,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,before(true),true,
+            feed(SEED,16,SEED.inputId(),13,true,true),100,4,4,List.of(state(101,false,true),state(103,true,false))));
+    }
+    @Test void cycleProjectionIsImmutableAndFiveArgumentStateProofStaysCompatible() {
+        Map<String,String> properties=new HashMap<>(EXTRA);
+        var proof=new NativeArtisanReceipt.StateProof(101,TARGET,SEED.machineId(),"false","true",properties);
+        properties.put("upgraded","true");assertEquals(EXTRA,proof.properties());
+        assertThrows(UnsupportedOperationException.class,()->proof.properties().put("facing","south"));
+        assertEquals(Map.of(),new NativeArtisanReceipt.StateProof(101,TARGET,SEED.machineId(),"false","true").properties());
+    }
+    @Test void projectionOnlyContainerFlagDoesNotReplaceOrHideANativePropertyChange() {
+        Map<String,String> properties=new LinkedHashMap<>(before(true).properties());properties.put("container","true");
+        BlockData projected=new BlockData(TARGET,SEED.machineId(),properties);
+        assertEquals(CYCLE_ADVANCED,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,projected,true,true,100,4,4,
+            List.of(state(101,false,true),state(102,true,false))));
+        Map<String,String> changed=new LinkedHashMap<>(EXTRA);changed.put("facing","south");
+        assertEquals(NONE,NativeArtisanReceipt.confirmation(SEED.machineId(),TARGET,projected,true,true,100,4,4,
+            List.of(state(101,false,true),new NativeArtisanReceipt.StateProof(102,TARGET,SEED.machineId(),"true","false",changed))));
+    }
+    @Test void crystalCycleUsesItsOwnMachineAndUnchangedCoalescedFeedCompatibility() {
+        BlockData crystalBefore=new BlockData(TARGET,JADE.machineId(),before(true).properties());
+        var proofs=List.of(new NativeArtisanReceipt.StateProof(101,TARGET,JADE.machineId(),"false","true",EXTRA),
+            new NativeArtisanReceipt.StateProof(103,TARGET,JADE.machineId(),"true","false",EXTRA));
+        for(int after:List.of(6,7,8))assertEquals(CYCLE_ADVANCED,NativeArtisanReceipt.confirmation(JADE.machineId(),TARGET,crystalBefore,true,
+            feed(JADE,7,JADE.inputId(),after,true,true),100,4,4,proofs));
+        assertEquals(NONE,NativeArtisanReceipt.confirmation(JADE.machineId(),TARGET,crystalBefore,true,
+            feed(JADE,7,JADE.inputId(),9,true,true),100,4,4,proofs));
+        assertEquals(NONE,NativeArtisanReceipt.confirmation(JADE.machineId(),TARGET,crystalBefore,true,
+            feed(JADE,7,JADE.inputId(),7,false,true),100,4,4,proofs));
+    }
     @Test void seedFeedRequiresExactThreeConsumptionAndPreservedRemainingIdentity() {
         assertTrue(feed(SEED,16,SEED.inputId(),13,true,true));
         for(int after:List.of(0,12,14,16,17))assertFalse(feed(SEED,16,SEED.inputId(),after,true,true));

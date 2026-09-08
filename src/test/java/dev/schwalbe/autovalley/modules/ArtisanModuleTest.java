@@ -222,6 +222,198 @@ class ArtisanModuleTest {
         for(int i=0;i<200;i++){engine.tick(c);f.now++;}
         assertEquals(0,f.sleepUses);assertEquals(0,f.uses);assertTrue(engine.running());
     }
+    @Test void firstMiddleOrLastUncertainTargetDoesNotStarveOtherMachines() {
+        for(int blockedIndex:List.of(0,1,3)) {
+            Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,4);f.inventory[1]=item(f.recipe.inputId(),16,0);
+            Pos blocked=List.copyOf(f.machineStates.keySet()).get(blockedIndex);f.uncertainTargets.put(blocked,"Target-specific uncertainty");
+            WorkResult result=f.run(new ArtisanModule(f.recipe.feature()),700);
+            assertEquals(WorkResult.State.DEFERRED,result.state(),result.message());assertEquals(3,f.uses);
+            assertEquals(9,f.consumed);assertEquals(3,f.stored(f.output,f.recipe.outputId()));assertEquals(7,f.stored(f.input,f.recipe.inputId()));
+            assertEquals(3,f.profile.nextEligibleDay.size());assertFalse(f.profile.nextEligibleDay.containsKey(f.profile.artisanJobs.get("job").scheduleKey(blocked)));
+            assertEquals(0,f.machineUses(blocked));assertFalse(f.menu().container());assertTrue(result.message().contains("job: Target-specific uncertainty"));
+        }
+    }
+    @Test void independentJobsAllRunAndKeepSeparateUncertainReasons() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,2);f.inventory[1]=item(f.recipe.inputId(),18,0);
+        Pos first=List.copyOf(f.machineStates.keySet()).get(0),secondBlocked=new Pos(20,64,0),secondGood=new Pos(21,64,0);
+        f.machineStates.put(secondBlocked,f.state(secondBlocked,true,false));f.machineStates.put(secondGood,f.state(secondGood,true,false));
+        f.profile.artisanJobs.put("second",new ArtisanJob("second",f.recipe.id(),List.of(secondBlocked,secondGood),"input","output"));
+        f.uncertainTargets.put(first,"First reason");f.uncertainTargets.put(secondBlocked,"Second reason");
+        WorkResult result=f.run(new ArtisanModule(f.recipe.feature()),1000);
+        assertEquals(WorkResult.State.DEFERRED,result.state(),result.message());assertEquals(2,f.uses);assertEquals(6,f.consumed);
+        assertEquals(0,f.machineUses(first));assertEquals(0,f.machineUses(secondBlocked));assertEquals(1,f.machineUses(secondGood));
+        assertEquals(2,f.profile.nextEligibleDay.size());assertEquals(2,f.stored(f.output,f.recipe.outputId()));
+        assertEquals(12,f.stored(f.input,f.recipe.inputId()));assertFalse(f.menu().container());
+        assertTrue(result.message().contains("job: First reason"));assertTrue(result.message().contains("second: Second reason"));
+    }
+    @Test void uncertainFailedUseSkipsOnlyThatMachineAndNeverRepeatsItsSentPacket() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,4);f.inventory[1]=item(f.recipe.inputId(),16,0);
+        Pos failed=List.copyOf(f.machineStates.keySet()).get(1);f.failUncertainUses.add(failed);
+        WorkResult result=f.run(new ArtisanModule(f.recipe.feature()),700);
+        assertEquals(WorkResult.State.DEFERRED,result.state(),result.message());assertEquals(4,f.uses);assertEquals(1,f.machineUses(failed));
+        assertEquals(9,f.consumed);assertEquals(3,f.profile.nextEligibleDay.size());
+        assertEquals(WorkResult.State.DEFERRED,f.run(new ArtisanModule(f.recipe.feature()),300).state());
+        assertEquals(4,f.uses);assertEquals(1,f.machineUses(failed));
+    }
+    @Test void resetAndNewDayPreserveTargetUncertaintyAndOnlyRepeatActuallyDueSuccessfulMachines() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,2);f.inventory[1]=item(f.recipe.inputId(),12,0);
+        List<Pos> machines=List.copyOf(f.machineStates.keySet());Pos blocked=machines.get(0),good=machines.get(1);
+        f.uncertainTargets.put(blocked,"Still unconfirmed");ArtisanModule module=new ArtisanModule(f.recipe.feature());
+        assertEquals(WorkResult.State.DEFERRED,f.run(module,500).state());assertEquals(1,f.uses);
+        module.reset();assertEquals(WorkResult.State.DEFERRED,f.run(module,300).state());assertEquals(1,f.uses);
+        f.dayTime+=24000;f.machineStates.put(good,f.state(good,true,false));module.reset();
+        assertEquals(WorkResult.State.DEFERRED,f.run(module,700).state());assertEquals(2,f.uses);assertEquals(0,f.machineUses(blocked));
+        assertEquals(List.of(437L),List.copyOf(f.profile.nextEligibleDay.values()));assertEquals(2,f.stored(f.output,f.recipe.outputId()));
+    }
+    @Test void targetSkipCannotPassGlobalUncertaintyBorrowedSlotsDirtyMenusOrAirborneState() {
+        for(int guard=0;guard<7;guard++) {
+            Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,2);f.inventory[1]=item(f.recipe.inputId(),12,0);
+            f.uncertainTargets.put(f.machineStates.keySet().iterator().next(),"Target uncertainty");
+            switch(guard) {
+                case 0 -> f.actionFence="Unresolved inventory acknowledgement";
+                case 1 -> f.actionBusy=true;
+                case 2 -> f.cursor=item("minecraft:bread",1,0);
+                case 3 -> f.opened=f.input;
+                case 4 -> f.grounded=false;
+                case 5 -> f.profile.loggingHotbarLease=new LoggingHotbarLease(9,2,item("minecraft:bread",1,0),"private-signature");
+                case 6 -> f.profile.pendingMachineOutputs.put("pending",new PendingMachineOutput("pending",Feature.PRESERVES,new Pos(30,64,0),435,null,1,PendingMachineOutput.Phase.AWAITING_PICKUP));
+            }
+            WorkResult result=f.run(new ArtisanModule(f.recipe.feature()),100);
+            assertEquals(WorkResult.State.BLOCKED,result.state(),"guard="+guard+" "+result.message());
+            assertEquals(0,f.uses);assertTrue(f.history.isEmpty());assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+    @Test void aNormalMissingMaterialDeferralStillStopsThatPassRatherThanExpandingJobPolicy() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,2);f.uncertainTargets.put(f.machineStates.keySet().iterator().next(),"First unknown");
+        Pos later=new Pos(20,64,0);f.machineStates.put(later,f.state(later,true,false));
+        f.profile.artisanJobs.put("later",new ArtisanJob("later",f.recipe.id(),List.of(later),"input","output"));
+        WorkResult result=f.run(new ArtisanModule(f.recipe.feature()),300);
+        assertEquals(WorkResult.State.DEFERRED,result.state(),result.message());assertEquals(0,f.uses);
+        assertTrue(result.message().contains("재료가 부족"));assertTrue(result.message().contains("job: First unknown"));
+        assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+    @Test void nativeConfirmationAcrossMidnightAnchorsSeedAndJadeReinspectionToTheDispatchDay() {
+        for(ArtisanRecipe recipe:List.of(ArtisanRecipe.ANCIENT_SEED,ArtisanRecipe.JADE_CRYSTAL)) {
+            Fixture f=new Fixture(recipe,1);f.dayTime=435L*24000+23900;f.inventory[1]=item(recipe.inputId(),recipe.inputCount(),0);f.holdUse=true;
+            ArtisanModule module=new ArtisanModule(recipe.feature());f.awaitUse(module);
+            assertTrue(f.profile.nextEligibleDay.isEmpty(),"sending a use is not consumption proof");
+            f.dayTime=436L*24000+100;f.holdUse=false;
+            f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"native working and selected-slot confirmation"));
+            assertEquals(WorkResult.State.IDLE,f.run(module,300).state());
+            assertEquals(List.of(435L+recipe.cycleDays()),List.copyOf(f.profile.nextEligibleDay.values()));assertEquals(1,f.uses);
+        }
+    }
+    @Test void anAlreadyDueConfirmedBatchAllowsReinspectionButWorkingStateStillForbidsAnotherUse() {
+        Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);f.dayTime=435L*24000+23900;
+        f.inventory[1]=item(f.recipe.inputId(),1,0);f.holdUse=true;ArtisanModule module=new ArtisanModule(f.recipe.feature());f.awaitUse(module);
+        f.dayTime=441L*24000+5000;f.holdUse=false;
+        f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"native working and selected-slot confirmation"));
+        assertEquals(WorkResult.State.IDLE,f.run(module,300).state());
+        assertEquals(List.of(440L),List.copyOf(f.profile.nextEligibleDay.values()));
+        assertEquals(WorkResult.State.IDLE,f.run(new ArtisanModule(f.recipe.feature()),200).state());
+        assertEquals(1,f.uses);assertEquals(List.of(442L),List.copyOf(f.profile.nextEligibleDay.values()),"working reinspection remains based on the current day");
+    }
+    @Test void midnightFailedOrStillPendingAckCannotCreateAScheduleFromDispatchDay() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.dayTime=435L*24000+23900;
+        f.inventory[1]=item(f.recipe.inputId(),6,0);f.holdUse=true;ArtisanModule module=new ArtisanModule(f.recipe.feature());f.awaitUse(module);
+        f.dayTime=436L*24000+5000;
+        for(int i=0;i<30;i++){assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());f.now++;}
+        assertTrue(f.profile.nextEligibleDay.isEmpty());assertEquals(1,f.uses);
+        f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.FAILED,"no native confirmation"));
+        assertEquals(WorkResult.State.BLOCKED,module.tick(f.context()).state());assertTrue(f.profile.nextEligibleDay.isEmpty());assertEquals(1,f.uses);
+    }
+    @Test void resetDiscardsTheOldDispatchAnchorAndResumeUsesObservedWorkingOrAFreshUse() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.dayTime=435L*24000+23900;
+        f.inventory[1]=item(f.recipe.inputId(),6,0);f.holdUse=true;ArtisanModule module=new ArtisanModule(f.recipe.feature());f.awaitUse(module);
+        f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"old acknowledged feed"));
+        module.reset();f.holdUse=false;f.dayTime=436L*24000+5000;
+        assertEquals(WorkResult.State.IDLE,f.run(module,300).state());
+        assertEquals(1,f.uses);assertEquals(List.of(437L),List.copyOf(f.profile.nextEligibleDay.values()));
+        f.dayTime=440L*24000+5000;f.machineStates.replaceAll((p,b)->f.state(p,true,false));module.reset();
+        assertEquals(WorkResult.State.IDLE,f.run(module,500).state());
+        assertEquals(2,f.uses);assertEquals(List.of(441L),List.copyOf(f.profile.nextEligibleDay.values()));
+    }
+    @Test void failedCrossMidnightCheckpointRestoresThePreviousSchedule() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.dayTime=435L*24000+23900;
+        String key=f.profile.artisanJobs.get("job").scheduleKey(f.machineStates.keySet().iterator().next());f.profile.nextEligibleDay.put(key,434L);
+        f.inventory[1]=item(f.recipe.inputId(),6,0);f.holdUse=true;ArtisanModule module=new ArtisanModule(f.recipe.feature());f.awaitUse(module);
+        f.dayTime=436L*24000+5000;f.failCheckpoint=true;
+        f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"native working and selected-slot confirmation"));
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state());assertEquals(434L,f.profile.nextEligibleDay.get(key));assertEquals(1,f.uses);
+    }
+    @Test void aMatureBlockWithoutTheExactTicketProgressProofCannotCompleteEvenWithCompatibleConsumption() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.inventory[1]=item(f.recipe.inputId(),6,0);f.holdUse=true;
+        ArtisanModule module=new ArtisanModule(f.recipe.feature());f.awaitUse(module);
+        f.machineStates.replaceAll((p,b)->f.state(p,true,false));
+        f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"ordinary success without cycle proof"));
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,300).state());assertEquals(1,f.uses);assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+    @Test void nativeAdvancedSeedAndJadeProceedToTheNextTargetWithoutReusingTheCompletedOne() {
+        for(ArtisanRecipe recipe:List.of(ArtisanRecipe.ANCIENT_SEED,ArtisanRecipe.JADE_CRYSTAL)) {
+            Fixture f=new Fixture(recipe,2);f.inventory[1]=item(recipe.inputId(),recipe.inputCount()*4,0);f.dayTime=435L*24000+23900;f.holdUse=true;
+            ArtisanModule module=new ArtisanModule(recipe.feature());f.awaitUse(module);Pos first=List.copyOf(f.machineStates.keySet()).get(0),second=List.copyOf(f.machineStates.keySet()).get(1);
+            f.dayTime=(435L+recipe.cycleDays())*24000+5000;f.machineStates.put(first,f.state(first,true,false));f.holdUse=false;
+            f.outcomes.put(f.lastTicket,advancedOutcome());
+            WorkResult result=f.run(module,600);
+            assertEquals(WorkResult.State.IDLE,result.state(),result.message());assertEquals(2,f.uses);
+            assertEquals(1,f.machineUses(first));assertEquals(1,f.machineUses(second));assertEquals(recipe.inputCount()*2,f.consumed);
+            ArtisanJob job=f.profile.artisanJobs.get("job");
+            assertEquals(435L+recipe.cycleDays(),f.profile.nextEligibleDay.get(job.scheduleKey(first)));
+            assertEquals(435L+2*recipe.cycleDays(),f.profile.nextEligibleDay.get(job.scheduleKey(second)));
+            assertTrue(f.machineStates.get(first).flag("mature"));assertTrue(f.machineStates.get(second).flag("working"));
+            assertFalse(f.menu().container());assertEquals(recipe.sameInputAndOutput()?recipe.inputCount()*2+recipe.outputCount()*2:recipe.outputCount()*2,f.stored(f.output,recipe.outputId()));
+        }
+    }
+    @Test void advancedProofDoesNotPermitWorkingReversalIdleOrAnotherMachineType() {
+        for(int invalid=0;invalid<3;invalid++) {
+            Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.inventory[1]=item(f.recipe.inputId(),6,0);f.holdUse=true;
+            ArtisanModule module=new ArtisanModule(f.recipe.feature());f.awaitUse(module);Pos target=f.machineStates.keySet().iterator().next();
+            if(invalid==0)f.machineStates.put(target,f.state(target,false,true));
+            if(invalid==1)f.machineStates.put(target,f.state(target,false,false));
+            if(invalid==2)f.machineStates.put(target,new BlockData(target,ArtisanRecipe.JADE_CRYSTAL.machineId(),Map.of("mature","true","working","false")));
+            f.outcomes.put(f.lastTicket,advancedOutcome());
+            assertEquals(WorkResult.State.BLOCKED,f.run(module,300).state(),"invalid="+invalid);
+            assertEquals(1,f.uses);assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+    @Test void matureWhilePendingOrCancelledDoesNotInventAProgressProof() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.inventory[1]=item(f.recipe.inputId(),6,0);f.holdUse=true;
+        ArtisanModule module=new ArtisanModule(f.recipe.feature());f.awaitUse(module);f.machineStates.replaceAll((p,b)->f.state(p,true,false));
+        for(int i=0;i<30;i++){assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());f.now++;}
+        assertTrue(f.profile.nextEligibleDay.isEmpty());assertEquals(1,f.uses);
+        f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.CANCELLED,"operator stopped before confirmation"));
+        assertEquals(WorkResult.State.BLOCKED,module.tick(f.context()).state());assertTrue(f.profile.nextEligibleDay.isEmpty());assertEquals(1,f.uses);
+    }
+    @Test void anAdvancedProofCannotTurnEmptyHandCollectionIntoAConfirmedFeed() {
+        Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);f.holdUse=true;
+        ArtisanModule module=new ArtisanModule(f.recipe.feature());f.awaitUse(module);assertEquals(List.of(0),f.handCounts);
+        f.machineStates.replaceAll((p,b)->f.state(p,true,false));f.outcomes.put(f.lastTicket,advancedOutcome());
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,300).state());assertEquals(0,f.consumed);assertEquals(1,f.uses);assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+    @Test void advancedCycleCheckpointFailureRollsBackAndDoesNotReclick() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.inventory[1]=item(f.recipe.inputId(),6,0);f.dayTime=435L*24000+23900;f.holdUse=true;
+        Pos target=f.machineStates.keySet().iterator().next();String key=f.profile.artisanJobs.get("job").scheduleKey(target);f.profile.nextEligibleDay.put(key,434L);
+        ArtisanModule module=new ArtisanModule(f.recipe.feature());f.awaitUse(module);f.dayTime=436L*24000+5000;
+        f.machineStates.put(target,f.state(target,true,false));f.failCheckpoint=true;f.outcomes.put(f.lastTicket,advancedOutcome());
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state());assertEquals(434L,f.profile.nextEligibleDay.get(key));assertEquals(1,f.uses);
+    }
+    @Test void resettingAnAdvancedCycleCannotLendItsProofToAFreshTicket() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.inventory[1]=item(f.recipe.inputId(),9,0);f.holdUse=true;
+        ArtisanModule module=new ArtisanModule(f.recipe.feature());f.awaitUse(module);long old=f.lastTicket;
+        f.machineStates.replaceAll((p,b)->f.state(p,true,false));f.outcomes.put(old,advancedOutcome());
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());assertEquals(List.of(436L),List.copyOf(f.profile.nextEligibleDay.values()));
+        module.reset();f.dayTime=437L*24000+5000;
+        for(int i=0;i<100 && f.uses<2;i++){assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());f.now++;}
+        assertEquals(2,f.uses);assertNotEquals(old,f.lastTicket);
+        // Even compatible fresh consumption and maturity cannot borrow the old ticket's proof.
+        f.machineStates.replaceAll((p,b)->f.state(p,true,false));
+        f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"fresh ordinary success without progression proof"));
+        assertEquals(WorkResult.State.BLOCKED,f.run(module,300).state());assertEquals(2,f.uses);
+        assertEquals(List.of(436L),List.copyOf(f.profile.nextEligibleDay.values()));
+    }
+    private static ActionOutcome advancedOutcome() {
+        return new ActionOutcome(ActionOutcome.State.SUCCEEDED,"retained native working-to-mature and selected-slot proof",0,ActionOutcome.Proof.ARTISAN_CYCLE_ADVANCED);
+    }
 
     private static final class Fixture implements WorldAccess,ActionPort {
         final ArtisanRecipe recipe;final Profile profile=new Profile();final ItemData[] inventory=new ItemData[36];
@@ -231,9 +423,10 @@ class ArtisanModuleTest {
         final Map<Pos,Integer> opens=new HashMap<>();final List<Integer> usedGrades=new ArrayList<>(),handCounts=new ArrayList<>();
         final List<Delayed> delayed=new ArrayList<>();
         final List<String> statuses=new ArrayList<>();
+        final Map<Pos,String> uncertainTargets=new LinkedHashMap<>();final Set<Pos> failUncertainUses=new HashSet<>();
         long now=100,dayTime=435L*24000+5000,lastTicket;int selected=1,menuId,uses,consumed,withdrawals,pickupDelay,sleepUses;
         int seedConsumption=-1;
-        boolean holdUse,suppressMutation,failCheckpoint,wrongOpen,uncertainArtisan,navigationBlocked,sleeping,grounded=true,upgraded,emitBonus,foreignRecipeReject;Pos opened;
+        boolean holdUse,suppressMutation,failCheckpoint,wrongOpen,uncertainArtisan,navigationBlocked,sleeping,grounded=true,upgraded,emitBonus,foreignRecipeReject,actionBusy;Pos opened;
         ItemData cursor=ItemData.EMPTY;String actionFence;
         Fixture(ArtisanRecipe recipe,int count) {
             this.recipe=recipe;Arrays.fill(inventory,ItemData.EMPTY);inventory[0]=new ItemData("minecraft:golden_hoe",1,0,null,true,99);
@@ -248,8 +441,10 @@ class ArtisanModuleTest {
         BlockData state(Pos pos,boolean mature,boolean working){return new BlockData(pos,recipe.machineId(),Map.of("mature",""+mature,"working",""+working,"upgraded",""+upgraded));}
         Context context(){return new Context(this,this,new Navigation(){public Result moveTo(Pos p,double reach,Context c){return navigationBlocked?Result.BLOCKED:Result.ARRIVED;}public boolean retryableFailure(){return navigationBlocked;}public Failure failureKind(){return navigationBlocked?Failure.NO_PATH:Failure.NONE;}public void reset(){}},profile,new SessionState(),()->{if(failCheckpoint)throw new IllegalStateException("checkpoint failed");});}
         WorkResult run(ArtisanModule module,int limit){WorkResult r=WorkResult.busy("");for(int i=0;i<limit;i++){for(Iterator<Delayed> it=delayed.iterator();it.hasNext();){Delayed d=it.next();if(now>=d.at){put(inventory,d.item);it.remove();}}r=module.tick(context());statuses.add(r.message());now++;if(r.state()!=WorkResult.State.BUSY)return r;}return r;}
+        void awaitUse(ArtisanModule module){for(int i=0;i<100 && uses==0;i++){assertEquals(WorkResult.State.BUSY,module.tick(context()).state());now++;}assertEquals(1,uses);}
         int stored(Pos p,String id){return Arrays.stream(chests.get(p)).filter(i->i.is(id)).mapToInt(ItemData::count).sum();}
         int storedGrade(Pos p,String id,int q){return Arrays.stream(chests.get(p)).filter(i->i.is(id)&&i.quality()==q).mapToInt(ItemData::count).sum();}
+        long machineUses(Pos p){return history.stream().filter(a->a instanceof Action.UseBlock use && use.purpose()==Action.Use.ARTISAN && use.pos().equals(p)).count();}
         public long tick(){return now;}public long dayTime(){return dayTime;}
         public PlayerState player(){return new PlayerState(10.5,64,.5,0,0,grounded,sleeping,20,20,selected,true,true);}
         public BlockData block(Pos p){return machineStates.getOrDefault(p,new BlockData(p,chests.containsKey(p)?"minecraft:barrel":"minecraft:air",chests.containsKey(p)?Map.of("container","true"):Map.of()));}
@@ -257,8 +452,8 @@ class ArtisanModuleTest {
         public boolean canInteract(Pos p,double reach){return true;}public List<BlockData> scan(Pos p,int h,int v){return List.of();}
         public List<ItemSlot> inventory(){List<ItemSlot> slots=new ArrayList<>();for(int i=0;i<36;i++)slots.add(new ItemSlot(i,i,true,inventory[i]));return slots;}
         public MenuData menu(){List<ItemSlot> slots=new ArrayList<>();if(opened!=null)for(int i=0;i<27;i++)slots.add(new ItemSlot(i,-1,false,chests.get(opened)[i]));for(int i=0;i<36;i++)slots.add(new ItemSlot(opened==null?i:i<9?54+i:18+i,i,true,inventory[i]));return new MenuData(opened==null?0:menuId,0,slots,cursor,opened!=null);}
-        public boolean mayPlace(int slot,ItemData item){return true;}public boolean busy(){return false;}
-        public String artisanRejection(Pos target){return uncertainArtisan ? "Unconfirmed target" : null;}
+        public boolean mayPlace(int slot,ItemData item){return true;}public boolean busy(){return actionBusy;}
+        public String artisanRejection(Pos target){return uncertainTargets.getOrDefault(target,uncertainArtisan ? "Unconfirmed target" : null);}
         public String pauseReason(){return actionFence;}
         public long submit(Action action) {
             history.add(action);long id=++lastTicket;int count=0;
@@ -268,6 +463,7 @@ class ArtisanModuleTest {
                 else if(use.purpose()==Action.Use.ARTISAN){
                     uses++;ItemData held=inventory[selected];handCounts.add(held.count());boolean feed=held.is(recipe.inputId())&&held.count()>=recipe.inputCount();
                     if(feed)usedGrades.add(held.quality());BlockData before=machineStates.get(use.pos());
+                    if(failUncertainUses.contains(use.pos())){uncertainTargets.put(use.pos(),"Sent use has no confirmed response");outcomes.put(id,new ActionOutcome(ActionOutcome.State.FAILED,"unconfirmed target response"));return id;}
                     if(foreignRecipeReject){uncertainArtisan=true;outcomes.put(id,new ActionOutcome(ActionOutcome.State.FAILED,"unchanged raw idle block and selected input"));return id;}
                     if(!suppressMutation){if(feed){int cost=seedConsumption>=0 && !before.flag("mature") ? seedConsumption : recipe.inputCount();consumed+=cost;inventory[selected]=withCount(held,held.count()-cost);}
                         if(before.flag("mature")&&before.flag("upgraded")&&emitBonus)put(inventory,item(recipe.sameInputAndOutput()?"society:pristine_jade":recipe.outputId(),1,0));
