@@ -1209,3 +1209,27 @@ Java 17 / Gradle 8.8 integrated `test build`: 75 suites, 947 tests, zero
 failures, errors or skips. Manual planner conservation, cursor ownership,
 sequence-bound intermediate ACKs and fragmented-batch coverage passed; live
 manual crafting and downstream storage/shipping still require deployment tests.
+
+#### Supervised manual-crafting and downstream completion
+
+The deployed manual-placement build resumed the saved cleanup-only logging run
+without new felling or planting. Fourteen native-acknowledged crafting batches
+produced 88 fire logs from 528 spruce logs, including both bulk and fragmented
+placement. The initial 533 logs left five raw logs; the 28 existing fire logs
+plus 88 crafted fire logs gave 116 for storage.
+
+Subsequent registered-storage transfers confirmed 116 fire logs and five raw
+logs deposited. Ten mossberries were inserted into the smart shipping box;
+this is delivery-input confirmation, not a claim that money had already been
+paid. All 28 observed action receipts in this resumed run finished successfully.
+The one-shot ended normally with no pending action/fence, empty cursor and
+normal inventory menu. Tracked logging products were zero in player inventory.
+The persisted active-run flag, remaining/replant lists and borrowed-hotbar
+lease were all cleared by normal completion. Existing farm/POI registrations
+were retained. LOGGING remains default-OFF and one-shot execution stopped OFF.
+
+Together with the earlier supervised felling and coherent four-cell replant
+checks, the interrupted logging routine has now completed through disposal,
+hotbar restoration, crafting, storage and byproduct delivery. These are staged
+live acceptance results across fixes/restarts, not a claim of one uninterrupted
+full-cycle run or several hours of endurance on the latest build.
