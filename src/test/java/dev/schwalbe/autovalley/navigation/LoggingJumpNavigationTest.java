@@ -127,6 +127,7 @@ class LoggingJumpNavigationTest {
         f.pose(1.39,1,.5,true); assertEquals(Navigation.Result.MOVING,f.tick());
         assertFalse(f.world.canInteract(TO,.1),"Valid landing margin is wider than this interaction's reach");
         f.world.now++; assertEquals(Navigation.Result.MOVING,f.tick());
+        f.world.now++; assertEquals(Navigation.Result.MOVING,f.tick());
         assertNotNull(f.actions.lastMove,"Finish the small grounded centering movement from the landing");
         assertEquals(1,f.actions.launches);
         f.pose(1.5,1,.5,true); assertEquals(Navigation.Result.ARRIVED,f.tick());

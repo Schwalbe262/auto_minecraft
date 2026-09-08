@@ -14,6 +14,8 @@ public final class LoggingJumpController {
     private String failure="";
     private ActionPort lastActions;
     private PlayerState preparedSample;
+    private PlayerState motionSample;
+    private long motionSampleTick=Long.MIN_VALUE;
 
     public LoggingJumpController(LoggingJumpEdge edge) { this.edge=edge; }
     public LoggingJumpEdge edge() { return edge; }
@@ -38,6 +40,10 @@ public final class LoggingJumpController {
             || Math.abs(c.world().standingY(edge.to())-toHeight)>.00001)
             return fail("벌목 오르기의 출발 또는 착지 지면 높이가 바뀌었습니다.");
         PlayerState p=c.world().player();
+        boolean measuredMotion=motionSample!=null && now-motionSampleTick==1;
+        double vx=measuredMotion ? p.x()-motionSample.x() : 0;
+        double vz=measuredMotion ? p.z()-motionSample.z() : 0;
+        motionSample=p; motionSampleTick=now;
         if (phase==Phase.PREPARE) {
             if (now-startedTick>60) return fail("벌목 오르기 출발점에 안전하게 정렬하지 못했습니다.");
             if (!p.onGround() || Math.abs(p.y()-fromHeight)>LoggingJumpRules.HEIGHT_TOLERANCE
@@ -54,22 +60,55 @@ public final class LoggingJumpController {
             return Navigation.Result.MOVING;
         }
         if (now-launchTick>40) return fail("벌목 오르기 착지가 시간 안에 확인되지 않았습니다. 자동 재점프하지 않습니다.");
+        // Once native ground contact at the landing height was observed, inertia
+        // is grounded motion, not a reason to enlarge the airborne permission.
+        if (phase==Phase.LAND) return land(c,p,measuredMotion,vx,vz);
         if (!LoggingJumpRules.insideFlight(edge,p,fromHeight)) return fail("벌목 오르기의 검증된 비행 범위를 벗어났습니다.");
         if (p.onGround() && Math.abs(p.y()-toHeight)<=LoggingJumpRules.HEIGHT_TOLERANCE) {
-            if (phase!=Phase.LAND) { phase=Phase.LAND; c.actions().stopMovement(); }
-            if (!LoggingJumpRules.centered(p,edge.to(),LoggingJumpRules.LANDING_CENTER)) {
-                landingSamples=0; steer(c.actions(),p,edge.to()); return Navigation.Result.MOVING;
-            }
-            c.actions().stopMovement();
-            if (++landingSamples>=2) { phase=Phase.COMPLETE; return Navigation.Result.ARRIVED; }
-            return Navigation.Result.MOVING;
+            phase=Phase.LAND; c.actions().stopMovement();
+            return land(c,p,measuredMotion,vx,vz);
         }
-        if (phase==Phase.LAND) return fail("벌목 오르기 착지 확인 중 다시 지면에서 벗어났습니다.");
         if (p.onGround()) {
             if (phase==Phase.FLIGHT || now-launchTick>4 || Math.abs(p.y()-fromHeight)>LoggingJumpRules.HEIGHT_TOLERANCE)
                 return fail("벌목 오르기의 이륙 또는 착지가 확인되지 않았습니다. 자동 재점프하지 않습니다.");
         } else phase=Phase.FLIGHT;
         if (!c.actions().moveLoggingJump(edge,false)) return fail("벌목 오르기의 안전한 공중 이동이 거절되었습니다.");
+        return Navigation.Result.MOVING;
+    }
+
+    private Navigation.Result land(Context c,PlayerState p,boolean measuredMotion,double vx,double vz) {
+        if (!p.onGround() || Math.abs(p.y()-toHeight)>LoggingJumpRules.HEIGHT_TOLERANCE)
+            return fail("벌목 오르기 착지 확인 중 다시 지면에서 벗어났습니다.");
+        // Early native landing can happen with only the body's leading edge on
+        // the riser. Keep that original corridor, plus only the SAME verified
+        // high landing cell. Airborne motion never receives this wider allowance.
+        if (!LoggingJumpRules.insideFlight(edge,p,fromHeight) && !LoggingJumpRules.centered(p,edge.to(),.45))
+            return fail("벌목 오르기의 확인된 착지 지면을 벗어났습니다.");
+        double speed=Math.hypot(vx,vz);
+        if (measuredMotion && speed<=.002 && LoggingJumpRules.centered(p,edge.to(),LoggingJumpRules.LANDING_CENTER)) {
+            c.actions().stopMovement();
+            if (++landingSamples>=2) { phase=Phase.COMPLETE; return Navigation.Result.ARRIVED; }
+            return Navigation.Result.MOVING;
+        }
+        landingSamples=0;
+        if (!measuredMotion) {
+            c.actions().stopMovement(); return Navigation.Result.MOVING;
+        }
+        double dx=edge.to().x()+.5-p.x(),dz=edge.to().z()+.5-p.z();
+        double distance=Math.hypot(dx,dz),toward=dx*vx+dz*vz;
+        // Normal-surface friction is part of the native proof. This short
+        // observed-motion forecast only chooses ordinary stop/coast/brake input;
+        // it never predicts a successful landing or substitutes for observations.
+        double coastError=Math.hypot(dx-1.25*vx,dz-1.25*vz);
+        if (coastError<=.11) {
+            c.actions().stopMovement();
+        } else if (speed>.08 && (toward<=0 || 1.25*speed>distance+LoggingJumpRules.LANDING_CENTER)) {
+            // Opposite ordinary walking input brakes residual movement. No
+            // sprint, jump, crouch, velocity write or positional correction.
+            steerVector(c.actions(),-vx,-vz);
+        } else if (speed>.002 && (toward<=0 || distance<=1.25*speed+LoggingJumpRules.LANDING_CENTER)) {
+            c.actions().stopMovement();
+        } else steer(c.actions(),p,edge.to());
         return Navigation.Result.MOVING;
     }
 
@@ -81,7 +120,10 @@ public final class LoggingJumpController {
         return Navigation.Result.BLOCKED;
     }
     private static void steer(ActionPort actions,PlayerState player,Pos feet) {
-        float yaw=(float)Math.toDegrees(Math.atan2(-(feet.x()+.5-player.x()),feet.z()+.5-player.z()));
+        steerVector(actions,feet.x()+.5-player.x(),feet.z()+.5-player.z());
+    }
+    private static void steerVector(ActionPort actions,double dx,double dz) {
+        float yaw=(float)Math.toDegrees(Math.atan2(-dx,dz));
         actions.move(new Movement(yaw,0,true,false,false,false));
     }
 }
