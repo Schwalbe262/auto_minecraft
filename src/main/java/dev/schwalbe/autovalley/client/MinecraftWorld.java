@@ -89,6 +89,28 @@ public final class MinecraftWorld implements WorldAccess {
         }
         return Math.abs(previous-standingY(to))<1.0e-4;
     }
+    public boolean canTraverseDiagonal(Pos from,Pos to) {
+        int dx=to.x()-from.x(),dz=to.z()-from.z();
+        if (mc.level==null || mc.player==null || from.y()!=to.y() || Math.abs(dx)!=1 || Math.abs(dz)!=1) return false;
+        double height=standingY(from);
+        if (!Double.isFinite(height)) return false;
+        for (Pos cell:new Pos[]{from,from.offset(dx,0,0),from.offset(0,0,dz),to}) {
+            // Flat full-footprint floor boxes only: stairs, partial-edge supports,
+            // doors and changing heights retain the existing cardinal traversal.
+            if (!canStand(cell) || !uniformFloor(cell) || Math.abs(standingY(cell)-height)>1.0e-4) return false;
+            for (int dy=0;dy<=1;dy++)
+                if (mc.level.getBlockState(nativePos(cell.offset(0,dy,0))).getBlock() instanceof DoorBlock) return false;
+        }
+        // Sample the actual player-width body along the diagonal, including both
+        // corner-adjacent cells. No point may lose support, step, fall or collide.
+        for (int i=0;i<=16;i++) {
+            double amount=i/16.0,x=from.x()+.5+dx*amount,z=from.z()+.5+dz*amount;
+            Surface surface=surfaceAt(x,z,from.y()-2,from.y()-1);
+            if (!Double.isFinite(surface.height()) || Math.abs(surface.height()-height)>1.0e-4
+                    || !clearBodyAt(x,height,z)) return false;
+        }
+        return true;
+    }
     public double standingY(Pos feet) {
         if (mc.level==null || !loaded(feet.offset(0,-1,0))) return Double.NaN;
         BlockPos floor=nativePos(feet).below();

@@ -3,10 +3,10 @@ package dev.schwalbe.autovalley.navigation;
 import dev.schwalbe.autovalley.core.*;
 import java.util.*;
 
-/** Bounded A*: no diagonals, unloaded chunks, block changes, or unregistered shortcuts. */
+/** Bounded A*: native-verified flat diagonals; no unloaded chunks, block changes or unregistered shortcuts. */
 public final class LocalPathfinder {
     private static final int MAX_VISITED = 8192;
-    private static final int[][] DIRECTIONS = {{1,0},{0,1},{-1,0},{0,-1}};
+    private static final int[][] DIRECTIONS = {{1,0},{0,1},{-1,0},{0,-1},{1,1},{-1,1},{-1,-1},{1,-1}};
     private record Node(Pos pos, double cost, double score) { }
 
     public List<Pos> find(Pos start, Pos target, double reach, WorldAccess world, Profile profile) {
@@ -30,13 +30,17 @@ public final class LocalPathfinder {
             if (!excludedGoals.contains(node.pos()) && node.pos().distanceSquared(target) <= Math.pow(reach + 2.5,2)
                 && world.canInteractFrom(node.pos(), target, reach)) return unwind(node.pos(), parent);
             for (int[] direction : DIRECTIONS) {
+                boolean diagonal=direction[0]!=0 && direction[1]!=0;
                 for (int dy : new int[]{0, 1, -1}) {
+                    if (diagonal && dy!=0) continue;
                     Pos next = node.pos().offset(direction[0], dy, direction[1]);
                     if (closed.contains(next) || !bounds.contains(next) || !world.loaded(next)
                         || !world.loaded(next.offset(0,1,0)) || !world.loaded(next.offset(0,-1,0))
-                        || !world.canStand(next) || !world.canTraverse(node.pos(), next)) continue;
+                        || !world.canStand(next)) continue;
+                    if (diagonal ? !DiagonalTraversal.canTraverse(node.pos(),next,world,bounds)
+                            : !world.canTraverse(node.pos(),next)) continue;
                     // The world adapter validates collision geometry and step height, including modded supports.
-                    double nextCost = node.cost() + (dy == 0 ? 1 : 1.5);
+                    double nextCost = node.cost() + (diagonal ? Math.sqrt(2) : dy == 0 ? 1 : 1.5);
                     if (nextCost >= cost.getOrDefault(next, Double.POSITIVE_INFINITY)) continue;
                     cost.put(next, nextCost);
                     parent.put(next, node.pos());

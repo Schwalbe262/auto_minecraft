@@ -102,7 +102,7 @@ public final class LocalNavigator implements Navigation {
         if (!world.canStand(walkingFeet) && !descendingEdge)
             return blocked(actions, "현재 발밑의 안전한 경로를 확인할 수 없습니다.");
         if (!walkingFeet.equals(next) && walkingFeet.distanceSquared(next) <= 2
-            && !world.canTraverse(walkingFeet, next) && !descendingEdge) return blocked(actions, "이동 경로가 막혔습니다.");
+            && !canTraverse(walkingFeet,next,world,context.profile()) && !descendingEdge) return blocked(actions, "이동 경로가 막혔습니다.");
         if (descendingEdge && !player.onGround()) {
             actions.stopMovement();
             previousMoving = false;
@@ -195,6 +195,12 @@ public final class LocalNavigator implements Navigation {
             if (block != null && block.id().endsWith("_door") && !block.flag("open")) return pos;
         }
         return null;
+    }
+
+    private static boolean canTraverse(Pos from,Pos to,WorldAccess world,Profile profile) {
+        if (from.y()==to.y() && Math.abs(from.x()-to.x())==1 && Math.abs(from.z()-to.z())==1)
+            return DiagonalTraversal.canTraverse(from,to,world,new ProfileBounds(profile));
+        return world.canTraverse(from,to);
     }
 
     private static double distanceToCenter(PlayerState player, Pos feet) {

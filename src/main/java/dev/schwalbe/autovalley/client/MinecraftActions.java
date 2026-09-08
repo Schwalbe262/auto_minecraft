@@ -28,6 +28,7 @@ public final class MinecraftActions implements ActionPort {
     private PlayerState beforePlayer;
     private Movement movement;
     private long movementAt;
+    private long movementLookAt=Long.MIN_VALUE;
     private Pos ownedContainer;
     private ContainerShape openingShape, ownedShape;
     private int ownedMenu=-1;
@@ -341,9 +342,17 @@ public final class MinecraftActions implements ActionPort {
         // Navigation cannot gain permission to jump or leave the approved farm/corridor.
         Pos feet=NavigationFeet.resolve(world,world.player());
         if (!ProfileBounds.contains(context.profile(),feet) || intent.jump()) { stopMovement(); return; }
+        if (!Float.isFinite(mc.player.getYRot()) || !Float.isFinite(mc.player.getXRot())) { stopMovement(); return; }
         movement=new Movement(intent.yaw(),intent.pitch(),intent.forward(),intent.sprint(),false,intent.sneak());
         movementAt=world.tick();
-        if (!harvesting) { mc.player.setYRot(intent.yaw()); mc.player.setXRot(intent.pitch()); }
+        if (!harvesting && movementLookAt!=world.tick()) {
+            // Easing affects the view only. MovementAxes preserves the intended
+            // world direction even while the camera catches up with a corner.
+            // Explicit useBlock lookAt remains exact; pending harvest aim is fixed.
+            mc.player.setYRot(MovementLook.yaw(mc.player.getYRot(),intent.yaw()));
+            mc.player.setXRot(MovementLook.pitch(mc.player.getXRot(),intent.pitch()));
+            movementLookAt=world.tick();
+        }
         mc.player.setSprinting(intent.sprint() && intent.forward() && MovementAxes.from(intent,mc.player.getYRot()).forward()>.8f);
     }
     public void stopMovement() { movement=null; if (mc.player!=null && enabled) mc.player.setSprinting(false); }
