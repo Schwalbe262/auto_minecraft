@@ -42,17 +42,52 @@ public final class ClientRuntime {
     private boolean wasSleeping;
     private boolean wasFocused;
     private Boolean savedPauseOnLostFocus;
+    private CoordinateTravel coordinateTravel;
     private ClientRuntime() { actions.context(context); }
     public static ClientRuntime instance() { return INSTANCE; }
     public static void install() { MinecraftForge.EVENT_BUS.register(new ClientEvents()); }
     public Profile profile() { return profile; }
     public MinecraftWorld world() { return world; }
-    public String status() { return persistenceError==null ? engine.status() : persistenceError; }
-    public boolean running() { return engine.running(); }
+    public String status() {
+        if (persistenceError!=null) return persistenceError;
+        if (coordinateTravel!=null) return coordinateTravel.status();
+        String detail=running() ? navigator.diagnosticStatus() : "";
+        return engine.status() + (detail.isBlank() ? "" : " — " + detail);
+    }
+    public boolean running() { return coordinateTravel!=null || engine.running(); }
+    /** Bounded local diagnostic data; contains private destination coordinates. */
+    public Map<String,Object> navigationReport() { return navigator.diagnostics(); }
     public boolean recording() { return recorder.recording(); }
     public String recordingStatus() { return recorder.status(); }
     public boolean recordingActive() { return recorder.capturing(); }
-    public String executionMode() { return engine.mode().name(); }
+    public String executionMode() { return coordinateTravel==null ? engine.mode().name() : "MOVE_ONCE"; }
+    /** Explicit movement only; it never enables a work feature or confirms a storage role. */
+    public boolean runMoveOnce(Pos feet) { return beginCoordinateTravel(CoordinateTravel.position(feet)); }
+    public boolean runObserveOnce(CoordinateDestination draft) {
+        if (draft==null || draft.facilityKind()==null || !profile.coordinateDestinations.contains(draft)) {
+            notifyUser("저장한 시설 좌표 후보를 먼저 선택하세요."); return false;
+        }
+        return beginCoordinateTravel(CoordinateTravel.observe(draft));
+    }
+    private boolean beginCoordinateTravel(CoordinateTravel request) {
+        if (automationStartBlocked() || recording() || persistenceError!=null || profileKey==null || mc.screen!=null
+                || mc.level==null || mc.player==null) {
+            notifyUser("접속·기록·열린 화면·설정 상태를 확인한 뒤 이동하세요."); return false;
+        }
+        Pos target=request.destination();
+        if (target.y()<mc.level.getMinBuildHeight() || target.y()>=mc.level.getMaxBuildHeight()
+                || !mc.level.getWorldBorder().isWithinBounds(MinecraftWorld.nativePos(target))) {
+            notifyUser("목적지가 현재 차원의 높이 또는 월드 경계를 벗어났습니다."); return false;
+        }
+        String rejection=CoordinateTravel.rejection(context);
+        if (rejection!=null) { notifyUser(rejection); return false; }
+        pause("좌표 이동 준비");
+        String actionRejection=actions.startRejection();
+        if (actionRejection!=null) { notifyUser(actionRejection); return false; }
+        coordinateTravel=request;
+        actions.enabled(true); anglesValid=false; attackFence=true; updateBackgroundPause();
+        return true;
+    }
     public Map<String,Object> storageSurveyReport() {
         SessionState session=context.session(); Map<String,Object> report=new LinkedHashMap<>();
         report.put("status",session.storageSurveyStatus); report.put("complete",session.storageSurveyComplete);
@@ -123,6 +158,7 @@ public final class ClientRuntime {
         }
     }
     public void pause(String reason) {
+        coordinateTravel=null;
         engine.stop(context,AutomationEngine.State.PAUSED,reason);
         actions.enabled(false); anglesValid=false;
         updateBackgroundPause();
@@ -230,8 +266,20 @@ public final class ClientRuntime {
             if (profile.lastSeenDay>=0 && day<profile.lastSeenDay) { profile.nextEligibleDay.clear(); profile.wineBatchSchedule=null; pause("게임 날짜가 되돌아가 일정 확인이 필요합니다."); }
             profile.lastSeenDay=day;
             actions.tick();
-            try { engine.tick(context); }
-            catch (RuntimeException e) { LogUtils.getLogger().error("Auto Valley stopped after {}",e.getClass().getSimpleName()); }
+            try {
+                if (coordinateTravel!=null) {
+                    CoordinateTravel.Result result=coordinateTravel.tick(context);
+                    if (result!=CoordinateTravel.Result.MOVING) {
+                        String finished=coordinateTravel.status(); coordinateTravel=null;
+                        engine.stop(context,result==CoordinateTravel.Result.COMPLETE ? AutomationEngine.State.COMPLETE : AutomationEngine.State.PAUSED,finished);
+                        notifyUser(finished);
+                    }
+                } else engine.tick(context);
+            }
+            catch (RuntimeException e) {
+                if (coordinateTravel!=null) pause("좌표 이동 중 예상하지 못한 오류로 중지했습니다.");
+                LogUtils.getLogger().error("Auto Valley stopped after {}",e.getClass().getSimpleName());
+            }
             if (running() && world.menu().container() && !actions.ownsContainer() && !actions.openingContainer()) pause("예상하지 않은 상자 화면입니다.");
             if (engine.state()==AutomationEngine.State.WAITING && world.menu().container()) pause(engine.status()+" — 상자를 확인한 뒤 닫고 다시 시작하세요.");
         }
@@ -254,11 +302,13 @@ public final class ClientRuntime {
         catch (IOException e) { profile=new Profile(); persistenceError="기존 설정 파일을 읽지 못했습니다. 원본을 보존하고 자동화를 중지합니다."; }
         context=new Context(world,actions,navigator,profile,new SessionState(),this::checkpointMachineState); actions.context(context);
         observations.clear(); PacketObserver.install(current,observations,() -> attackFence,recorder);
+        coordinateTravel=null;
         engine.stop(context,AutomationEngine.State.OFF,"OFF — Ctrl+F8 설정 / F8 시작");
         actions.enabled(false); anglesValid=false; savedScheduleHash=scheduleHash();
     }
     private void disconnect() {
         recorder.stopCapture("disconnected_or_dimension_changed");
+        coordinateTravel=null;
         engine.stop(context,AutomationEngine.State.OFF,"접속 종료 — 자동화 OFF");
         updateBackgroundPause();
         actions.enabled(false); attackFence=false; anglesValid=false;

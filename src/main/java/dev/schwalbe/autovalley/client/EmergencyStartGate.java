@@ -12,7 +12,8 @@ public final class EmergencyStartGate {
         else if (blockedAt(tick)) requestUnresolved=true;
     }
     public static boolean rejectsCommand(boolean blocked,String command) {
-        return blocked && ("start".equals(command) || "once".equals(command));
+        return blocked && ("start".equals(command) || "once".equals(command)
+            || "move_once".equals(command) || "observe_once".equals(command));
     }
     public static boolean shouldPoll(boolean blocked,long now,long nextPoll) { return blocked || now>=nextPoll; }
 }

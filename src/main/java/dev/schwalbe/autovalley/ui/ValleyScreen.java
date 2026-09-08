@@ -61,6 +61,7 @@ public final class ValleyScreen extends Screen {
     private PoiKind selectedKind;
     private Integer classifierWineYear;
     private Poi editingPoi;
+    private CoordinateDestination coordinateRequest, coordinatePromotion;
     private boolean containerChecked;
     private boolean farmEditor;
     private boolean loggingAreas = rememberedLoggingAreas;
@@ -80,6 +81,9 @@ public final class ValleyScreen extends Screen {
     private boolean feedbackError;
 
     public ValleyScreen() { super(tr("title")); }
+    public ValleyScreen(CoordinateDestination draft) {
+        this(); coordinateRequest = draft; tab = Tab.REGISTER; rememberedTab = tab;
+    }
 
     @Override protected void init() {
         String previousName = nameInput == null ? null : nameInput.getValue();
@@ -97,6 +101,10 @@ public final class ValleyScreen extends Screen {
             if (nameInput != null && previousName != null) nameInput.setValue(previousName);
             if (classifierInput != null && previousClassifier != null) classifierInput.setValue(previousClassifier);
         }
+        if (coordinateRequest != null) {
+            CoordinateDestination draft = coordinateRequest; coordinateRequest = null;
+            prepareCoordinatePromotion(draft);
+        }
     }
 
     private void rebuild() {
@@ -107,7 +115,7 @@ public final class ValleyScreen extends Screen {
             Tab target = tabs[i];
             Button button = button(left + i * (tabWidth + gap), 28, tabWidth, tr("tab." + target.name().toLowerCase(Locale.ROOT)), () -> {
                 rememberDraft(); tab = target; rememberedTab = target; page = 0;
-                selected = null; selectedMachineGroup = null; farmEditor = false; showSuggestions = false; scheduleEditor = false; toolsEditor = false; machineBatchEditor = false; loggingPage = LoggingPage.LIST; rebuild();
+                selected = null; coordinatePromotion = null; selectedMachineGroup = null; farmEditor = false; showSuggestions = false; scheduleEditor = false; toolsEditor = false; machineBatchEditor = false; loggingPage = LoggingPage.LIST; rebuild();
             });
             button.active = target != tab;
         }
@@ -195,9 +203,9 @@ public final class ValleyScreen extends Screen {
         button(left + half + 6, 118, half, tr("pending.open", runtime.pendingMachineOutputs().size()), () -> {
             selectedPendingOutput = null; pendingResolution = null; page = 0; toolPage = ToolPage.PENDING_LIST; rebuild();
         }).setTooltip(Tooltip.create(tr("pending.persistent_hint")));
-        text(147, tr("record.local"));
-        text(162, tr("record.contents"));
-        text(177, tr("record.no_replay"));
+        button(left, 144, panelWidth, tr("coordinates.open"), () -> minecraft.setScreen(new CoordinateScreen()));
+        text(169, tr("record.local").copy().append(" ").append(tr("record.contents")));
+        text(180, tr("record.no_replay"));
         button(left, 190, panelWidth, tr("back"), () -> { toolsEditor = false; rebuild(); });
     }
 
@@ -385,13 +393,14 @@ public final class ValleyScreen extends Screen {
     }
 
     private void registration() {
-        int half = (panelWidth - 6) / 2;
-        button(left, 54, half, tr("scan"), () -> scan(false));
-        button(left + half + 6, 54, half, tr("use_target"), () -> {
+        int third = (panelWidth - 12) / 3;
+        button(left, 54, third, tr("scan"), () -> scan(false));
+        button(left + third + 6, 54, third, tr("use_target"), () -> {
             BlockData target = lookedBlock();
             if (target == null || RegistrationRules.group(target) == null) { error("error.target"); return; }
             selectCandidate(target);
         });
+        button(left + 2 * (third + 6), 54, panelWidth - 2 * (third + 6), tr("coordinates.open"), () -> minecraft.setScreen(new CoordinateScreen()));
         button(left, 78, panelWidth, tr("filter", tr("group." + filter.name().toLowerCase(Locale.ROOT))), () -> {
             filter = RegistrationRules.Group.values()[(filter.ordinal() + 1) % RegistrationRules.Group.values().length]; page = 0; rebuild();
         });
@@ -411,6 +420,7 @@ public final class ValleyScreen extends Screen {
     private void selectCandidate(BlockData block) { selectCandidate(block, false); }
 
     private void selectCandidate(BlockData original, boolean editing) {
+        coordinatePromotion = null;
         if (!chestPairReady(original)) { error("error.chest_pair"); return; }
         BlockData block = canonicalBlock(original);
         if (block.tomato()) {
@@ -438,6 +448,22 @@ public final class ValleyScreen extends Screen {
         }
     }
 
+    private void prepareCoordinatePromotion(CoordinateDestination draft) {
+        if (!runtime.profile().coordinateDestinations.contains(draft) || draft.facilityKind() == null
+                || RegistrationRules.coordinateState(draft, runtime.world()::loaded, runtime.world()::block)
+                        != RegistrationRules.CoordinateState.READY_TO_CONFIRM) { error("coordinates.not_ready"); return; }
+        selectCandidate(runtime.world().block(draft.pos()));
+        if (selected == null) return;
+        coordinatePromotion = draft; selectedKind = draft.facilityKind();
+        classifierWineYear = selectedKind == PoiKind.WINE_CHEST ? runtime.world().wineYear() : null;
+        containerChecked = false; rebuild(); nameInput.setValue(draft.name());
+        if (classifierInput != null) {
+            String value = WineCohortRules.editValue(draft.classifier(), classifierWineYear);
+            classifierInput.setValue(value == null ? "" : value);
+            if (value == null) error("error.wine_clock");
+        }
+    }
+
     private void poiEditor() {
         text(55, tr("candidate", candidateName(selected), coords(selected.pos())));
         List<PoiKind> kinds = RegistrationRules.kinds(selected);
@@ -445,7 +471,7 @@ public final class ValleyScreen extends Screen {
             selectedKind = kinds.get((kinds.indexOf(selectedKind) + 1) % kinds.size());
             classifierWineYear = selectedKind == PoiKind.WINE_CHEST ? runtime.world().wineYear() : null;
             containerChecked = false; rebuild();
-        }).active = kinds.size() > 1;
+        }).active = coordinatePromotion == null && kinds.size() > 1;
         text(92, tr("label"));
         nameInput = input(left, 103, panelWidth, tr("label"), 64);
         nameInput.setValue(poiName(selectedKind).getString());
@@ -473,9 +499,9 @@ public final class ValleyScreen extends Screen {
             actionY = 165;
         } else actionY = 132;
         int half = (panelWidth - 6) / 2;
-        button(left, actionY, half, tr("back"), () -> { selected = null; rebuild(); });
+        button(left, actionY, half, tr("back"), () -> { selected = null; coordinatePromotion = null; rebuild(); });
         button(left + half + 6, actionY, half, tr("confirm"), this::savePoi);
-        if (selectedKind == PoiKind.WINE_KEG || selectedKind == PoiKind.PRESERVES_JAR)
+        if (coordinatePromotion == null && (selectedKind == PoiKind.WINE_KEG || selectedKind == PoiKind.PRESERVES_JAR))
             button(left, actionY + 27, panelWidth, tr("machines.bulk_prepare"), this::prepareMachineBatch);
         if (height >= 285 && classified) text(actionY + 27, tr("container.hint"));
     }
@@ -548,6 +574,7 @@ public final class ValleyScreen extends Screen {
     }
 
     private void savePoi() {
+        if (coordinatePromotion != null && !runtime.profile().coordinateDestinations.contains(coordinatePromotion)) { error("coordinates.changed"); return; }
         boolean classified = RegistrationRules.requiresContentsConfirmation(selectedKind);
         if (classified && !containerChecked) { error("error.container_unchecked"); return; }
         if (!runtime.world().loaded(selected.pos()) || !RegistrationRules.kinds(runtime.world().block(selected.pos())).contains(selectedKind)) {
@@ -566,11 +593,16 @@ public final class ValleyScreen extends Screen {
         if (label.isEmpty()) label = poiName(selectedKind).getString();
         Poi poi = new Poi(selected.pos(), selectedKind, label, classifier);
         List<Poi> before = new ArrayList<>(runtime.profile().pois);
+        List<CoordinateDestination> draftsBefore = new ArrayList<>(runtime.profile().coordinateDestinations);
         if (before.stream().anyMatch(p -> p != editingPoi && canonicalPos(p.pos()).equals(poi.pos()))) { error("error.registered"); return; }
         runtime.profile().pois.remove(editingPoi);
         runtime.profile().pois.add(poi);
-        if (persist(() -> { runtime.profile().pois.clear(); runtime.profile().pois.addAll(before); })) {
-            selected = null; rebuild();
+        if (coordinatePromotion != null) runtime.profile().coordinateDestinations.remove(coordinatePromotion);
+        if (persist(() -> {
+            runtime.profile().pois.clear(); runtime.profile().pois.addAll(before);
+            runtime.profile().coordinateDestinations.clear(); runtime.profile().coordinateDestinations.addAll(draftsBefore);
+        })) {
+            selected = null; coordinatePromotion = null; rebuild();
         }
     }
 

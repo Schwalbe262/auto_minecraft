@@ -6,6 +6,8 @@ import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 import com.mojang.logging.LogUtils;
 import dev.schwalbe.autovalley.core.Feature;
+import dev.schwalbe.autovalley.core.Pos;
+import dev.schwalbe.autovalley.core.CoordinateDestinationRules;
 import net.minecraftforge.fml.loading.FMLPaths;
 import java.io.*;
 import java.nio.ByteBuffer;
@@ -73,6 +75,11 @@ public final class ClientControl {
                         yield !runtime.running();
                     }
                     case "once" -> runtime.runOnce(parsed.feature());
+                    case "move_once" -> runtime.runMoveOnce(parsed.position());
+                    case "observe_once" -> {
+                        var draft=runtime.profile().coordinateDestinations.stream().filter(d -> d.name().equals(parsed.name())).findFirst().orElse(null);
+                        yield runtime.runObserveOnce(draft);
+                    }
                     case "record_start" -> {
                         // Never replace an unsaved recording, including one suspended by an I/O failure.
                         if (!runtime.recording()) runtime.startRecording();
@@ -99,7 +106,9 @@ public final class ClientControl {
         }
     }
 
-    record Request(String command, Feature feature, String name) { }
+    record Request(String command, Feature feature, String name, Pos position) {
+        Request(String command,Feature feature,String name) { this(command,feature,name,null); }
+    }
 
     /** Retained for callers that only need the command; arguments still undergo full validation. */
     static String parseCommand(byte[] input) throws IOException {
@@ -118,7 +127,7 @@ public final class ClientControl {
             Map<String,String> fields = new LinkedHashMap<>();
             while (reader.hasNext()) {
                 String key = reader.nextName();
-                if (!Set.of("command","feature","name").contains(key) || fields.containsKey(key)
+                if (!Set.of("command","feature","name","x","y","z").contains(key) || fields.containsKey(key)
                     || reader.peek() != JsonToken.STRING) throw new IOException("Unknown, duplicate, or non-string field");
                 fields.put(key,reader.nextString());
             }
@@ -138,8 +147,14 @@ public final class ClientControl {
                     catch (IllegalArgumentException e) { throw new IOException("Unknown feature",e); }
                     yield new Request(command,feature,null);
                 }
-                case "record_stop" -> {
-                    if (!fields.keySet().equals(Set.of("command","name"))) throw new IOException("Expected only recording name");
+                case "move_once" -> {
+                    if (!fields.keySet().equals(Set.of("command","x","y","z"))) throw new IOException("Expected only integer coordinate strings");
+                    try {
+                        yield new Request(command,null,null,CoordinateDestinationRules.parsePosition(fields.get("x"),fields.get("y"),fields.get("z")));
+                    } catch (IllegalArgumentException e) { throw new IOException("Invalid movement coordinate",e); }
+                }
+                case "record_stop", "observe_once" -> {
+                    if (!fields.keySet().equals(Set.of("command","name"))) throw new IOException("Expected only name");
                     String name = fields.get("name");
                     int length = name.codePointCount(0,name.length());
                     if (length < 1 || length > 64 || name.codePoints().allMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c)))

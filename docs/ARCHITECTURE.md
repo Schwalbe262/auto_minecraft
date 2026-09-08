@@ -2,7 +2,7 @@
 
 ## Boundaries
 
-`core` is independent of Minecraft: immutable observations, a sealed action allow-list, module lifecycle, persistent per-profile game-day schedules, and the single-owner scheduler. `navigation` plans only through loaded, registered farm/waypoint corridors. Each feature in `modules` is independently enabled. `client` adapts these ports to the real local player, observes standard server packets, persists local settings, and handles focus/manual-input cancellation. `ui` handles explicit registration and configuration.
+`core` is independent of Minecraft: immutable observations, a sealed action allow-list, module lifecycle, persistent per-profile game-day schedules, and the single-owner scheduler. `navigation` uses loaded, verified terrain by default; approved waypoint corridors remain an opt-in legacy mode. Travel permission is separate from registered work permission. Each feature in `modules` is independently enabled. `client` adapts these ports to the real local player, observes standard server packets, persists local settings, and handles focus/manual-input cancellation. `ui` handles explicit registration and configuration.
 
 There is no server module, custom networking protocol, fake player, world-state editor, break/place action, or external AI call during operation.
 
@@ -73,12 +73,55 @@ can only approach the immediate next primary center in that same farm/lane. It
 cannot search past a distant center for a closer later row or cleanup target.
 
 Local A* additionally permits one-cell, same-height diagonals after both side
-cells, all four cardinal legs, registered bounds and native swept-body/support
+cells, all four cardinal legs, the active travel domain and native swept-body/support
 checks pass. Unknown adapters opt out. Doors and changing/partial supports retain
 cardinal approaches; no long shortcut is inferred. Movement-only view easing is
 bounded to 18 degrees yaw and 10 degrees pitch per tick, while movement axes keep
 the exact world-space heading. Pending harvest keeps its crop aim; explicit
 block-use aiming remains exact. These bounds do not relax reach or collision.
+
+### Terrain transit and coordinate goals (development)
+
+The default `TERRAIN` mode removes waypoint permission checks at the planner,
+navigator, native movement gate and production visit preference. Each request
+uses a finite segment (256 blocks horizontally and 64 vertically from its
+origin), not a rectangle growing without bound to the destination. Existing
+waypoints are optional tie breakers, never mandatory links or collision proofs.
+`WAYPOINTS` retains the older approved-corridor policy.
+
+Terrain A* preserves its queue between ticks. It admits at most 128 new nodes
+and 32 goal-visibility checks per client tick, with a 2ms soft time budget checked
+between native calls. Native calls themselves cannot be preempted. An 8,192-node
+initial allowance expands up to 65,536; budget exhaustion is distinct from an
+exhausted known graph. Full XYZ standing/frontier records preserve different
+floors. A frontier is a verified loaded stance before unknown terrain, never a
+guessed walk into an unloaded cell. Five seconds of unchanged chunk waiting
+selects a bounded alternative; repeated failure is reported rather than spun.
+
+Literal position and observation goals do not require interacting with an air
+block. Work goals still require native reach and sight. Modules approach due
+workplaces before reading unloaded contents; unreadable crops or machines never
+become completed work. A retryable navigation failure produces `DEFERRED`, not
+`IDLE`: the scheduler resets transient module observations and backs off that
+feature for 1,200 to 6,000 ticks. Durable production/harvest progress survives.
+Uncertain native actions, cursor/menu ownership and logging obligations still
+fence all consumers. The movement-only coordinate controller never executes a
+work feature or promotes a facility registration.
+
+General step-up uses the same normal-physics body sweep and one-use jump pulse
+as logging but independent execution authority. The native adapter requires
+the exact active step-up edge, connection generation and current geometry at
+launch and input consumption. Generic `move(jump=true)` remains forbidden.
+Logging's registered-work wrapper is unchanged; crops, farmland, planting plots,
+fluids, altered jump physics, low ceilings and unsafe landing cells are rejected.
+Two distinct grounded landing samples are required before completing an ascent.
+
+Profile schema 4 adds terrain settings and separate coordinate drafts. Valid
+schemas 1–3 migrate in memory, retaining work registrations, schedules and
+logging obligations; saving retains the usual backup. Facility drafts cannot
+enter normal work queues until the user confirms their actual type and storage
+classification through the existing registration flow. Local navigation
+diagnostics include destination coordinates and must not be published.
 
 ### Bounded native inventory consolidation
 
