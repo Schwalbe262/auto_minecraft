@@ -71,6 +71,7 @@ public final class LocalNavigator implements Navigation {
         report.put("sliceNodes",sliceNodes);report.put("sliceLos",sliceLos);report.put("sliceElapsedNanos",sliceNanos);
         report.put("requestExpanded",requestNodes);report.put("replans",replans);report.put("frontierAttempts",frontierAttempts);
         report.put("pathLength",path.size());report.put("nextIndex",nextIndex);
+        report.put("descentHandoffs",descent==null ? 0 : descent.completedEdges());
         report.put("searchLimit",search==null ? 0 : search.nodeLimit());
         report.put("lastFailure",lastFailure);return java.util.Collections.unmodifiableMap(report);
     }
@@ -520,13 +521,33 @@ public final class LocalNavigator implements Navigation {
 
     private Result continueDescent(Context context) {
         diagnostic="DESCENT_"+descent.phase().name();
-        Result result=descent.tick(context);previousMoving=result==Result.MOVING;previousSprint=false;
+        int completed=descent.completedEdges();
+        Result result=descent.tick(context,descentPreview(context));previousMoving=result==Result.MOVING;previousSprint=false;
+        if (descent.completedEdges()!=completed) {
+            // Only the controller's actually grounded landing advances this
+            // finite path. A preview, camera turn or airborne proximity cannot.
+            nextIndex++;lastDistance=Double.POSITIVE_INFINITY;progressTick=context.world().tick();
+        }
         if (result==Result.BLOCKED) return blocked(context.actions(),descent.failureReason());
         if (result==Result.ARRIVED) {
             descent=null;path=List.of();search=null;nextIndex=0;lastDistance=Double.POSITIVE_INFINITY;
             progressTick=context.world().tick();previousMoving=false;
         }
         return Result.MOVING;
+    }
+    private List<Pos> descentPreview(Context context) {
+        if (!requestInteractions || domain==null || nextIndex<=0 || nextIndex>=path.size()) return List.of();
+        int start=nextIndex-1,end=nextIndex+1;
+        Pos a=path.get(start),b=path.get(nextIndex);
+        if (!domain.contains(a) || !domain.contains(b)) return List.of();
+        int dx=b.x()-a.x(),dz=b.z()-a.z();
+        while(end<path.size() && end-start<4) {
+            Pos prior=path.get(end-1),next=path.get(end);
+            if (!domain.contains(next) || next.x()-prior.x()!=dx || next.z()-prior.z()!=dz
+                || !DescentController.descending(prior,next,context.world())) break;
+            end++;
+        }
+        return List.copyOf(path.subList(start,end));
     }
     private void cancelDescent() {
         if (descent==null) return;

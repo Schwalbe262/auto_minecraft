@@ -1,13 +1,14 @@
 package dev.schwalbe.autovalley.navigation;
 
 import dev.schwalbe.autovalley.core.*;
+import java.util.List;
 
 /** A pre-braked, walking-only descent on one already validated cardinal edge. */
 final class DescentController {
     enum Phase { PREPARE, DESCEND, LAND, COMPLETE, FAILED }
     private static final double HEIGHT_TOLERANCE=.10001, CENTER=.10;
-    private final Pos from,to;
-    private final double fromHeight,toHeight;
+    private Pos from,to;
+    private double fromHeight,toHeight;
     private Phase phase=Phase.PREPARE;
     private long firstTick=Long.MIN_VALUE,lastTick=Long.MIN_VALUE,progressTick;
     private PlayerState sample,progressSample;
@@ -19,6 +20,7 @@ final class DescentController {
     private double lastSpeed,observedDrag=Double.NaN;
     private double observedAcceleration=Double.NaN;
     private boolean usedStandardFallBound;
+    private int completedEdges;
 
     DescentController(Pos from,Pos to,WorldAccess world) {
         this.from=from;this.to=to;fromHeight=world.standingY(from);toHeight=world.standingY(to);
@@ -26,12 +28,18 @@ final class DescentController {
     Phase phase() { return phase; }
     String failureReason() { return failure; }
     boolean airborne() { return airborne; }
+    int completedEdges() { return completedEdges; }
     static boolean descending(Pos from,Pos to,WorldAccess world) {
         double a=world.standingY(from),b=world.standingY(to);
         return Math.abs(to.x()-from.x())+Math.abs(to.z()-from.z())==1 && to.y()<=from.y()
             && Double.isFinite(a) && Double.isFinite(b) && a-b>HEIGHT_TOLERANCE && a-b<=1.00001;
     }
     Navigation.Result tick(Context c) {
+        return tick(c,List.of(from,to));
+    }
+    /** A preview never expands the active airborne edge: a grounded landing is
+     * required before exactly one of its at most two following edges is used. */
+    Navigation.Result tick(Context c,List<Pos> preview) {
         actions=c.actions();WorldAccess world=c.world();PlayerState p=world.player();long now=world.tick();
         airborne=p!=null && !p.onGround();
         if (phase==Phase.FAILED) { actions.stopMovement();return Navigation.Result.BLOCKED; }
@@ -66,6 +74,7 @@ final class DescentController {
             || Math.abs(world.standingY(from)-fromHeight)>.00001 || Math.abs(world.standingY(to)-toHeight)>.00001)
             return fail("내려갈 경로의 실제 발판 또는 통행 조건이 바뀌었습니다.");
         if (closedDoor(world,from) || closedDoor(world,to)) return fail("계단 통로의 문이 닫혀 내려가는 이동을 멈춥니다.");
+        boolean continuation=verifiedContinuation(c,preview);
         if (Math.sqrt(Math.pow(p.x()-progressSample.x(),2)+Math.pow(p.y()-progressSample.y(),2)+Math.pow(p.z()-progressSample.z(),2))>.08) {
             progressSample=p;progressTick=now;
         }
@@ -94,7 +103,15 @@ final class DescentController {
             align(p,to,measured,vx,vz);return Navigation.Result.MOVING;
         }
         if (p.onGround() && Math.abs(p.y()-toHeight)<=HEIGHT_TOLERANCE) {
-            phase=Phase.LAND;quietSamples=0;progressTick=now;stop();return Navigation.Result.MOVING;
+            if (continuation && measured && canHandOff(world,p,preview.get(2),vx,vz)) {
+                // Transfer only after native onGround at this exact lower support.
+                // Calibration and observed motion belong to this uninterrupted
+                // straight run; they never survive a turn, cancellation or reset.
+                from=to;fromHeight=toHeight;to=preview.get(2);toHeight=world.standingY(to);
+                completedEdges++;quietSamples=0;firstTick=now;progressTick=now;progressSample=p;
+            } else {
+                phase=Phase.LAND;quietSamples=0;progressTick=now;stop();return Navigation.Result.MOVING;
+            }
         }
         boolean standardPhysics=world.standardDescentPhysics();
         if (!p.onGround() && usedStandardFallBound && !standardPhysics)
@@ -124,6 +141,29 @@ final class DescentController {
             steer(p,to,(float)Math.min(.45,accelerationRoom/accelerationAllowance()));
         }
         return Navigation.Result.MOVING;
+    }
+    private boolean verifiedContinuation(Context c,List<Pos> preview) {
+        if (preview==null || preview.size()<3 || preview.size()>4 || !from.equals(preview.get(0)) || !to.equals(preview.get(1))
+            || !c.world().standardDescentPhysics()) return false;
+        int dx=to.x()-from.x(),dz=to.z()-from.z();
+        for(int i=1;i<preview.size();i++) {
+            Pos a=preview.get(i-1),b=preview.get(i);
+            if(a==null || b==null || b.x()-a.x()!=dx || b.z()-a.z()!=dz || !descending(a,b,c.world())
+                || !TerrainPathSearch.loadedStance(c.world(),a) || !TerrainPathSearch.loadedStance(c.world(),b)
+                || !c.world().canStand(a) || !c.world().canStand(b) || !c.world().canTraverse(a,b)
+                || closedDoor(c.world(),a) || closedDoor(c.world(),b)) return false;
+        }
+        return c.world().canChainDescent(preview,c.profile());
+    }
+    private boolean canHandOff(WorldAccess world,PlayerState p,Pos next,double vx,double vz) {
+        int dx=to.x()-from.x(),dz=to.z()-from.z();
+        double lateral=Math.abs((p.x()-to.x()-.5)*dz-(p.z()-to.z()-.5)*dx);
+        double nextHeight=world.standingY(next);
+        double safeSpeed=Math.min(.12,Math.max(0,horizontal(p,next)-CENTER)/fallCoastFactor(p.y()-nextHeight,true));
+        return to.equals(NavigationFeet.resolve(world,p)) && horizontal(p,to)<=.45 && lateral<=.10
+            && vx*dx+vz*dz>=-.002 && Math.abs(vx*dz-vz*dx)<=.01
+            && Math.hypot(vx,vz)<=safeSpeed && Double.isFinite(observedDrag) && observedDrag<=.80
+            && Double.isFinite(observedAcceleration);
     }
     private boolean settled(PlayerState p,Pos goal,boolean measured,double vx,double vz) {
         if (measured && horizontal(p,goal)<=CENTER && Math.hypot(vx,vz)<=.002) return ++quietSamples>=2;
