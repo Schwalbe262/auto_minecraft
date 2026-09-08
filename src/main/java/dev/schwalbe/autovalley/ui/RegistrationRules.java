@@ -3,6 +3,7 @@ package dev.schwalbe.autovalley.ui;
 import dev.schwalbe.autovalley.core.*;
 import java.util.*;
 import java.util.function.Predicate;
+import java.util.function.Function;
 
 /** Pure registration checks, independent of the game client. */
 public final class RegistrationRules {
@@ -13,7 +14,7 @@ public final class RegistrationRules {
     public static Group group(BlockData block) {
         if (block.tomato()) return Group.FARMS;
         if (block.id().equals("society:wine_keg") || block.id().equals("society:preserves_jar")
-                || block.id().equals("shippingbin:smart_shipping_bin")) return Group.MACHINES;
+                || block.id().equals("shippingbin:smart_shipping_bin") || block.id().equals("minecraft:crafting_table")) return Group.MACHINES;
         if (block.id().endsWith("_bed")) return Group.BEDS;
         if (block.flag("container")) return Group.CONTAINERS;
         return null;
@@ -24,8 +25,9 @@ public final class RegistrationRules {
             case "society:wine_keg" -> List.of(PoiKind.WINE_KEG);
             case "society:preserves_jar" -> List.of(PoiKind.PRESERVES_JAR);
             case "shippingbin:smart_shipping_bin" -> List.of(PoiKind.SHIPPING_BIN);
+            case "minecraft:crafting_table" -> List.of(PoiKind.LOGGING_CRAFTING_TABLE);
             default -> block.id().endsWith("_bed") ? List.of(PoiKind.BED)
-                    : StorageSurveyRules.ordinaryStorage(block) ? List.of(PoiKind.STORAGE_CANDIDATE, PoiKind.TOMATO_CHEST, PoiKind.WINE_CHEST)
+                    : StorageSurveyRules.ordinaryStorage(block) ? List.of(PoiKind.STORAGE_CANDIDATE, PoiKind.TOMATO_CHEST, PoiKind.WINE_CHEST, PoiKind.WOOD_CHEST)
                     : block.flag("container") ? List.of(PoiKind.TOMATO_CHEST, PoiKind.WINE_CHEST) : List.of();
         };
     }
@@ -43,6 +45,46 @@ public final class RegistrationRules {
     public static Integer wineAge(Integer cohort, Integer currentWineYear) {
         WineCohortRules.Display display = WineCohortRules.describe(cohort, currentWineYear);
         return display == null || display.future() ? null : display.years();
+    }
+
+    /** Keep the main module controls within the same three rows as features grow. */
+    public static int moduleColumns(int count) { return count > 9 ? 4 : 3; }
+
+    /** Only an explicitly aimed spruce planting/trunk block can seed a plot draft. */
+    public static boolean loggingCorner(BlockData block) {
+        return block != null && (block.id().equals("minecraft:spruce_sapling") || block.id().equals("minecraft:spruce_log"));
+    }
+
+    public static boolean loggingBaseReady(Pos corner, Predicate<Pos> loaded, Function<Pos,BlockData> blocks) {
+        if (corner == null || corner.x() == Integer.MAX_VALUE || corner.z() == Integer.MAX_VALUE) return false;
+        for (int dx = 0; dx < 2; dx++) for (int dz = 0; dz < 2; dz++) {
+            Pos position = corner.offset(dx, 0, dz);
+            if (!loaded.test(position)) return false;
+            BlockData block = blocks.apply(position);
+            if (!loggingCorner(block) || !position.equals(block.pos())) return false;
+        }
+        return true;
+    }
+
+    public static boolean loggingAxe(ItemData held, int selectedSlot, int hoeSlot) {
+        return selectedSlot >= 0 && selectedSlot < 9 && selectedSlot != hoeSlot
+                && held != null && held.is("minecraft:netherite_axe") && held.durability() > 1;
+    }
+
+    public static boolean requiresContentsConfirmation(PoiKind kind) {
+        return kind == PoiKind.TOMATO_CHEST || kind == PoiKind.WINE_CHEST || kind == PoiKind.WOOD_CHEST;
+    }
+
+    public static int loggingCheckTicks(String seconds) {
+        try {
+            int ticks = new java.math.BigDecimal(seconds.trim()).multiply(java.math.BigDecimal.valueOf(20)).intValueExact();
+            if (ticks < 20 || ticks > 24000) throw new IllegalArgumentException("Invalid logging interval");
+            return ticks;
+        } catch (NullPointerException | ArithmeticException e) { throw new IllegalArgumentException("Invalid logging interval", e); }
+    }
+
+    public static String loggingCheckSeconds(int ticks) {
+        return java.math.BigDecimal.valueOf(ticks).divide(java.math.BigDecimal.valueOf(20)).stripTrailingZeros().toPlainString();
     }
 
     public static boolean validBounds(Pos first, Pos second) {

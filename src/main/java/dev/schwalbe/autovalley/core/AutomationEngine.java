@@ -43,12 +43,24 @@ public final class AutomationEngine {
         if (!c.profile().allowBackground && !c.world().player().focused()) { status="Focus the game first"; return false; }
         if (c.world().menu()==null || !c.world().menu().carried().empty()) { status="Put down the item on the cursor first"; return false; }
         if (c.world().menu().container()) { status="Close the container before starting"; return false; }
+        AutomationModule logging=null;
+        if (c.profile().loggingRunActive) {
+            if (mode==RunMode.ONCE && oneShotFeature!=Feature.LOGGING
+                || mode==RunMode.CONTINUOUS && !c.profile().enabled(Feature.LOGGING)) {
+                status=unfinishedLoggingMessage(); return false;
+            }
+            logging=modules.stream().filter(module -> module.feature()==Feature.LOGGING).findFirst().orElse(null);
+            if (logging==null) { status="미완료 벌목이 있지만 실행 모듈이 없어 재개할 수 없습니다."; return false; }
+        }
         String actionRejection=c.actions().startRejection();
         if (actionRejection!=null) { status=actionRejection; return false; }
         try { MachineOutputLedger.reconcile(c); }
         catch (RuntimeException e) { stop(c,State.ERROR,"Could not save machine output verification; no work started"); return false; }
         if (MachineOutputLedger.hasPending(c)) { status=pendingOutputMessage(c); return false; }
         retryAt=0;
+        // A parked hotbar item may itself be a tomato, wine, or shipping product.
+        // Resume its whole durable logging routine before any ordinary consumer.
+        if (mode==RunMode.CONTINUOUS) active=logging;
         state=State.RUNNING;
         status="Starting";
         return true;
@@ -77,12 +89,24 @@ public final class AutomationEngine {
             if (MachineOutputLedger.hasPending(c) && (active==null || !MachineOutputLedger.ownsActive(c,active.feature()))) {
                 stop(c,State.PAUSED,pendingOutputMessage(c)); return;
             }
+            if (c.profile().loggingRunActive) {
+                if (mode==RunMode.ONCE && oneShotFeature!=Feature.LOGGING
+                    || mode==RunMode.CONTINUOUS && !c.profile().enabled(Feature.LOGGING)) {
+                    stop(c,State.PAUSED,unfinishedLoggingMessage()); return;
+                }
+                AutomationModule logging=modules.stream().filter(module -> module.feature()==Feature.LOGGING).findFirst().orElse(null);
+                if (logging==null || active!=null && active!=logging) {
+                    stop(c,State.PAUSED,"미완료 벌목을 먼저 재개해야 합니다. 다른 작업은 진행하지 않았습니다."); return;
+                }
+                active=logging;
+            }
             if (mode==RunMode.ONCE) { tickOnce(c); return; }
             if (active!=null && !c.profile().enabled(active.feature())) { stop(c,State.PAUSED,"Feature was disabled"); return; }
             if (active!=null) {
                 WorkResult result=active.tick(c);
                 if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) { state=State.RUNNING; status=result.message(); return; }
+                if (pauseForUnfinishedLogging(c,active,result)) return;
                 if (MachineOutputLedger.hasPending(c)) { stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return; }
                 c.actions().stopMovement();
                 c.navigation().reset();
@@ -103,6 +127,7 @@ public final class AutomationEngine {
                 WorkResult result=module.tick(c);
                 if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) { active=module; state=State.RUNNING; status=result.message(); return; }
+                if (pauseForUnfinishedLogging(c,module,result)) return;
                 if (MachineOutputLedger.hasPending(c)) { stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return; }
                 if (result.state()==WorkResult.State.BLOCKED) {
                     blockedThisSweep.put(module,result.message());
@@ -130,6 +155,7 @@ public final class AutomationEngine {
         if (active==null) { stop(c,State.PAUSED,"Selected one-shot job is unavailable"); return; }
         WorkResult result=active.tick(c);
         if (pauseForActions(c)) return;
+        if (result.state()!=WorkResult.State.BUSY && pauseForUnfinishedLogging(c,active,result)) return;
         if (result.state()!=WorkResult.State.BUSY && MachineOutputLedger.hasPending(c)) {
             stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return;
         }
@@ -142,5 +168,13 @@ public final class AutomationEngine {
     }
     private static String pendingOutputMessage(Context c) {
         return "미회수 산출물 "+c.profile().pendingMachineOutputs.size()+"건 — Ctrl+F8 → 실행·기록에서 회수 상태를 확인하세요";
+    }
+    private boolean pauseForUnfinishedLogging(Context c,AutomationModule module,WorkResult result) {
+        if (!c.profile().loggingRunActive || module.feature()!=Feature.LOGGING) return false;
+        stop(c,State.PAUSED,"미완료 벌목을 보존하고 중지했습니다: "+result.message());
+        return true;
+    }
+    private static String unfinishedLoggingMessage() {
+        return "미완료 벌목이 있습니다. 벌목을 다시 실행하거나 활성화해 먼저 마무리하세요.";
     }
 }

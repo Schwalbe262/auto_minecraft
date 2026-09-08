@@ -19,6 +19,14 @@ public interface WorldAccess {
     default Integer wineYear() { return null; }
     /** Unknown adapters cannot assume that a modded hoe affects only its clicked block. */
     default HarvestFootprint harvestFootprint(Pos target) { return HarvestFootprint.UNKNOWN; }
+    /** Null requires a positive bounded whole-tree proof; unknown adapters fail closed. */
+    default String loggingTreeRejection(Pos target,List<LoggingPlot> plots) { return "Logging tree inspection is unavailable"; }
+    default boolean canPlantLoggingSapling(Pos target) { return false; }
+    default boolean loggingAxe(int inventoryIndex) { return false; }
+    /** Exact native stack fingerprint for protecting a borrowed hotbar item; unknown is null. */
+    default String loggingItemFingerprint(int inventoryIndex) { return null; }
+    default boolean loggingCraftingMenu() { return false; }
+    default boolean loggingCraftingGridEmpty() { return false; }
     MenuData menu();
     boolean mayPlace(int menuSlot, ItemData item);
     default boolean canInteract(Pos target, double reach) { return player().distance(target) <= reach; }

@@ -23,12 +23,17 @@ public final class ValleyScreen extends Screen {
     private enum Tab { MODULES, REGISTER, FARMS, SAVED }
     private enum ToolPage { MENU, RECORD_NAME, RUN_ONCE, PENDING_LIST, PENDING_DETAIL, PENDING_CONFIRM }
     private enum MachineGroupPage { DETAIL, MEMBERS, REMOVE_CONFIRM }
+    private enum LoggingPage { LIST, EDIT, SETTINGS, REMOVE }
     private static Tab rememberedTab = Tab.MODULES;
     private static Profile draftOwner;
     private static Pos draftFirst;
     private static Pos draftSecond;
     private static String draftName = "";
     private static Farm draftOriginal;
+    private static boolean rememberedLoggingAreas;
+    private static Pos loggingDraftCorner;
+    private static String loggingDraftName = "";
+    private static LoggingPlot loggingDraftOriginal;
     private final ClientRuntime runtime = ClientRuntime.instance();
     private final Pos openedTarget = aimedPosition();
     private final List<TextLine> lines = new ArrayList<>();
@@ -58,6 +63,11 @@ public final class ValleyScreen extends Screen {
     private Poi editingPoi;
     private boolean containerChecked;
     private boolean farmEditor;
+    private boolean loggingAreas = rememberedLoggingAreas;
+    private LoggingPage loggingPage = LoggingPage.LIST;
+    private LoggingPlot loggingRemoveTarget;
+    private LoggingMode loggingDraftMode;
+    private String loggingIntervalDraft = "", loggingReserveDraft = "", loggingCycleDraft = "";
     private boolean showSuggestions;
     private boolean scheduleEditor;
     private boolean toolsEditor;
@@ -77,6 +87,8 @@ public final class ValleyScreen extends Screen {
         runtime.pause(tr("settings.paused").getString());
         if (draftOwner != runtime.profile()) {
             draftOwner = runtime.profile(); draftFirst = null; draftSecond = null; draftName = ""; draftOriginal = null;
+            loggingDraftCorner = null; loggingDraftName = ""; loggingDraftOriginal = null;
+            loggingPage = LoggingPage.LIST;
         }
         panelWidth = Math.min(620, width - 24);
         left = (width - panelWidth) / 2;
@@ -95,14 +107,14 @@ public final class ValleyScreen extends Screen {
             Tab target = tabs[i];
             Button button = button(left + i * (tabWidth + gap), 28, tabWidth, tr("tab." + target.name().toLowerCase(Locale.ROOT)), () -> {
                 rememberDraft(); tab = target; rememberedTab = target; page = 0;
-                selected = null; selectedMachineGroup = null; farmEditor = false; showSuggestions = false; scheduleEditor = false; toolsEditor = false; machineBatchEditor = false; rebuild();
+                selected = null; selectedMachineGroup = null; farmEditor = false; showSuggestions = false; scheduleEditor = false; toolsEditor = false; machineBatchEditor = false; loggingPage = LoggingPage.LIST; rebuild();
             });
             button.active = target != tab;
         }
         switch (tab) {
             case MODULES -> { if (toolsEditor) toolsEditor(); else if (scheduleEditor) scheduleEditor(); else modules(); }
             case REGISTER -> { if (machineBatchEditor) machineBatchEditor(); else if (selected == null) registration(); else poiEditor(); }
-            case FARMS -> { if (farmEditor) farmEditor(); else if (showSuggestions) suggestionList(); else farms(); }
+            case FARMS -> { if (loggingAreas) loggingAreas(); else if (farmEditor) farmEditor(); else if (showSuggestions) suggestionList(); else farms(); }
             case SAVED -> { if (selectedMachineGroup != null) machineGroupEditor(); else saved(); }
         }
         button(left + panelWidth - 72, height - 25, 72, tr("close"), this::onClose);
@@ -111,7 +123,7 @@ public final class ValleyScreen extends Screen {
     private void modules() {
         int half = (panelWidth - 6) / 2;
         Feature[] features = Arrays.stream(Feature.values()).filter(feature -> feature != Feature.STORAGE_SURVEY).toArray(Feature[]::new);
-        int columns = 3;
+        int columns = RegistrationRules.moduleColumns(features.length);
         int featureWidth = (panelWidth - (columns - 1) * 6) / columns;
         for (int i = 0; i < features.length; i++) {
             Feature feature = features[i];
@@ -124,6 +136,7 @@ public final class ValleyScreen extends Screen {
                     rebuild();
                 });
             if (feature == Feature.WINE_SURPLUS_SHIPPING) featureButton.setTooltip(Tooltip.create(tr("surplus.hint")));
+            if (feature == Feature.LOGGING) featureButton.setTooltip(Tooltip.create(tr("logging.hint")));
         }
         int y = 54 + ((features.length + columns - 1) / columns) * 23 + 4;
         button(left, y, half, tr("hoe.capture"), this::captureHoe);
@@ -224,6 +237,7 @@ public final class ValleyScreen extends Screen {
             Component hint = tr(feature == Feature.WINE ? "once.wine_hint" : "once.hint");
             if (feature == Feature.WINE_SURPLUS_SHIPPING) hint = tr("surplus.hint");
             if (feature == Feature.STORAGE_SURVEY) hint = tr("survey.hint");
+            if (feature == Feature.LOGGING) hint = tr("logging.once_hint");
             choose.setTooltip(Tooltip.create(Component.translatable(feature.translationKey()).append("\n").append(hint)));
         }
         int backY = 92 + ((features.length + columns - 1) / columns) * 24 + 14;
@@ -401,7 +415,7 @@ public final class ValleyScreen extends Screen {
         BlockData block = canonicalBlock(original);
         if (block.tomato()) {
             if (draftFirst == null) draftFirst = block.pos(); else draftSecond = block.pos();
-            tab = Tab.FARMS; rememberedTab = tab; farmEditor = true; selected = null;
+            tab = Tab.FARMS; rememberedTab = tab; loggingAreas = false; rememberedLoggingAreas = false; farmEditor = true; selected = null;
             rebuild(); return;
         }
         List<PoiKind> kinds = RegistrationRules.kinds(block);
@@ -435,7 +449,7 @@ public final class ValleyScreen extends Screen {
         text(92, tr("label"));
         nameInput = input(left, 103, panelWidth, tr("label"), 64);
         nameInput.setValue(poiName(selectedKind).getString());
-        boolean classified = selectedKind == PoiKind.TOMATO_CHEST || selectedKind == PoiKind.WINE_CHEST;
+        boolean classified = RegistrationRules.requiresContentsConfirmation(selectedKind);
         int actionY;
         if (selectedKind == PoiKind.WINE_CHEST) {
             int fieldWidth = Math.max(70, panelWidth / 3);
@@ -450,12 +464,12 @@ public final class ValleyScreen extends Screen {
                         rebuild(); nameInput.setValue(label); classifierInput.setValue(classifier);
                     });
             actionY = 165;
-        } else if (selectedKind == PoiKind.TOMATO_CHEST) {
-            text(128, tr("tomato_storage.all_grades"));
+        } else if (selectedKind == PoiKind.TOMATO_CHEST || selectedKind == PoiKind.WOOD_CHEST) {
+            text(128, tr(selectedKind == PoiKind.WOOD_CHEST ? "logging.storage_summary" : "tomato_storage.all_grades"));
             button(left, 140, panelWidth, tr(containerChecked ? "container.checked" : "container.check"), () -> {
                 containerChecked = !containerChecked;
                 String label = nameInput.getValue(); rebuild(); nameInput.setValue(label);
-            }).setTooltip(Tooltip.create(tr("tomato_storage.hint")));
+            }).setTooltip(Tooltip.create(tr(selectedKind == PoiKind.WOOD_CHEST ? "logging.storage_hint" : "tomato_storage.hint")));
             actionY = 165;
         } else actionY = 132;
         int half = (panelWidth - 6) / 2;
@@ -534,7 +548,7 @@ public final class ValleyScreen extends Screen {
     }
 
     private void savePoi() {
-        boolean classified = selectedKind == PoiKind.TOMATO_CHEST || selectedKind == PoiKind.WINE_CHEST;
+        boolean classified = RegistrationRules.requiresContentsConfirmation(selectedKind);
         if (classified && !containerChecked) { error("error.container_unchecked"); return; }
         if (!runtime.world().loaded(selected.pos()) || !RegistrationRules.kinds(runtime.world().block(selected.pos())).contains(selectedKind)) {
             error("error.changed"); return;
@@ -561,9 +575,12 @@ public final class ValleyScreen extends Screen {
     }
 
     private void farms() {
-        int half = (panelWidth - 6) / 2;
-        button(left, 54, half, tr("farms.manual"), () -> { farmEditor = true; rebuild(); });
-        button(left + half + 6, 54, half, tr("farms.suggest"), () -> scan(true));
+        int third = (panelWidth - 12) / 3;
+        button(left, 54, third, tr("farms.manual"), () -> { farmEditor = true; rebuild(); });
+        button(left + third + 6, 54, third, tr("farms.suggest"), () -> scan(true));
+        button(left + (third + 6) * 2, 54, third, tr("logging.plots_open"), () -> {
+            loggingAreas = true; rememberedLoggingAreas = true; loggingPage = LoggingPage.LIST; page = 0; rebuild();
+        });
         List<Farm> fields = List.copyOf(runtime.profile().farms);
         text(81, tr("farms.count", fields.size()));
         text(96, tr("farms.hint"));
@@ -587,6 +604,195 @@ public final class ValleyScreen extends Screen {
             });
         }
         pagination(fields.size(), rows);
+    }
+
+    private void loggingAreas() {
+        switch (loggingPage) {
+            case LIST -> loggingPlots();
+            case EDIT -> loggingPlotEditor();
+            case SETTINGS -> loggingSettings();
+            case REMOVE -> loggingRemoveConfirmation();
+        }
+    }
+
+    private void loggingPlots() {
+        int half = (panelWidth - 6) / 2;
+        button(left, 54, half, tr("logging.tomato_back"), () -> {
+            loggingAreas = false; rememberedLoggingAreas = false; page = 0; rebuild();
+        });
+        button(left + half + 6, 54, half, tr("logging.settings"), this::beginLoggingSettings)
+                .active = !runtime.profile().loggingRunActive;
+        button(left, 80, panelWidth, tr("logging.add"), () -> {
+            if (loggingLocked()) return;
+            loggingPage = LoggingPage.EDIT; rebuild();
+        }).active = !runtime.profile().loggingRunActive;
+        text(106, tr(runtime.profile().loggingRunActive ? "logging.active_locked" : "logging.count", runtime.profile().loggingPlots.size()));
+        List<LoggingPlot> plots = List.copyOf(runtime.profile().loggingPlots);
+        int rows = rowsFrom(120), start = pageStart(plots.size(), rows);
+        if (plots.isEmpty()) text(125, tr("logging.empty"));
+        for (int index = start; index < Math.min(start + rows, plots.size()); index++) {
+            LoggingPlot plot = plots.get(index);
+            int y = 120 + (index - start) * 23;
+            Component caption = Component.literal(plot.name() + " · " + coords(plot.corner()) + " · 2×2");
+            button(left, y, panelWidth - 58, caption, () -> {
+                if (loggingLocked()) return;
+                loggingDraftCorner = plot.corner(); loggingDraftName = plot.name(); loggingDraftOriginal = plot;
+                loggingPage = LoggingPage.EDIT; rebuild();
+            }).active = !runtime.profile().loggingRunActive;
+            button(left + panelWidth - 54, y, 54, tr("remove"), () -> {
+                if (loggingLocked()) return;
+                loggingRemoveTarget = plot; loggingPage = LoggingPage.REMOVE; rebuild();
+            }).active = !runtime.profile().loggingRunActive;
+        }
+        pagination(plots.size(), rows);
+    }
+
+    private void loggingPlotEditor() {
+        text(55, tr("logging.corner_hint"));
+        button(left, 68, panelWidth, tr("logging.capture_corner"), this::captureLoggingCorner);
+        text(94, tr("logging.corner_value", coords(loggingDraftCorner)));
+        text(109, tr("label"));
+        nameInput = input(left, 120, panelWidth, tr("label"), 64);
+        if (loggingDraftName.isBlank()) loggingDraftName = nextLoggingName();
+        nameInput.setValue(loggingDraftName);
+        nameInput.setResponder(value -> loggingDraftName = value);
+        int third = (panelWidth - 12) / 3;
+        button(left, 147, third, tr("back"), () -> { loggingPage = LoggingPage.LIST; rebuild(); });
+        button(left + third + 6, 147, third, tr("logging.return_world"), this::onClose);
+        button(left + 2 * (third + 6), 147, third, tr("confirm"), this::saveLoggingPlot);
+        text(175, tr("logging.extent_hint"));
+        button(left, 190, panelWidth, tr("logging.clear_draft"), () -> {
+            loggingDraftCorner = null; loggingDraftName = ""; loggingDraftOriginal = null; rebuild();
+        });
+    }
+
+    private String nextLoggingName() {
+        Set<String> names = new HashSet<>();
+        runtime.profile().loggingPlots.forEach(plot -> names.add(plot.name()));
+        for (int index = 1; ; index++) {
+            String name = tr("logging.default_name", index).getString();
+            if (!names.contains(name)) return name;
+        }
+    }
+
+    private void captureLoggingCorner() {
+        if (loggingLocked()) return;
+        BlockData block = lookedBlock();
+        if (!RegistrationRules.loggingCorner(block)) { error("logging.error.corner"); return; }
+        loggingDraftCorner = block.pos(); rebuild(); success("logging.corner_captured");
+    }
+
+    private boolean loggingBaseReady(Pos corner) {
+        return RegistrationRules.loggingBaseReady(corner, runtime.world()::loaded, runtime.world()::block);
+    }
+
+    private void saveLoggingPlot() {
+        if (loggingLocked()) return;
+        String name = nameInput.getValue().trim();
+        if (name.isEmpty() || name.length() > 64 || name.chars().anyMatch(Character::isISOControl)) { error("logging.error.name"); return; }
+        List<LoggingPlot> before = new ArrayList<>(runtime.profile().loggingPlots);
+        if (loggingDraftOriginal != null && !before.contains(loggingDraftOriginal)) { error("logging.error.changed"); return; }
+        if ((loggingDraftOriginal == null || !Objects.equals(loggingDraftOriginal.corner(), loggingDraftCorner))
+                && !loggingBaseReady(loggingDraftCorner)) { error("logging.error.base"); return; }
+        LoggingPlot plot = new LoggingPlot(name, loggingDraftCorner);
+        if (loggingDraftOriginal == null) runtime.profile().loggingPlots.add(plot);
+        else runtime.profile().loggingPlots.set(before.indexOf(loggingDraftOriginal), plot);
+        Runnable rollback = () -> { runtime.profile().loggingPlots.clear(); runtime.profile().loggingPlots.addAll(before); };
+        try { LoggingRules.validate(runtime.profile()); }
+        catch (IllegalArgumentException failure) { rollback.run(); error("logging.error.plot"); return; }
+        if (persist(rollback)) {
+            page = runtime.profile().loggingPlots.indexOf(plot) / rowsFrom(120);
+            loggingDraftCorner = null; loggingDraftName = ""; loggingDraftOriginal = null;
+            loggingPage = LoggingPage.LIST; rebuild();
+        }
+    }
+
+    private void loggingRemoveConfirmation() {
+        text(55, tr("logging.remove_title"));
+        text(78, Component.literal(loggingRemoveTarget == null ? "—" : loggingRemoveTarget.name()));
+        text(104, tr("logging.remove_hint"));
+        text(124, tr("logging.extent_hint"));
+        button(left, 155, panelWidth, tr("logging.remove_confirm"), () -> {
+            if (loggingLocked()) return;
+            List<LoggingPlot> before = new ArrayList<>(runtime.profile().loggingPlots);
+            if (loggingRemoveTarget == null || !before.contains(loggingRemoveTarget)) { error("logging.error.changed"); return; }
+            runtime.profile().loggingPlots.remove(loggingRemoveTarget);
+            if (persist(() -> { runtime.profile().loggingPlots.clear(); runtime.profile().loggingPlots.addAll(before); })) {
+                if (loggingRemoveTarget.equals(loggingDraftOriginal)) {
+                    loggingDraftCorner = null; loggingDraftName = ""; loggingDraftOriginal = null;
+                }
+                loggingRemoveTarget = null; loggingPage = LoggingPage.LIST; rebuild();
+            }
+        });
+        button(left, 183, panelWidth, tr("back"), () -> { loggingPage = LoggingPage.LIST; rebuild(); });
+    }
+
+    private boolean loggingLocked() {
+        if (!runtime.profile().loggingRunActive) return false;
+        error("logging.error.active"); return true;
+    }
+
+    private void beginLoggingSettings() {
+        if (loggingLocked()) return;
+        Profile profile = runtime.profile();
+        loggingDraftMode = profile.loggingMode;
+        loggingIntervalDraft = RegistrationRules.loggingCheckSeconds(profile.loggingCheckTicks);
+        loggingReserveDraft = Integer.toString(profile.loggingSaplingReserve);
+        loggingCycleDraft = Integer.toString(profile.loggingCycleDays);
+        loggingPage = LoggingPage.SETTINGS; rebuild();
+    }
+
+    private void loggingSettings() {
+        int half = (panelWidth - 6) / 2;
+        button(left, 54, half, tr("back"), () -> { loggingPage = LoggingPage.LIST; rebuild(); });
+        button(left + half + 6, 54, half, tr("logging.axe_capture"), this::captureLoggingAxe);
+        int slot = runtime.profile().loggingAxeHotbarSlot;
+        text(80, slot < 0 ? tr("logging.axe_missing") : tr("logging.axe_status", slot + 1));
+        button(left, 94, panelWidth, tr("logging.mode", tr("logging.mode." + loggingDraftMode.name().toLowerCase(Locale.ROOT))), () -> {
+            LoggingMode[] modes = LoggingMode.values();
+            loggingDraftMode = modes[(loggingDraftMode.ordinal() + 1) % modes.length]; rebuild();
+        }).setTooltip(Tooltip.create(tr("logging.mode_hint")));
+        text(121, tr("logging.settings_labels"));
+        EditBox interval = input(left, 133, half, tr("logging.interval"), 8);
+        interval.setValue(loggingIntervalDraft); interval.setResponder(value -> loggingIntervalDraft = value);
+        interval.setTooltip(Tooltip.create(tr("logging.interval_hint")));
+        EditBox reserve = input(left + half + 6, 133, half, tr("logging.reserve"), 4);
+        reserve.setValue(loggingReserveDraft); reserve.setResponder(value -> loggingReserveDraft = value);
+        reserve.setTooltip(Tooltip.create(tr("logging.reserve_hint")));
+        text(160, tr("logging.cycle"));
+        EditBox cycle = input(left, 172, half, tr("logging.cycle"), 2);
+        cycle.setValue(loggingCycleDraft); cycle.setResponder(value -> loggingCycleDraft = value);
+        button(left + half + 6, 172, half, tr("confirm"), this::saveLoggingSettings);
+        text(201, tr("logging.output_hint"));
+    }
+
+    private void captureLoggingAxe() {
+        if (loggingLocked()) return;
+        PlayerState player = runtime.world().player();
+        ItemData held = runtime.world().inventory().stream().filter(slot -> slot.inventoryIndex() == player.selectedSlot())
+                .map(ItemSlot::item).findFirst().orElse(ItemData.EMPTY);
+        if (!RegistrationRules.loggingAxe(held, player.selectedSlot(), runtime.profile().hoeHotbarSlot)) { error("logging.error.axe"); return; }
+        int before = runtime.profile().loggingAxeHotbarSlot;
+        runtime.profile().loggingAxeHotbarSlot = player.selectedSlot();
+        persist(() -> runtime.profile().loggingAxeHotbarSlot = before); rebuild();
+    }
+
+    private void saveLoggingSettings() {
+        if (loggingLocked()) return;
+        int ticks, reserve, cycle;
+        try {
+            ticks = RegistrationRules.loggingCheckTicks(loggingIntervalDraft);
+            reserve = Integer.parseInt(loggingReserveDraft.trim()); cycle = Integer.parseInt(loggingCycleDraft.trim());
+            if (reserve < 0 || reserve > 2304 || cycle < 1 || cycle > 28) throw new IllegalArgumentException();
+        } catch (IllegalArgumentException failure) { error("logging.error.settings"); return; }
+        Profile profile = runtime.profile();
+        int beforeTicks = profile.loggingCheckTicks, beforeReserve = profile.loggingSaplingReserve, beforeCycle = profile.loggingCycleDays;
+        LoggingMode beforeMode = profile.loggingMode;
+        profile.loggingCheckTicks = ticks; profile.loggingSaplingReserve = reserve; profile.loggingCycleDays = cycle; profile.loggingMode = loggingDraftMode;
+        if (persist(() -> {
+            profile.loggingCheckTicks = beforeTicks; profile.loggingSaplingReserve = beforeReserve;
+            profile.loggingCycleDays = beforeCycle; profile.loggingMode = beforeMode;
+        })) { loggingPage = LoggingPage.LIST; rebuild(); }
     }
 
     private void farmEditor() {
@@ -691,6 +897,7 @@ public final class ValleyScreen extends Screen {
                         : tr(display.future() ? "classifier.future_value" : "classifier.age_value", display.years());
                 caption = caption.copy().append(" · ").append(wineLabel);
             } else if (poi.kind() == PoiKind.TOMATO_CHEST) caption = caption.copy().append(" · ").append(tr("tomato_storage.all_grades"));
+            else if (poi.kind() == PoiKind.WOOD_CHEST) caption = caption.copy().append(" · ").append(tr("logging.storage_summary"));
             caption = caption.copy().append(" · " + coords(poi.pos()));
             button(left, y, panelWidth - 58, clipped(caption, panelWidth - 70), () -> {
                 if (poi.kind() == PoiKind.DISPOSAL) { updateDisposalFacing(poi); return; }
@@ -901,6 +1108,7 @@ public final class ValleyScreen extends Screen {
         if (held.isEmpty() || !held.get().item().hoe() || held.get().item().empty() || held.get().item().durability() <= 0) {
             error("error.hoe"); return;
         }
+        if (player.selectedSlot() == runtime.profile().loggingAxeHotbarSlot) { error("logging.error.tool_overlap"); return; }
         int before = runtime.profile().hoeHotbarSlot;
         runtime.profile().hoeHotbarSlot = player.selectedSlot();
         persist(() -> runtime.profile().hoeHotbarSlot = before); rebuild();

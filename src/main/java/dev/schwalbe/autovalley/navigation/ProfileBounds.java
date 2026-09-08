@@ -18,6 +18,8 @@ public final class ProfileBounds {
     }
 
     public boolean contains(Pos p) {
+        // Read/navigation envelope only. Destruction is separately limited to validated trunk columns.
+        for (LoggingPlot plot:profile.loggingPlots) if (plot.containsEnvelope(p)) return true;
         for (Farm farm : profile.farms) {
             if (farm.volume() > 32768) continue;
             if (between(p.x(), farm.first().x(), farm.second().x(), 1)

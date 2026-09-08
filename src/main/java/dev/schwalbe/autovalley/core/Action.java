@@ -1,6 +1,6 @@
 package dev.schwalbe.autovalley.core;
 public sealed interface Action {
-    enum Use { HARVEST, MACHINE, OPEN_CONTAINER, SLEEP, DOOR }
+    enum Use { HARVEST, MACHINE, OPEN_CONTAINER, OPEN_CRAFTING, SLEEP, DOOR }
     record UseBlock(Pos pos, Use purpose) implements Action { }
     record SelectHotbar(int slot) implements Action { }
     record SwapHotbar(int inventoryIndex, int hotbarSlot) implements Action { }
@@ -10,5 +10,11 @@ public sealed interface Action {
     record ThrowRotten(int containerId, int slot, Pos disposal) implements Action { }
     /** One cursor-free TrashSlot deletion of this exact normal inventory stack. */
     record TrashRotten(int inventoryIndex, ItemData expected) implements Action { }
+    /** One normal mining operation at a verified registered spruce-tree base. */
+    record ChopTree(Pos pos) implements Action { }
+    record PlantSapling(Pos pos) implements Action { }
+    /** One validated six-spruce-log recipe batch in an automation-owned crafting table. */
+    record CraftFireLogs(Pos table) implements Action { }
+    record TrashLogging(int inventoryIndex, ItemData expected) implements Action { }
     record CloseContainer(int containerId) implements Action { }
 }

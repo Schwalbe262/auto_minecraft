@@ -40,6 +40,11 @@ public final class MinecraftActions implements ActionPort {
     private boolean trashInFlight;
     private String trashFailure;
     private long trashFailureGeneration;
+    private NativeLoggingActions loggingAction,lateLoggingAction;
+    private NativeLoggingRecipe loggingRecipe,lateLoggingRecipe;
+    private NativeLoggingSwap loggingSwap,lateLoggingSwap;
+    private String loggingFailure;
+    private long loggingFailureGeneration;
     private final LinkedHashMap<Long,ActionOutcome> outcomes=new LinkedHashMap<>();
     public MinecraftActions(MinecraftWorld world,ServerObservations observations) { this.world=world; this.observations=observations; }
     public void context(Context context) { this.context=context; }
@@ -51,9 +56,10 @@ public final class MinecraftActions implements ActionPort {
     public boolean ownsContainer() {
         MenuData menu=world.menu();
         return menu!=null && menu.container() && menu.id()==ownedMenu && ownedShape!=null
+            && (!ownedShape.blockId().equals("minecraft:crafting_table") || world.loggingCraftingMenu())
             && ownedShape.equals(containerShape(ownedContainer)) && ownedShape.matches(menu);
     }
-    public boolean openingContainer() { return pending instanceof Action.UseBlock use && use.purpose()==Action.Use.OPEN_CONTAINER; }
+    public boolean openingContainer() { return pending instanceof Action.UseBlock use && (use.purpose()==Action.Use.OPEN_CONTAINER || use.purpose()==Action.Use.OPEN_CRAFTING); }
     public boolean expectingSleep() { return pending instanceof Action.UseBlock use && use.purpose()==Action.Use.SLEEP; }
     public long submit(Action action) {
         long ticket=++nextTicket;
@@ -63,12 +69,14 @@ public final class MinecraftActions implements ActionPort {
         if (paused!=null) { put(ticket,ActionOutcome.State.FAILED,paused); return ticket; }
         String rejection=SafetyPolicy.rejection(action,context);
         ContainerShape requestedShape=null;
-        if (rejection==null && action instanceof Action.UseBlock use && use.purpose()==Action.Use.OPEN_CONTAINER) {
+        if (rejection==null && action instanceof Action.UseBlock use && (use.purpose()==Action.Use.OPEN_CONTAINER || use.purpose()==Action.Use.OPEN_CRAFTING)) {
             requestedShape=containerShape(use.pos());
             if (requestedShape==null || !requestedShape.canonical().equals(use.pos()))
                 rejection="Container is unloaded, incomplete, or no longer the registered chest pair";
         }
         if (rejection==null && action instanceof Action.QuickMove transfer) rejection=transferRejection(transfer);
+        if (rejection==null && action instanceof Action.CraftFireLogs craft && (!ownsContainer() || !craft.table().equals(ownedContainer)))
+            rejection="Crafting table was not opened by this automation action";
         if (rejection!=null) { put(ticket,ActionOutcome.State.FAILED,rejection); return ticket; }
         stopMovement();
         pendingTicket=ticket; pending=action; started=world.tick(); beforeSequence=observations.sequence();
@@ -91,8 +99,10 @@ public final class MinecraftActions implements ActionPort {
         boolean kindMatches=switch (poi.kind()) {
             case TOMATO_CHEST -> TomatoStorageRules.permitsTransfer(item,world.menu());
             case WINE_CHEST -> source.player() && item.is(ItemData.WINE) && item.year()!=null && item.year().equals(poi.classifier());
+            case WOOD_CHEST -> LoggingRules.allowed(context) && source.player() && LoggingRules.wood(item);
             case SHIPPING_BIN -> source.player() && (item.standardShippingProduct() && context.session().allows(context.profile(),Feature.SHIPPING)
-                || item.is(ItemData.WINE) && WineSaleRules.permitted(item,context));
+                || item.is(ItemData.WINE) && WineSaleRules.permitted(item,context)
+                || LoggingRules.allowed(context) && LoggingRules.byproduct(item));
             default -> false;
         };
         if (!kindMatches) return "Item does not match the registered container classification";
@@ -102,7 +112,7 @@ public final class MinecraftActions implements ActionPort {
     }
     private void execute(Action action) {
         if (action instanceof Action.UseBlock use) {
-            if (use.purpose()==Action.Use.OPEN_CONTAINER) { ownedMenu=-1; ownedContainer=null; ownedShape=null; }
+            if (use.purpose()==Action.Use.OPEN_CONTAINER || use.purpose()==Action.Use.OPEN_CRAFTING) { ownedMenu=-1; ownedContainer=null; ownedShape=null; }
             var hit=world.hit(use.pos(),mc.player.getEyePosition());
             if (hit==null) { finish(ActionOutcome.State.FAILED,"Target no longer visible"); return; }
             lookAt(hit.getLocation());
@@ -114,6 +124,7 @@ public final class MinecraftActions implements ActionPort {
         } else if (action instanceof Action.SwapHotbar swap) {
             int source=mc.player.inventoryMenu.slots.stream().filter(s -> s.container==mc.player.getInventory() && s.getContainerSlot()==swap.inventoryIndex()).map(s -> s.index).findFirst().orElseThrow();
             if (swap.inventoryIndex()==swap.hotbarSlot()) { finish(ActionOutcome.State.SUCCEEDED,"Already in hotbar"); return; }
+            if (context.profile().loggingRunActive) loggingSwap=new NativeLoggingSwap(mc.player,swap,observations);
             confirmedClick(mc.player.inventoryMenu.containerId,source,swap.hotbarSlot(),ClickType.SWAP);
         } else if (action instanceof Action.QuickMove transfer) {
             confirmedClick(transfer.containerId(),transfer.slot(),0,ClickType.QUICK_MOVE);
@@ -125,6 +136,17 @@ public final class MinecraftActions implements ActionPort {
             trash=new NativeTrashSlot(mc.player,rotten,observations);
             trashInFlight=true; // A send that throws may already have reached the channel: never retry it.
             trash.send();
+        } else if (action instanceof Action.TrashLogging waste) {
+            trash=new NativeTrashSlot(mc.player,waste,observations); trashInFlight=true; trash.send();
+        } else if (action instanceof Action.ChopTree || action instanceof Action.PlantSapling) {
+            loggingAction=new NativeLoggingActions(mc,world,observations,action,context);
+            Pos target=action instanceof Action.ChopTree chop ? chop.pos() : ((Action.PlantSapling)action).pos();
+            var hit=world.hit(action instanceof Action.PlantSapling ? target.offset(0,-1,0) : target,mc.player.getEyePosition());
+            if (hit!=null) lookAt(hit.getLocation());
+            loggingAction.begin(mc,observations);
+        } else if (action instanceof Action.CraftFireLogs) {
+            loggingRecipe=new NativeLoggingRecipe(mc,observations,world.tick());
+            loggingRecipe.place(mc,() -> confirmedClick(loggingRecipe.menuId,loggingRecipe.selfSlot,loggingRecipe.selfHotbar,ClickType.SWAP));
         } else if (action instanceof Action.ThrowRotten drop) {
             Look facing=context.profile().disposalDirections.get(Profile.positionKey(drop.disposal()));
             mc.player.setYRot(facing.yaw()); mc.player.setXRot(facing.pitch());
@@ -149,13 +171,22 @@ public final class MinecraftActions implements ActionPort {
         if (world.tick()==started) return;
         MenuData menu=world.menu();
         if (pending instanceof Action.ConsolidateInventory) { tickConsolidation(); return; }
-        if (pending instanceof Action.TrashRotten) { tickTrash(); return; }
+        if (pending instanceof Action.TrashRotten || pending instanceof Action.TrashLogging) { tickTrash(); return; }
+        if (loggingAction!=null) { tickLogging(); return; }
+        if (loggingRecipe!=null) { tickLoggingRecipe(); return; }
+        if (loggingSwap!=null) {
+            if (loggingSwap.confirmed(observations)) { finish(ActionOutcome.State.SUCCEEDED,"서버가 벌목 핫바 교환을 확인했습니다."); return; }
+            if (loggingSwap.generation!=observations.generation() || world.tick()-started>=context.profile().interactionTimeoutTicks)
+                finish(ActionOutcome.State.FAILED,"벌목 핫바 교환의 정확한 응답을 기다리고 있습니다.");
+            return;
+        }
         if (pending instanceof Action.UseBlock use) {
             switch (use.purpose()) {
-                case OPEN_CONTAINER -> {
+                case OPEN_CONTAINER, OPEN_CRAFTING -> {
                     if (menu.container() && menu.id()!=beforeMenu.id() && observations.fullMenuSince(menu.id(),beforeSequence)) {
                         ContainerShape currentShape=containerShape(use.pos());
-                        if (openingShape==null || !openingShape.equals(currentShape) || !openingShape.matches(menu)) {
+                        if (openingShape==null || !openingShape.equals(currentShape) || !openingShape.matches(menu)
+                            || use.purpose()==Action.Use.OPEN_CRAFTING && !world.loggingCraftingMenu()) {
                             finish(ActionOutcome.State.FAILED,"Container geometry changed or its complete contents were not opened"); return;
                         }
                         ownedMenu=menu.id(); ownedContainer=currentShape.canonical(); ownedShape=currentShape;
@@ -172,7 +203,7 @@ public final class MinecraftActions implements ActionPort {
                     }
                 }
             }
-            if (use.purpose()!=Action.Use.OPEN_CONTAINER && menu.id()!=beforeMenu.id()) { finish(ActionOutcome.State.FAILED,"Unexpected container opened"); return; }
+            if (use.purpose()!=Action.Use.OPEN_CONTAINER && use.purpose()!=Action.Use.OPEN_CRAFTING && menu.id()!=beforeMenu.id()) { finish(ActionOutcome.State.FAILED,"Unexpected container opened"); return; }
         } else if (pending instanceof Action.SelectHotbar select) {
             if (mc.player.getInventory().selected==select.slot()) { finish(ActionOutcome.State.SUCCEEDED,"Hotbar selected"); return; }
         } else if (pending instanceof Action.CloseContainer) {
@@ -200,6 +231,32 @@ public final class MinecraftActions implements ActionPort {
             }
         }
         if (world.tick()-started>=context.profile().interactionTimeoutTicks) finish(ActionOutcome.State.FAILED,"No server confirmation; inspect before retrying");
+    }
+    private void tickLogging() {
+        if (loggingAction.confirmed(observations)) { finish(ActionOutcome.State.SUCCEEDED,"서버가 벌목·식재 진행을 확인했습니다.",1); return; }
+        String rejection=loggingAction.advance(mc,world,observations,context);
+        if (rejection!=null) { finish(ActionOutcome.State.FAILED,rejection); return; }
+        if (world.tick()-started>=context.profile().interactionTimeoutTicks)
+            finish(ActionOutcome.State.FAILED,"벌목·식재의 서버 확인이 없습니다. 재전송하지 않고 멈춥니다.");
+    }
+    private void tickLoggingRecipe() {
+        if (loggingRecipe.generation!=observations.generation() || !LoggingRules.allowed(context)
+            || !ownsContainer() || !world.loggingCraftingMenu()) {
+            finish(ActionOutcome.State.FAILED,"제작 중 연결·작업대 또는 권한이 바뀌었습니다. 제작 칸을 확인하세요."); return;
+        }
+        for (var ack:observations.fullNativeMenuSnapshotsSince(loggingRecipe.menuId,loggingRecipe.beforeSequence)) {
+            int result=loggingRecipe.acknowledge(ack);
+            if (result>0) { finish(ActionOutcome.State.SUCCEEDED,"서버가 장작 제작을 확인했습니다.",result); return; }
+            if (result<0) {
+                if (!loggingRecipe.readyToTake(mc)) {
+                    finish(ActionOutcome.State.FAILED,"제작 재료 배치 후 인벤토리가 바뀌었거나 장작 공간이 없습니다. 제작 칸을 확인하세요."); return;
+                }
+                loggingRecipe.outputSent(observations.sequence(),world.tick());
+                confirmedClick(loggingRecipe.menuId,0,0,ClickType.QUICK_MOVE); return;
+            }
+        }
+        if (world.tick()-loggingRecipe.stepStarted>=context.profile().interactionTimeoutTicks)
+            finish(ActionOutcome.State.FAILED,"제작 응답이 불확실합니다. 재료 칸을 자동으로 닫거나 다시 누르지 않습니다.");
     }
     private void sendConsolidationClick() {
         if (MachineOutputLedger.hasPending(context) || !context.session().allows(context.profile(),consolidation.plan.feature())
@@ -251,6 +308,18 @@ public final class MinecraftActions implements ActionPort {
             finish(ActionOutcome.State.FAILED,"No exact TrashSlot acknowledgement; inspect before resuming");
     }
     @Override public String pauseReason() {
+        if (loggingFailureGeneration!=observations.generation()) loggingFailure=null;
+        if (lateLoggingAction!=null && (lateLoggingAction.generation!=observations.generation() || lateLoggingAction.confirmed(observations))) lateLoggingAction=null;
+        if (lateLoggingSwap!=null && (lateLoggingSwap.generation!=observations.generation() || lateLoggingSwap.confirmed(observations))) lateLoggingSwap=null;
+        if (lateLoggingRecipe!=null) {
+            if (lateLoggingRecipe.generation!=observations.generation()) lateLoggingRecipe=null;
+            else for (var ack:observations.fullNativeMenuSnapshotsSince(lateLoggingRecipe.menuId,lateLoggingRecipe.beforeSequence)) {
+                if (lateLoggingRecipe.acknowledge(ack)!=0) { lateLoggingRecipe=null; break; }
+            }
+        }
+        if (lateLoggingAction!=null || lateLoggingSwap!=null || lateLoggingRecipe!=null)
+            return "벌목 작업의 이전 서버 응답을 기다립니다. 확인 전 재실행하지 않습니다. 응답이 없으면 재접속하세요.";
+        if (loggingFailure!=null) return loggingFailure;
         if (trashFailureGeneration!=observations.generation()) trashFailure=null;
         if (lateTrashReply!=null) {
             if (lateTrashReply.generation!=observations.generation()) lateTrashReply=null;
@@ -272,9 +341,10 @@ public final class MinecraftActions implements ActionPort {
     }
     @Override public String startRejection() {
         pauseReason();
-        if (lateInventoryReply!=null || lateTrashReply!=null) return pauseReason();
+        if (lateInventoryReply!=null || lateTrashReply!=null || lateLoggingAction!=null || lateLoggingSwap!=null || lateLoggingRecipe!=null) return pauseReason();
         consolidationFailure=null;
         trashFailure=null;
+        loggingFailure=null;
         return null;
     }
     private void finishConsolidation(ActionOutcome.State state,String message) {
@@ -284,7 +354,7 @@ public final class MinecraftActions implements ActionPort {
         consolidation=null; consolidationInFlight=false;
     }
     private void finishTrash(ActionOutcome.State state,String message) {
-        if (!(pending instanceof Action.TrashRotten)) return;
+        if (!(pending instanceof Action.TrashRotten) && !(pending instanceof Action.TrashLogging)) return;
         if (trashInFlight && trash!=null) lateTrashReply=trash;
         if (state==ActionOutcome.State.FAILED) { trashFailure=message; trashFailureGeneration=observations.generation(); }
         trash=null; trashInFlight=false;
@@ -297,6 +367,9 @@ public final class MinecraftActions implements ActionPort {
     private record ContainerShape(Pos canonical,String blockId,Map<Pos,BlockState> chestStates,int chestSlots) {
         private ContainerShape { chestStates=Map.copyOf(chestStates); }
         boolean matches(MenuData menu) {
+            if (blockId.equals("minecraft:crafting_table")) return menu.slots().size()==46
+                && menu.slots().stream().filter(s -> !s.player()).count()==10
+                && menu.slots().stream().filter(ItemSlot::player).map(ItemSlot::inventoryIndex).distinct().count()==36;
             if (SmartShippingRules.BLOCK_ID.equals(blockId))
                 return chestSlots==SmartShippingRules.STORAGE_SLOTS && SmartShippingRules.matchesMenu(menu);
             return chestSlots==0 || menu.slots().stream().filter(s -> !s.player()).count()==chestSlots;
@@ -305,6 +378,8 @@ public final class MinecraftActions implements ActionPort {
     private ContainerShape containerShape(Pos pos) {
         if (pos==null || mc.level==null || !world.loaded(pos)) return null;
         BlockData block=world.block(pos);
+        if (block.id().equals("minecraft:crafting_table"))
+            return new ContainerShape(pos,block.id(),Map.of(pos,mc.level.getBlockState(MinecraftWorld.nativePos(pos))),10);
         if (!block.flag("container")) return null;
         var state=mc.level.getBlockState(MinecraftWorld.nativePos(pos));
         if (SmartShippingRules.BLOCK_ID.equals(block.id())) {
@@ -362,10 +437,24 @@ public final class MinecraftActions implements ActionPort {
         // Ownership survives pause only for diagnostics; start() requires manual closure.
     }
     public ActionOutcome outcome(long ticket) { return outcomes.getOrDefault(ticket,new ActionOutcome(ActionOutcome.State.CANCELLED,"Expired action")); }
-    private void finish(ActionOutcome.State state,String message) { finishConsolidation(state,message); finishTrash(state,message); put(pendingTicket,state,message); pending=null; }
+    private void finishLogging(ActionOutcome.State state,String message) {
+        if (loggingAction==null && loggingRecipe==null && loggingSwap==null) return;
+        if (state!=ActionOutcome.State.SUCCEEDED) {
+            if (loggingAction!=null) {
+                try { loggingAction.abort(mc,observations); } catch (RuntimeException ignored) { /* Keep the unresolved fence. */ }
+                lateLoggingAction=loggingAction;
+            }
+            if (loggingRecipe!=null) lateLoggingRecipe=loggingRecipe;
+            if (loggingSwap!=null) lateLoggingSwap=loggingSwap;
+            if (state==ActionOutcome.State.FAILED) { loggingFailure=message; loggingFailureGeneration=observations.generation(); }
+        }
+        loggingAction=null; loggingRecipe=null; loggingSwap=null;
+    }
+    private void finish(ActionOutcome.State state,String message) { finishConsolidation(state,message); finishTrash(state,message); finishLogging(state,message); put(pendingTicket,state,message); pending=null; }
     private void finish(ActionOutcome.State state,String message,int quantity) {
         finishConsolidation(state,message);
         finishTrash(state,message);
+        finishLogging(state,message);
         outcomes.put(pendingTicket,new ActionOutcome(state,message,quantity)); pending=null;
         if (outcomes.size()>512) outcomes.remove(outcomes.keySet().iterator().next());
     }

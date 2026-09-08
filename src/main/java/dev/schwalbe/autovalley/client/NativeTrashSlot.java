@@ -23,6 +23,7 @@ final class NativeTrashSlot {
     final int menuId,sourceMenuSlot,quantity;
     private final List<InventoryConsolidation.Stack> before;
     private final Set<Integer> inventoryMenuSlots;
+    private final boolean logging;
 
     static boolean available() {
         try { return HOOKS!=null && HOOKS.installed().getBoolean(null); }
@@ -39,25 +40,32 @@ final class NativeTrashSlot {
             Class<?> gui=Class.forName("net.blay09.mods.trashslot.client.TrashSlotGuiHandler",false,loader);
             return new Hooks(mod.getField("isServerSideInstalled"),message.getConstructor(int.class,boolean.class),
                 balm.getMethod("getNetworking"),networking.getMethod("sendToServer",Object.class),gui.getMethod("getTrashSlot"));
-        } catch (ReflectiveOperationException | LinkageError failure) { return null; }
+        } catch (ReflectiveOperationException | LinkageError | RuntimeException failure) { return null; }
     }
     NativeTrashSlot(LocalPlayer player,Action.TrashRotten action,ServerObservations observations) {
+        this(player,action.inventoryIndex(),action.expected(),observations,false);
+    }
+    NativeTrashSlot(LocalPlayer player,Action.TrashLogging action,ServerObservations observations) {
+        this(player,action.inventoryIndex(),action.expected(),observations,true);
+    }
+    private NativeTrashSlot(LocalPlayer player,int inventoryIndex,ItemData expected,ServerObservations observations,boolean logging) {
+        this.logging=logging;
         if (!available() || player==null || player.containerMenu!=player.inventoryMenu || !player.inventoryMenu.getCarried().isEmpty()
-            || action.inventoryIndex()<0 || action.inventoryIndex()>=36 || action.expected()==null || !action.expected().is(ItemData.ROTTEN)
-            || !MinecraftWorld.item(player.getInventory().getItem(action.inventoryIndex())).equals(action.expected()))
+            || inventoryIndex<0 || inventoryIndex>=36 || expected==null || !(logging ? LoggingRules.waste(expected) : expected.is(ItemData.ROTTEN))
+            || !MinecraftWorld.item(player.getInventory().getItem(inventoryIndex)).equals(expected))
             throw new IllegalArgumentException("Inventory TrashSlot preconditions changed");
         List<Slot> matching=player.inventoryMenu.slots.stream().filter(s -> s.container==player.getInventory()
-            && s.getContainerSlot()==action.inventoryIndex()).toList();
+            && s.getContainerSlot()==inventoryIndex).toList();
         if (matching.size()!=1 || player.inventoryMenu.slots.size()>128) throw new IllegalArgumentException("Ambiguous inventory trash slot");
         try {
             Object buffer=HOOKS.trashSlot().invoke(null);
             if (!(buffer instanceof Slot slot)) throw new IllegalStateException("TrashSlot buffer is unavailable");
             ItemStack retained=slot.getItem();
-            if (!retained.isEmpty() && !MinecraftWorld.item(retained).is(ItemData.ROTTEN))
+            if (!retained.isEmpty() && !disposableBuffer(MinecraftWorld.item(retained)))
                 throw new IllegalStateException("Recover the other item retained in TrashSlot before disposing tomatoes");
         } catch (ReflectiveOperationException failure) { throw new IllegalStateException("TrashSlot buffer could not be checked",failure); }
         sourceMenuSlot=matching.get(0).index;
-        menuId=player.inventoryMenu.containerId; quantity=action.expected().count();
+        menuId=player.inventoryMenu.containerId; quantity=expected.count();
         before=stacks(player.inventoryMenu.slots.stream().map(Slot::getItem).toList());
         List<Slot> inventorySlots=player.inventoryMenu.slots.stream().filter(s -> s.container==player.getInventory()
             && s.getContainerSlot()>=0 && s.getContainerSlot()<36).toList();
@@ -66,6 +74,9 @@ final class NativeTrashSlot {
             || inventorySlots.stream().map(Slot::getContainerSlot).distinct().count()!=36)
             throw new IllegalArgumentException("Incomplete normal inventory mapping");
         generation=observations.generation(); beforeSequence=observations.sequence();
+    }
+    static boolean disposableBuffer(ItemData item) {
+        return item!=null && (item.empty() || item.is(ItemData.ROTTEN) || LoggingRules.waste(item));
     }
     void send() {
         try {
@@ -111,7 +122,8 @@ final class NativeTrashSlot {
             // ROTTEN, gear, cursor, replacements and count losses are never exceptions.
             // For a single-slot reply only its raw packetItem is authoritative;
             // the surrounding applied-client menu needs independent earlier raw proofs.
-            if (!inventoryMenuSlots.contains(slot) || !productionAddition(before.get(slot),after.get(slot))
+            if (!inventoryMenuSlots.contains(slot) || !(productionAddition(before.get(slot),after.get(slot))
+                    || logging && loggingAddition(before.get(slot),after.get(slot)))
                 || !fullServerPacket && !after.get(slot).equals(proven.get(slot))) return false;
             additions.add(slot);
         }
@@ -125,6 +137,13 @@ final class NativeTrashSlot {
         try {
             return ItemData.PINE_TAR.equals(TagParser.parseTag(now.identity()).getString("id"))
                 && (old.empty() || old.limit()==now.limit() && old.identity().equals(now.identity()));
+        } catch (com.mojang.brigadier.exceptions.CommandSyntaxException failure) { return false; }
+    }
+    static boolean loggingAddition(InventoryConsolidation.Stack old,InventoryConsolidation.Stack now) {
+        if (now.empty() || now.count()<=old.count() || !old.empty() && (old.limit()!=now.limit() || !old.identity().equals(now.identity()))) return false;
+        try {
+            String id=TagParser.parseTag(now.identity()).getString("id");
+            return Set.of(LoggingRules.LOG,LoggingRules.FIRE_LOG,LoggingRules.SAPLING,LoggingRules.TWIG,LoggingRules.BERRY).contains(id);
         } catch (com.mojang.brigadier.exceptions.CommandSyntaxException failure) { return false; }
     }
     private static List<InventoryConsolidation.Stack> stacks(List<ItemStack> items) {

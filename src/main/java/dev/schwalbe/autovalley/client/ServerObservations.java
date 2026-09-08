@@ -4,6 +4,7 @@ import dev.schwalbe.autovalley.core.Pos;
 import dev.schwalbe.autovalley.core.ItemData;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.state.BlockState;
 import java.util.*;
 import java.util.function.UnaryOperator;
 
@@ -34,7 +35,12 @@ public final class ServerObservations {
     private static final int MAX_MENU_SNAPSHOTS=256;
     private static final int MAX_SNAPSHOTS_PER_MENU=8;
     private long sequence;
-    private long generation;
+    private volatile long generation;
+    public record NativeBlockSnapshot(long seq,Pos pos,BlockState state) { }
+    public record NativeChopSnapshot(long seq,Pos pos,int chops,int originalState) { }
+    private final ArrayDeque<NativeBlockSnapshot> nativeBlocks=new ArrayDeque<>();
+    private final ArrayDeque<NativeChopSnapshot> nativeChops=new ArrayDeque<>();
+    private final NativeDestroyPermits loggingPermits=new NativeDestroyPermits();
     private final Map<Integer,Long> menus=new HashMap<>();
     private final Map<Integer,Long> fullMenus=new HashMap<>();
     private final LinkedHashMap<Integer,ArrayDeque<FullMenuSnapshot>> fullMenuSnapshots=new LinkedHashMap<>();
@@ -43,6 +49,22 @@ public final class ServerObservations {
     private final ArrayDeque<NativeSlotSnapshot> nativeSlots=new ArrayDeque<>();
     public long sequence() { return sequence; }
     public long generation() { return generation; }
+    void permitLoggingPacket(Object packet) { loggingPermits.grant(packet,generation,System.nanoTime()); }
+    boolean consumeLoggingPacket(Object packet,long observerGeneration) {
+        return observerGeneration==generation && loggingPermits.consume(packet,generation,System.nanoTime());
+    }
+    public void block(Pos pos,BlockState state) {
+        block(pos);
+        nativeBlocks.addLast(new NativeBlockSnapshot(sequence,pos,Objects.requireNonNull(state)));
+        if (nativeBlocks.size()>4096) nativeBlocks.removeFirst();
+    }
+    public List<NativeBlockSnapshot> nativeBlocksSince(long before) { return nativeBlocks.stream().filter(s -> s.seq()>before).toList(); }
+    public void chop(Pos pos,int chops,int originalState) {
+        if (chops<0 || chops>1024 || originalState<0) return;
+        nativeChops.addLast(new NativeChopSnapshot(++sequence,pos,chops,originalState));
+        if (nativeChops.size()>1024) nativeChops.removeFirst();
+    }
+    public List<NativeChopSnapshot> nativeChopsSince(long before) { return nativeChops.stream().filter(s -> s.seq()>before).toList(); }
     public void menu(int id) { menus.put(id,++sequence); }
     public void nativeSlot(int id,int slot,ItemStack packetItem,List<ItemStack> appliedMenu,ItemStack carried) {
         NativeSlotSnapshot snapshot=new NativeSlotSnapshot(sequence+1,id,slot,packetItem,new NativeMenuSnapshot(sequence+1,appliedMenu,carried));
@@ -128,5 +150,5 @@ public final class ServerObservations {
     }
     public boolean menuSince(int id,long before) { return menus.getOrDefault(id,0L)>before || menus.getOrDefault(-2,0L)>before; }
     public boolean blockSince(Pos pos,long before) { return blocks.getOrDefault(pos,0L)>before; }
-    public void clear() { sequence=0; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); nativeSlots.clear(); }
+    public void clear() { sequence=0; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); nativeSlots.clear(); nativeBlocks.clear(); nativeChops.clear(); loggingPermits.clear(); }
 }

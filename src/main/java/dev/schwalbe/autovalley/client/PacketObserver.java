@@ -9,7 +9,7 @@ import dev.schwalbe.autovalley.core.ItemData;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 
-/** No custom server channel: passively observes vanilla replies and fences attack packets. */
+/** Passively observes vanilla/installed TreeChop replies; never adds a server channel. */
 public final class PacketObserver extends ChannelDuplexHandler {
     private final ServerObservations observations;
     private final BooleanSupplier blockAttacks;
@@ -39,6 +39,7 @@ public final class PacketObserver extends ChannelDuplexHandler {
         List<ItemData> fullItems=nativeItems==null ? null : nativeItems.stream().map(MinecraftWorld::item).toList();
         ItemStack changedSlot=message instanceof ClientboundContainerSetSlotPacket packet
             ? new ServerObservations.NativeMenuSnapshot(0,List.of(packet.getItem()),ItemStack.EMPTY).items().get(0) : null;
+        var chop=message instanceof ClientboundCustomPayloadPacket packet ? NativeLoggingPackets.chop(packet) : null;
         // The vanilla listener enqueues application first; our confirmation follows on the same main thread.
         super.channelRead(ctx,message);
         if (message instanceof ClientboundContainerSetSlotPacket packet) later(() -> {
@@ -53,24 +54,26 @@ public final class PacketObserver extends ChannelDuplexHandler {
             recorder.fullMenu(recordingEpoch,packet.getContainerId(),fullItems);
         });
         else if (message instanceof ClientboundBlockUpdatePacket packet) later(() -> {
-            var pos=MinecraftWorld.pos(packet.getPos()); observations.block(pos); recorder.blockUpdate(recordingEpoch,pos);
+            var pos=MinecraftWorld.pos(packet.getPos()); observations.block(pos,packet.getBlockState()); recorder.blockUpdate(recordingEpoch,pos);
         });
         else if (message instanceof ClientboundSectionBlocksUpdatePacket packet)
             later(() -> packet.runUpdates((pos,state) -> {
-                var observed=MinecraftWorld.pos(pos); observations.block(observed); recorder.blockUpdate(recordingEpoch,observed);
+                var observed=MinecraftWorld.pos(pos); observations.block(observed,state); recorder.blockUpdate(recordingEpoch,observed);
             }));
+        if (chop!=null) later(() -> observations.chop(chop.pos(),chop.chops(),chop.originalState()));
     }
     private void later(Runnable observation) {
         Minecraft.getInstance().execute(() -> { if (observations.generation()==generation) observation.run(); });
     }
     @Override public void write(ChannelHandlerContext ctx,Object message,ChannelPromise promise) throws Exception {
-        if (blockAttacks.getAsBoolean()) {
-            boolean destroy=message instanceof ServerboundPlayerActionPacket packet && switch (packet.getAction()) {
+        boolean destroy=message instanceof ServerboundPlayerActionPacket packet && switch (packet.getAction()) {
                 case START_DESTROY_BLOCK, ABORT_DESTROY_BLOCK, STOP_DESTROY_BLOCK -> true;
                 default -> false;
             };
+        boolean admitted=destroy && observations.consumeLoggingPacket(message,generation);
+        if (blockAttacks.getAsBoolean()) {
             // Auto Valley never interacts with entities; suppress all such packets while it owns control.
-            if (destroy || message instanceof ServerboundInteractPacket) { promise.setSuccess(); return; }
+            if (destroy && !admitted || message instanceof ServerboundInteractPacket) { promise.setSuccess(); return; }
         }
         recorder.outgoing(message);
         super.write(ctx,message,promise);

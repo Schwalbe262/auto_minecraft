@@ -3,14 +3,24 @@ package dev.schwalbe.autovalley.core;
 import java.util.*;
 
 public final class Profile {
-    public int schemaVersion = 2;
+    public int schemaVersion = 3;
     public List<Poi> pois = new ArrayList<>();
     public Map<String,MachineGroup> machineGroups = new LinkedHashMap<>();
     public List<Farm> farms = new ArrayList<>();
+    public List<LoggingPlot> loggingPlots = new ArrayList<>();
+    public boolean loggingRunActive = false;
+    public List<Pos> loggingRemainingPlots = new ArrayList<>();
+    public List<Pos> loggingReplantingPlots = new ArrayList<>();
+    public LoggingHotbarLease loggingHotbarLease = null;
     public Map<Feature, Boolean> enabled = new EnumMap<>(Feature.class);
     public boolean allowBackground = true;
     public boolean continueHarvestWhenFull = true;
     public int hoeHotbarSlot = 0;
+    public int loggingAxeHotbarSlot = -1;
+    public int loggingSaplingReserve = 0;
+    public LoggingMode loggingMode = LoggingMode.ALL_GROWN;
+    public int loggingCheckTicks = 1200;
+    public int loggingCycleDays = 1;
     public boolean sprintHarvest = false;
     public boolean sprintCalibrated = false;
     public int scanRadius = 32;
@@ -32,7 +42,7 @@ public final class Profile {
     /** Desired future tomato grade; Poi.classifier remains the actual source grade until the chest is verified empty. */
     public Map<String,Integer> tomatoStorageTargets = new HashMap<>();
     public static String positionKey(Pos pos) { return pos.x()+":"+pos.y()+":"+pos.z(); }
-    public Profile() { for (Feature feature : Feature.values()) enabled.put(feature, true); }
+    public Profile() { for (Feature feature : Feature.values()) enabled.put(feature, feature.defaultEnabled()); }
     public boolean enabled(Feature f) { return Boolean.TRUE.equals(enabled.get(f)); }
     public List<Poi> pois(PoiKind kind) { return pois.stream().filter(p -> p.kind() == kind).toList(); }
     public boolean inWorkArea(Pos p) {

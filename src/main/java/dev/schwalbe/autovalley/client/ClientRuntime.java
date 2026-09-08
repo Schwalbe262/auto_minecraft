@@ -24,7 +24,7 @@ public final class ClientRuntime {
     private final LocalNavigator navigator=new LocalNavigator();
     private final HarvestModule harvest=new HarvestModule();
     private final AutomationEngine engine=new AutomationEngine(List.of(new StorageSurveyModule(),new DisposalModule(),new TomatoStorageModule(),
-        new WineStorageModule(),new WineSurplusShippingModule(),new ShippingModule(),harvest,new MachineModule(Feature.WINE),new MachineModule(Feature.PRESERVES),new SleepModule()));
+        new WineStorageModule(),new WineSurplusShippingModule(),new ShippingModule(),harvest,new MachineModule(Feature.WINE),new MachineModule(Feature.PRESERVES),new LoggingModule(),new SleepModule()));
     private final ProfileStore store=new ProfileStore(FMLPaths.CONFIGDIR.get().resolve("autovalley"));
     private Profile profile=new Profile();
     private Context context=new Context(world,actions,navigator,profile);
@@ -97,6 +97,9 @@ public final class ClientRuntime {
             default -> null;
         };
         if (feature==null || feature==Feature.HARVEST && profile.farms.isEmpty()
+            || feature==Feature.LOGGING && (profile.loggingPlots.isEmpty() || profile.loggingAxeHotbarSlot<0
+                || profile.pois(PoiKind.WOOD_CHEST).isEmpty() || profile.pois(PoiKind.LOGGING_CRAFTING_TABLE).isEmpty()
+                || profile.pois(PoiKind.SHIPPING_BIN).isEmpty())
             || feature==Feature.STORAGE_SURVEY && profile.pois.stream().noneMatch(p -> StorageSurveyModule.targetKind(p.kind()))
             || destination!=null && profile.pois(destination).isEmpty()) {
             pause("선택한 작업의 밭/설비/목적지를 먼저 등록하세요."); notifyUser(engine.status()); return false;
@@ -166,7 +169,7 @@ public final class ClientRuntime {
         try { saveProfile(); notifyUser("경유지를 저장했습니다."); }
         catch (RuntimeException e) { profile.pois.remove(profile.pois.size()-1); notifyUser(e.getMessage()); }
     }
-    private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.wineBatchSchedule,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest,profile.pendingMachineOutputs,profile.machineOutputResolutions); }
+    private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.wineBatchSchedule,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest,profile.pendingMachineOutputs,profile.machineOutputResolutions,profile.loggingRunActive,profile.loggingRemainingPlots,profile.loggingReplantingPlots,profile.loggingHotbarLease); }
     private void checkpointMachineState() {
         try { saveProfile(); }
         catch (RuntimeException e) { persistenceError=e.getMessage(); throw e; }

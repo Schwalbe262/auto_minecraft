@@ -44,7 +44,7 @@ public final class ProfileStore {
         return directory.resolve(key+".json");
     }
     public static void validate(Profile profile) {
-        if (profile==null || (profile.schemaVersion!=1 && profile.schemaVersion!=2) || profile.pois==null || profile.farms==null || profile.enabled==null
+        if (profile==null || (profile.schemaVersion!=1 && profile.schemaVersion!=2 && profile.schemaVersion!=3) || profile.pois==null || profile.farms==null || profile.enabled==null
             || profile.nextEligibleDay==null || profile.disposalDirections==null) throw new IllegalArgumentException("Unsupported or incomplete profile");
         if (profile.pois.size()>4096) throw new IllegalArgumentException("Too many registered locations");
         Set<String> farms=new HashSet<>();
@@ -71,9 +71,11 @@ public final class ProfileStore {
         MachineGroupRules.validate(profile);
         WineBatchRules.validate(profile);
         MachineOutputLedger.validate(profile);
-        for (Feature feature:Feature.values()) profile.enabled.putIfAbsent(feature,true);
-        // Old clients reject schema 2 instead of silently ignoring an unresolved output.
-        // Legacy schema 1 is upgraded in memory only after all validation succeeds.
-        profile.schemaVersion=2;
+        LoggingRules.validate(profile);
+        for (Feature feature:Feature.values()) profile.enabled.putIfAbsent(feature,feature.defaultEnabled());
+        // Older clients accepting only schemas 1/2 must not ignore a pending logging
+        // batch, replanting obligation or borrowed hotbar item. Upgrade in memory
+        // only after all validation succeeds; load() never rewrites the old file.
+        profile.schemaVersion=3;
     }
 }

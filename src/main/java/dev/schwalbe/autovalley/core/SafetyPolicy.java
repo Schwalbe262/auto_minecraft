@@ -1,6 +1,6 @@
 package dev.schwalbe.autovalley.core;
 
-/** The complete allow-list of game mutations. There is deliberately no attack API. */
+/** Complete mutation allow-list: crops remain right-use-only; logging has a separate narrow tree gate. */
 public final class SafetyPolicy {
     private SafetyPolicy() { }
 
@@ -13,7 +13,9 @@ public final class SafetyPolicy {
         if (menu == null || !menu.carried().empty()) return "Resolve the item on the cursor before resuming";
         boolean surveying=context.session().oneShotFeature==Feature.STORAGE_SURVEY;
         if (surveying && (action instanceof Action.QuickMove || action instanceof Action.SwapHotbar
-            || action instanceof Action.ConsolidateInventory || action instanceof Action.ThrowRotten || action instanceof Action.TrashRotten))
+            || action instanceof Action.ConsolidateInventory || action instanceof Action.ThrowRotten || action instanceof Action.TrashRotten
+            || action instanceof Action.ChopTree || action instanceof Action.PlantSapling
+            || action instanceof Action.CraftFireLogs || action instanceof Action.TrashLogging))
             return "Storage survey is read-only; inventory changes are not permitted";
         if (action instanceof Action.UseBlock use) {
             if (menu.container()) return "Close the current container first";
@@ -47,14 +49,25 @@ public final class SafetyPolicy {
                 }
                 case OPEN_CONTAINER -> profile.pois.stream().noneMatch(p -> p.pos().equals(use.pos())
                     && (p.kind()==PoiKind.TOMATO_CHEST || p.kind()==PoiKind.WINE_CHEST || !surveying && p.kind()==PoiKind.SHIPPING_BIN
-                        || surveying && p.kind()==PoiKind.STORAGE_CANDIDATE))
+                        || surveying && p.kind()==PoiKind.STORAGE_CANDIDATE
+                        || LoggingRules.allowed(context) && p.kind()==PoiKind.WOOD_CHEST))
                     ? "Container is not registered" : null;
+                case OPEN_CRAFTING -> !LoggingRules.allowed(context) || !block.id().equals("minecraft:crafting_table")
+                    || !registered(profile,use.pos(),PoiKind.LOGGING_CRAFTING_TABLE)
+                    ? "Logging requires its registered crafting table" : null;
                 case SLEEP -> !context.session().allows(profile,Feature.SLEEP) || !registered(profile,use.pos(),PoiKind.BED)
                     || !block.id().endsWith("_bed") ? "Bed is not registered" : null;
                 case DOOR -> !block.id().endsWith("_door") || block.id().equals("minecraft:iron_door")
                     ? "Only normal wooden doors may be opened" : null;
             };
         }
+        if (action instanceof Action.ChopTree chop) return LoggingRules.chopRejection(chop.pos(),context);
+        if (action instanceof Action.PlantSapling plant) return LoggingRules.plantRejection(plant.pos(),context);
+        if (action instanceof Action.TrashLogging trash) return LoggingRules.trashRejection(trash,context);
+        if (action instanceof Action.CraftFireLogs craft)
+            return !LoggingRules.allowed(context) || !registered(profile,craft.table(),PoiKind.LOGGING_CRAFTING_TABLE)
+                || !world.loggingCraftingMenu() || LoggingRules.count(world,LoggingRules.LOG)<6
+                ? "Only the registered logging recipe/table may craft fire logs" : null;
         if (action instanceof Action.SelectHotbar select)
             return select.slot()<0 || select.slot()>8 ? "Invalid hotbar slot" : null;
         if (action instanceof Action.SwapHotbar swap)
@@ -81,8 +94,11 @@ public final class SafetyPolicy {
             ItemSlot slot = menu.slot(move.slot());
             if (slot==null || slot.item().empty()) return "Transfer slot is empty";
             String id=slot.item().id();
-            if (!id.equals(ItemData.TOMATO) && !id.equals(ItemData.WINE) && !slot.item().standardShippingProduct()) return "Item is outside automation scope";
+            boolean loggingItem=LoggingRules.wood(slot.item()) || LoggingRules.byproduct(slot.item());
+            if (!id.equals(ItemData.TOMATO) && !id.equals(ItemData.WINE) && !slot.item().standardShippingProduct() && !loggingItem) return "Item is outside automation scope";
             if (!slot.player() && !id.equals(ItemData.TOMATO)) return "Only tomatoes may be withdrawn from storage";
+            if (loggingItem && (!LoggingRules.allowed(context) || !slot.player() || slot.inventoryIndex()<0 || slot.inventoryIndex()>=36))
+                return "Logging transfers require normal player inventory and the selected logging job";
             if (slot.item().standardShippingProduct() && (slot.inventoryIndex()<0 || slot.inventoryIndex()>=36))
                 return "Shipping uses only normal player inventory slots";
             if (slot.item().standardShippingProduct() && !context.session().allows(profile,Feature.SHIPPING))
@@ -111,7 +127,8 @@ public final class SafetyPolicy {
                 ? "Only rotten tomatoes may be discarded" : null;
         }
         if (action instanceof Action.CloseContainer close)
-            return !menu.container() || close.containerId()!=menu.id() ? "Container changed" : null;
+            return !menu.container() || close.containerId()!=menu.id() ? "Container changed"
+                : world.loggingCraftingMenu() && !world.loggingCraftingGridEmpty() ? "Recover crafting ingredients before closing the table" : null;
         return "Action is not allowed";
     }
 

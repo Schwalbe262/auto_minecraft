@@ -27,6 +27,23 @@ public final class MinecraftWorld implements WorldAccess {
     public long dayTime() { return mc.level==null ? 0 : mc.level.getDayTime(); }
     public Integer wineYear() { return VineryClock.year(mc.level); }
     public HarvestFootprint harvestFootprint(Pos target) { return NativeHarvestFootprint.inspect(mc.player,mc.level,target); }
+    public String loggingTreeRejection(Pos target,List<LoggingPlot> plots) { return NativeLoggingTree.inspect(mc.level,target,plots).rejection(); }
+    public boolean canPlantLoggingSapling(Pos target) { return NativeLoggingActions.canPlant(mc,target); }
+    public boolean loggingAxe(int inventoryIndex) {
+        return mc.player!=null && inventoryIndex>=0 && inventoryIndex<9
+            && mc.player.getInventory().getItem(inventoryIndex).is(net.minecraft.world.item.Items.NETHERITE_AXE)
+            && mc.player.getInventory().getItem(inventoryIndex).getItem() instanceof net.minecraft.world.item.AxeItem;
+    }
+    public boolean loggingCraftingMenu() { return mc.player!=null && NativeLoggingRecipe.menu(mc.player.containerMenu); }
+    public boolean loggingCraftingGridEmpty() { return mc.player!=null && NativeLoggingRecipe.gridEmpty(mc.player.containerMenu); }
+    public String loggingItemFingerprint(int inventoryIndex) {
+        if (mc.player==null || inventoryIndex<0 || inventoryIndex>=36) return null;
+        try {
+            String tag=mc.player.getInventory().getItem(inventoryIndex).save(new CompoundTag()).toString();
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(tag.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException failure) { return null; }
+    }
     public List<GroundItem> groundItems() {
         if (mc.level==null || mc.player==null) return List.of();
         return mc.level.getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,mc.player.getBoundingBox().inflate(48))

@@ -10,11 +10,12 @@ class EngineSafetyTest {
     private static final ItemData ROTTEN = new ItemData(ItemData.ROTTEN,6,0,null,false,999);
     private static final ItemData HOE = new ItemData("minecraft:diamond_hoe",1,0,null,true,100);
 
-    @Test void actionAllowListCannotRepresentAttackOrBlockDestruction() {
+    @Test void actionAllowListHasNoGenericAttackAndAddsOnlyScopedLoggingMutations() {
         assertTrue(Action.class.isSealed());
         assertEquals(Set.of(Action.UseBlock.class,Action.SelectHotbar.class,Action.SwapHotbar.class,
-            Action.QuickMove.class,Action.ThrowRotten.class,Action.TrashRotten.class,Action.CloseContainer.class,Action.ConsolidateInventory.class),Set.of(Action.class.getPermittedSubclasses()));
-        assertEquals(Set.of("HARVEST","MACHINE","OPEN_CONTAINER","SLEEP","DOOR"),
+            Action.QuickMove.class,Action.ThrowRotten.class,Action.TrashRotten.class,Action.CloseContainer.class,Action.ConsolidateInventory.class,
+            Action.ChopTree.class,Action.PlantSapling.class,Action.CraftFireLogs.class,Action.TrashLogging.class),Set.of(Action.class.getPermittedSubclasses()));
+        assertEquals(Set.of("HARVEST","MACHINE","OPEN_CONTAINER","OPEN_CRAFTING","SLEEP","DOOR"),
             new HashSet<>(Arrays.stream(Action.Use.values()).map(Enum::name).toList()));
     }
 
