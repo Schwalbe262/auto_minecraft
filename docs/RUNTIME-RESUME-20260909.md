@@ -225,3 +225,29 @@ The complete offline build passed **1,552 tests / 113 suites**, no failures, err
 or skips. The corrected artifact SHA-256 is
 `F98D6F29888F241871C9789B8668FC3885329F13C265162E88E21A10CF30AA19`.
 It has not yet been installed or exercised in the live client at this checkpoint.
+
+## Stopped-start descent acceptance and latest installation
+
+Two subsequent native coordinate-travel tests started on the same full-height
+stair support with zero horizontal velocity. Four preceding samples also showed
+each player pose stationary. Both five-edge descents took **99 ticks**:
+4.954 seconds and 4.945 seconds, including preparation and final landing.
+Both directly showed the new independent lower-corridor proof being acquired
+while fully grounded without advancing the completed-edge count. The unchanged
+handoff speed bound, rejected middle envelope and ordinary final-platform handling
+were retained. Final consecutive observations were grounded, stationary and free
+of movement requests or navigation failure. Each trace missed one non-boundary
+tick; all 30 observed airborne samples per repeat had no stored movement request.
+
+The historical initial stopped-start record took 282 ticks on the same common
+five-edge section: these repeats use 64.9% fewer ticks (2.85x tick ratio). Against
+the later 137-tick chain-handoff implementation the reduction is 27.7%, not 2x.
+Natural pose offsets, historical observer semantics and unreplayed world conditions
+still limit causal comparison. This is a measured route improvement, not a promise
+that every stair or the small re-entry change alone is 2.85x faster.
+
+These timing runs used F37864 above. The tested F98D6F disposal-corrected artifact,
+with the same navigation changes, was subsequently installed through another
+normal same-instance restart. Backups were retained and the server reconnected.
+A new continuous start was acknowledged. This installation does not by itself
+prove the newly corrected pickup race has recurred and passed in the live game.
