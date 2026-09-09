@@ -1,5 +1,10 @@
 # Logging visibility recovery (development build)
 
+Latest follow-up: [explicitly authorized leaf clearance](LOGGING-LEAF-CLEARING-20260909.md)
+adds a separate opt-in action for verified obstructing spruce leaves. Its validation
+and deployment status are recorded separately; the historical checkpoints below
+do not describe that newer permission.
+
 Deployment update: the candidate described below was installed during the
 [2026-09-09 runtime resume](RUNTIME-RESUME-20260909.md). LOGGING remained OFF, so
 its search-recovery behavior has not yet passed native chopping acceptance.
