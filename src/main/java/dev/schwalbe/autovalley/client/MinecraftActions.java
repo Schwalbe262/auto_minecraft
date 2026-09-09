@@ -169,7 +169,10 @@ public final class MinecraftActions implements ActionPort {
         } else if (action instanceof Action.SwapHotbar swap) {
             int source=mc.player.inventoryMenu.slots.stream().filter(s -> s.container==mc.player.getInventory() && s.getContainerSlot()==swap.inventoryIndex()).map(s -> s.index).findFirst().orElseThrow();
             if (swap.inventoryIndex()==swap.hotbarSlot()) { finish(ActionOutcome.State.SUCCEEDED,"Already in hotbar"); return; }
-            if (context.profile().loggingRunActive) loggingSwap=new NativeLoggingSwap(mc.player,swap,observations);
+            // Every hotbar swap owns its exact server receipt, independently of
+            // an unrelated suspended logging queue. Do not use the generic
+            // "some inventory changed" fallback for production ingredients.
+            loggingSwap=new NativeLoggingSwap(mc.player,swap,observations);
             confirmedClick(mc.player.inventoryMenu.containerId,source,swap.hotbarSlot(),ClickType.SWAP);
         } else if (action instanceof Action.QuickMove transfer) {
             confirmedClick(transfer.containerId(),transfer.slot(),0,ClickType.QUICK_MOVE);
@@ -222,9 +225,9 @@ public final class MinecraftActions implements ActionPort {
         if (loggingAction!=null) { tickLogging(); return; }
         if (loggingRecipe!=null) { tickLoggingRecipe(); return; }
         if (loggingSwap!=null) {
-            if (loggingSwap.confirmed(observations)) { finish(ActionOutcome.State.SUCCEEDED,"서버가 벌목 핫바 교환을 확인했습니다."); return; }
+            if (loggingSwap.confirmed(observations)) { finish(ActionOutcome.State.SUCCEEDED,"서버가 핫바 교환을 확인했습니다."); return; }
             if (loggingSwap.generation!=observations.generation() || world.tick()-started>=context.profile().interactionTimeoutTicks)
-                finish(ActionOutcome.State.FAILED,"벌목 핫바 교환의 정확한 응답을 기다리고 있습니다.");
+                finish(ActionOutcome.State.FAILED,"핫바 교환의 정확한 서버 응답을 기다리고 있습니다.");
             return;
         }
         if (pending instanceof Action.UseBlock use) {
@@ -426,7 +429,9 @@ public final class MinecraftActions implements ActionPort {
                 if (lateLoggingRecipe.acknowledge(ack)>0) { lateLoggingRecipe=null; break; }
             }
         }
-        if (lateLoggingAction!=null || lateLoggingSwap!=null || lateLoggingRecipe!=null)
+        if (lateLoggingSwap!=null)
+            return "핫바 교환의 이전 서버 응답을 기다립니다. 교환을 다시 누르지 않고 아이템을 보존합니다.";
+        if (lateLoggingAction!=null || lateLoggingRecipe!=null)
             return "벌목 작업의 이전 서버 응답을 기다립니다. 확인 전 재실행하지 않습니다. 응답이 없으면 재접속하세요.";
         if (loggingFailure!=null) return loggingFailure;
         if (trashFailureGeneration!=observations.generation()) trashFailure=null;
