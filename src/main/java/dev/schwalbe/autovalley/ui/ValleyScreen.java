@@ -1072,7 +1072,9 @@ public final class ValleyScreen extends Screen {
 
     private void storageGroupMembers() {
         StorageListView.Group group = selectedStorageGroup;
-        button(left, 54, panelWidth, tr("back"), () -> { selectedStorageGroup = null; storageGroupOwner = null; page = 0; rebuild(); });
+        int half = (panelWidth - 6) / 2;
+        button(left, 54, half, tr("back"), () -> { selectedStorageGroup = null; storageGroupOwner = null; page = 0; rebuild(); });
+        button(left + half + 6, 54, half, tr("expansion.open"), this::openStorageExpansion);
         if (runtime.profile() != storageGroupOwner || !StorageListView.current(runtime.profile(), group)) {
             text(82, tr("storage.groups.changed")); return;
         }
@@ -1149,7 +1151,9 @@ public final class ValleyScreen extends Screen {
         button(left + half + 6, 132, half, tr("machines.group_members"), () -> { machineGroupPage = MachineGroupPage.MEMBERS; page = 0; rebuild(); });
         button(left, 158, half, tr("back"), () -> { selectedMachineGroup = null; page = 0; rebuild(); });
         button(left + half + 6, 158, half, tr("machines.group_remove"), () -> { machineGroupPage = MachineGroupPage.REMOVE_CONFIRM; rebuild(); });
-        text(186, tr(selectedMachineGroupId == null ? "machines.group_legacy_hint" : "machines.group_saved_hint"));
+        Button expand = button(left, 184, panelWidth, tr("expansion.open"), this::openMachineExpansion);
+        expand.active = selectedMachineGroupId != null;
+        expand.setTooltip(Tooltip.create(tr(selectedMachineGroupId == null ? "expansion.save_group_first" : "expansion.unselected_hint", 0)));
     }
 
     private boolean machineGroupStillCurrent() {
@@ -1193,6 +1197,26 @@ public final class ValleyScreen extends Screen {
 
     private void restoreMachineGroups(Map<String,MachineGroup> before) {
         runtime.profile().machineGroups.clear(); runtime.profile().machineGroups.putAll(before);
+    }
+
+    private void openMachineExpansion() {
+        if (selectedMachineGroupId == null || !machineGroupStillCurrent()) { error("expansion.save_group_first"); return; }
+        String id = selectedMachineGroupId;
+        minecraft.setScreen(new GroupExpansionScreen(this, GroupExpansionRules.Kind.MACHINE, id,
+            this::canonicalBlock, this::chestPairReady, this::physicalContainerCells, () -> {
+                selectedMachineGroup = runtime.profile().machineGroups.get(id); page = 0;
+            }));
+    }
+
+    private void openStorageExpansion() {
+        StorageListView.Group group = selectedStorageGroup;
+        if (runtime.profile() != storageGroupOwner || !StorageListView.current(runtime.profile(), group)) { error("storage.groups.changed"); return; }
+        if (group.items().contains(ItemData.WINE)) { error("expansion.wine_separate"); return; }
+        minecraft.setScreen(new GroupExpansionScreen(this, group.tomato() ? GroupExpansionRules.Kind.TOMATO : GroupExpansionRules.Kind.COMMODITY, group.id(),
+            this::canonicalBlock, this::chestPairReady, this::physicalContainerCells, () -> {
+                selectedStorageGroup = StorageListView.snapshot(runtime.profile()).groups().stream().filter(g -> g.id().equals(group.id())).findFirst().orElse(null);
+                storageGroupOwner = selectedStorageGroup == null ? null : runtime.profile(); page = 0;
+            }));
     }
 
     private void editSavedPoi(Poi poi) {
@@ -1321,6 +1345,18 @@ public final class ValleyScreen extends Screen {
                 && paired.getValue(ChestBlock.TYPE) != state.getValue(ChestBlock.TYPE)
                 && paired.getValue(ChestBlock.FACING) == state.getValue(ChestBlock.FACING)
                 && neighbor.relative(ChestBlock.getConnectedDirection(paired)).equals(pos);
+    }
+
+    /** Same reciprocal native pair gate used by ordinary registration; includes both reserved-role cells. */
+    private List<Pos> physicalContainerCells(BlockData block) {
+        Minecraft client = Minecraft.getInstance();
+        if (client.level == null || !chestPairReady(block)) return List.of();
+        BlockPos position = new BlockPos(block.pos().x(), block.pos().y(), block.pos().z());
+        BlockState state = client.level.getBlockState(position);
+        if (!(state.getBlock() instanceof ChestBlock) || state.getValue(ChestBlock.TYPE) == ChestType.SINGLE) return List.of(block.pos());
+        BlockPos neighbor = position.relative(ChestBlock.getConnectedDirection(state));
+        Pos other = new Pos(neighbor.getX(), neighbor.getY(), neighbor.getZ());
+        return java.util.stream.Stream.of(block.pos(), other).sorted(Comparator.comparingInt(Pos::x).thenComparingInt(Pos::y).thenComparingInt(Pos::z)).toList();
     }
 
     private boolean persist(Runnable rollback) {
