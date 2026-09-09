@@ -41,7 +41,19 @@ Code commit: `3443616`. Offline Java 17 `test build` passed **1,909 tests across
 `DB79519DE10636FC54DE9AFD938988AA6E902909A9C8E77F1C6C350C42163B08`.
 
 This checkpoint is code/regression validation, not native leaf-clearance acceptance.
-The restart preflight was refused because automation was running again after its
-normal pause request. No new build was installed, no game process was stopped,
-and no leaf was removed at this checkpoint. A safe handoff and live logging test
-are still required; the multi-hour acceptance goal remains unfulfilled.
+An initial restart preflight was refused because automation was running again after
+its normal pause request. After a new explicit handoff and separate permission to
+discard the two ice items retained in TrashSlot, normal shutdown/restart installed
+the hash above with a recoverable previous-JAR backup. No duplicate client was
+launched. The original overworld profile loaded, and the new runtime setter
+successfully saved the leaf permission without clearing the retained plot.
+
+The native one-shot test found a leaf candidate and travelled toward its verified
+stance, including the existing ascent path. It then returned to visibility wait:
+no leaf action, axe selection or chop was dispatched. Therefore the reported
+logging blockage is **not resolved by this live test**. A one-second trace cannot
+distinguish endpoint revalidation failure from a changed actual-eye obstruction or
+the arrival tolerance/residual motion. The operator subsequently resumed manual
+play in a different dimension, so the target's current block geometry is not
+available for the next direct comparison. Retained cut/replant obligations were
+not erased; the multi-hour acceptance goal remains unfulfilled.
