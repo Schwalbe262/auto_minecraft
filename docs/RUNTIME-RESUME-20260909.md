@@ -357,3 +357,25 @@ has been asked whether another player or automation is servicing the rack.
 The new inventory fix has passed detached tests but has not yet re-encountered
 the same race in a resumed native wine batch. Continuous all-feature acceptance
 remains incomplete.
+
+### Safe preflight waiting for an interrupted wine rack
+
+The initial active-batch preflight now defers when an unconfirmed member is
+still working, instead of treating that read-only observation as a global work
+barrier. The same 224-member obligation and its dates remain authoritative:
+no feed is inferred, no ready subset is serviced, and no pending member is
+deleted. A clean, fully observed START boundary can grant the existing scheduler
+permission to continue other work and later sleep. Unloaded/invalid targets,
+cursor items, active inventory transactions, output obligations and native
+failure fences cannot grant that permission. Mid-run uncertainty stays blocked.
+
+Nine new regression tests cover unchanged batch/deadlines, continuous preserves
+then sleep, one-shot WAITING, all-remaining-ready retries, real feed-day scheduling,
+resource fences, invalid observations and ownership reset. Two existing
+cancellation/restart expectations now explicitly verify deferral without an
+invented refill acknowledgement. The offline full build passed **1,575 tests /
+115 suites**, with zero failures, errors or skips. Artifact SHA-256:
+`99D0970869E02623760FD943370E504A1813DE6254E62145DB695E3CE16DEBB2`.
+Installation and native clean-wait-to-sleep acceptance are pending at this
+checkpoint. Before installation, natural day 468 began and all three registered
+jade machines became mature; their collection has not yet been observed.

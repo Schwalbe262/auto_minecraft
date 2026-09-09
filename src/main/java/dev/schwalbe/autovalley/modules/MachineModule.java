@@ -35,6 +35,8 @@ public final class MachineModule implements AutomationModule {
     private String repositionedInputState;
     private boolean pendingReposition;
     private boolean yieldTravel;
+    private WineBatchSchedule waitingWineRack;
+    private final ModuleSupport.ObservationWindow wineWaitObservation=new ModuleSupport.ObservationWindow();
     private int inputMergeAttempts, outputMergeAttempts;
 
     public MachineModule(Feature feature) {
@@ -46,6 +48,20 @@ public final class MachineModule implements AutomationModule {
     @Override public boolean canYieldForNearbyWork(Context c) {
         return yieldTravel && ticket<0 && pending==null && unresolvedInteraction==null && outputOperationId==null;
     }
+    /** Grant-time permission only; the engine also applies its normal cleanup/sleep gates. */
+    @Override public boolean sleepSafeDeferred(Context c) {
+        return waitingWineRack!=null && waitingWineRack==c.profile().wineBatchSchedule
+            && waitingWineRack.active() && cleanWineWaitBoundary(c)
+            && c.world().inventory().stream().noneMatch(slot -> slot.item().is(ItemData.TOMATO)
+                || slot.item().is(ItemData.WINE) || slot.item().is(ItemData.PRESERVES));
+    }
+    private boolean cleanWineWaitBoundary(Context c) {
+        return feature==Feature.WINE && stage==Stage.START && ticket<0 && pending==null
+            && unresolvedInteraction==null && outputOperationId==null && !c.actions().busy()
+            && c.actions().pauseReason()==null && c.world().player().connected() && c.world().player().onGround()
+            && c.world().menu()!=null && !c.world().menu().container() && c.world().menu().carried().empty()
+            && c.profile().loggingHotbarLease==null && !MachineOutputLedger.hasPending(c);
+    }
     private String blockId() { return feature == Feature.WINE ? "society:wine_keg" : "society:preserves_jar"; }
     private String outputId() { return feature == Feature.WINE ? ItemData.WINE : ItemData.PRESERVES; }
     private Poi target() { return machines.get(machineIndex); }
@@ -53,6 +69,7 @@ public final class MachineModule implements AutomationModule {
 
     @Override public WorkResult tick(Context c) {
         yieldTravel=false;
+        waitingWineRack=null;
         if (MachineOutputLedger.hasPending(c) && (outputOperationId==null || !MachineOutputLedger.ownsActive(c,feature)))
             return WorkResult.blocked("Resolve the pending machine output before starting another production run");
         if (unresolvedInteraction != null) return WorkResult.blocked(unresolvedInteraction);
@@ -441,6 +458,7 @@ public final class MachineModule implements AutomationModule {
         Set<Pos> targetSet=Set.copyOf(targets);
         if (wineObservationDay!=gameDay(c) || !targetSet.equals(wineObservationTargets)) {
             wineObservations.clear(); wineObservationTargets=targetSet; wineObservationDay=gameDay(c); wineObservationRetry=0;
+            wineWaitObservation.clear();
         }
         if (c.world().tick()<wineObservationRetry && targets.stream().anyMatch(p -> !c.world().loaded(p)))
             return WorkResult.idle();
@@ -455,7 +473,19 @@ public final class MachineModule implements AutomationModule {
             processing|=block.flag("working") && !block.flag("mature");
         }
         if (processing) {
-            if (schedule.active()) return unfinishedWine();
+            if (schedule.active()) {
+                // A restart or another actor can leave an unconfirmed member
+                // working. Do not invent its feed ACK, delete it from remaining,
+                // or visit a ready subset. Wait for ALL remaining members to be
+                // ready again, without blocking unrelated work or clean sleep.
+                // Cached observations can support approach planning, but cannot
+                // grant a clean wait after a remaining member unloads.
+                Pos unloaded=targets.stream().filter(pos -> !c.world().loaded(pos)).findFirst().orElse(null);
+                if (unloaded!=null) return wineWaitObservation.observe(c,unloaded,8,"미완료 와인 랙 현재 상태 확인");
+                if (!cleanWineWaitBoundary(c)) return unfinishedWine();
+                waitingWineRack=schedule;
+                return WorkResult.deferred("미완료 와인 랙 생산 대기 — 남은 통 전체가 준비되면 다시 확인합니다. 재투입·완료 처리는 하지 않았습니다");
+            }
             wineObservations.clear(); wineObservationRetry=c.world().tick()+1200;
             return new WorkResult(WorkResult.State.IDLE,"와인 랙 전체 완료 대기 — 아직 생산 중인 통이 있어 공통 작업을 시작하지 않습니다");
         }
@@ -653,6 +683,8 @@ public final class MachineModule implements AutomationModule {
     }
     @Override public void reset() { yieldTravel=false; clearRun(); unresolvedInteraction = null; rejectedInputMerge=null; rejectedOutputMerge=null; repositionedInputState=null; }
     private void clearRun() {
+        waitingWineRack=null;
+        wineWaitObservation.clear();
         wineObservations.clear(); wineObservationTargets=Set.of(); wineObservationDay=Long.MIN_VALUE; wineObservationRetry=0;
         stage = Stage.START; afterClose = null; pending = null; ticket = -1; verifySince = 0; useSettleAt = -1;
         machines = List.of(); sources = List.of(); stock.clear(); machineIndex = 0; selectedMachineIndex = -1; sourceIndex = 0;

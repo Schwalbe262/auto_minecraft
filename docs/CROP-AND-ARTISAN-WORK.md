@@ -176,6 +176,27 @@ boundary or explicit run is still necessary.
 
 ## Native acceptance still required
 
+### Clean waits in an interrupted wine batch
+
+The initial wine-rack preflight may find a still-unconfirmed member already
+working after a restart or another actor's changes. Its source is unknown; a
+working block is not a refill acknowledgement. Keep the exact remaining members
+and original batch dates, do not visit an early ready subset, and defer until
+all remaining members are ready for a normal, newly verified service pass.
+
+At a clean START boundary this observation wait permits other routines. It may
+grant the existing deferred-sleep permission only with a closed ordinary menu,
+empty cursor, grounded connected player, no pending action/output/borrowed slot
+or native action fence, and no carried tomato/wine/preserves awaiting cleanup.
+This is a grant-time check under the existing scheduler contract, not a claim
+that the inventory stays frozen during the wait. Normal module priorities and
+the scheduler's sleep gates still apply. The existing bounded retry backoff is
+used; neither calendar dates nor native receipts are fabricated to unblock work.
+Mid-run unexpected-machine and uncertain-interaction failures remain unchanged.
+One-shot mode stays WAITING during this condition; it must not report completion.
+
+### Remaining runtime checks
+
 After an authorized same-instance restart, import the reviewed definitions with
 automation OFF. Check each one-shot for actual target acknowledgement, inventory
 receipt and correct destination, then enable continuous routines as desired.
