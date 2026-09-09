@@ -30,4 +30,15 @@ Java 17 test/build passed 1,809 tests across 136 suites, with no failures or
 errors. This includes all-hidden bounded sweeps, a hidden first tree with four
 processable neighbours, oldest seed-short replanting, one-shot isolation,
 whole-tree rejection, timed retry and non-current cached-chunk unloading.
-Runtime acceptance is still pending at this build checkpoint.
+The build was installed with a recoverable previous-JAR backup and a normal
+single-client restart. The resumed native one-shot selected a different tree,
+confirming that the original first-tree scheduling block was passed. No chop was
+sent: terrain navigation then rejected the player's starting grid cell.
+
+A second read-only native probe found the player grounded and collision-free,
+but supported only by the edge of an adjacent stone floor. The block below the
+player's centre was air. Neither the raw grid cell nor the cell above was a valid
+navigation stance. This is a distinct start-position recovery issue, not evidence
+that any logging action succeeded. Its correction and further native acceptance
+remain in progress; no grid-cell substitution, teleport or terrain clearing was
+used to bypass the finding.

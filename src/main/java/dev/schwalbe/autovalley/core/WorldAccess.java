@@ -11,6 +11,8 @@ public interface WorldAccess {
     default double standingY(Pos feet) { return Double.NaN; }
     /** Native full-footprint flat support; a high stair tread or an unknown adapter is not proof. */
     default boolean fullFlatSupport(Pos feet) { return false; }
+    /** Current grounded body already overlaps this support; its entire inward sweep is natively safe. */
+    default boolean canRecenterOnSupport(Pos feet) { return false; }
     boolean canTraverse(Pos from, Pos to);
     /** Geometry-only opt-in proof for one cardinal, exactly one-support-block logging ascent. */
     default boolean canLoggingJump(LoggingJumpEdge edge,Profile profile) { return false; }

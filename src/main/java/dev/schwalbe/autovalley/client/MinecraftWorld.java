@@ -166,6 +166,40 @@ public final class MinecraftWorld implements WorldAccess {
     @Override public boolean fullFlatSupport(Pos feet) {
         return feet!=null && canStand(feet) && uniformFloor(feet);
     }
+    @Override public boolean canRecenterOnSupport(Pos feet) {
+        try {
+            if (mc.level==null || mc.player==null || !mc.isSameThread() || !mc.player.onGround()
+                    || !NativeLoggingJump.normalPhysics(mc) || feet==null
+                    || Math.abs((long)feet.x())>29_999_984 || Math.abs((long)feet.z())>29_999_984
+                    || feet.y() < -2032 || feet.y()>1967 || !fullFlatSupport(feet)) return false;
+            var level=mc.level; var player=mc.player;
+            BlockPos floor=nativePos(feet).below(); BlockState support=level.getBlockState(floor);
+            var block=support.getBlock();
+            if (NativeLoggingJump.forbiddenBlock(support) || support.is(net.minecraft.tags.BlockTags.CLIMBABLE)
+                    || !NativeLoggingJump.normalSurface(block.getJumpFactor(),block.getSpeedFactor(),support.getFriction(level,floor,player))) return false;
+            AABB actual=player.getBoundingBox();
+            java.util.function.Function<AABB,SupportRecenterGeometry.Box> box=b ->
+                new SupportRecenterGeometry.Box(b.minX,b.minY,b.minZ,b.maxX,b.maxY,b.maxZ);
+            SupportRecenterGeometry.Box proof=SupportRecenterGeometry.sweep(player.getX(),player.getY(),player.getZ(),
+                player.getBbWidth(),player.getBbHeight(),box.apply(actual),feet,
+                support.getCollisionShape(level,floor).toAabbs().stream().map(box).toList(),
+                support.getCollisionShape(level,floor,CollisionContext.of(player)).toAabbs().stream().map(box).toList());
+            if (proof==null) return false;
+            AABB swept=new AABB(proof.minX(),proof.minY(),proof.minZ(),proof.maxX(),proof.maxY(),proof.maxZ());
+            if (!insideBorder(actual) || !insideBorder(swept)) return false;
+            if (!SupportRecenterGeometry.clear(proof,p -> {
+                if (!loaded(p)) return new SupportRecenterGeometry.Cell(false,true,List.of());
+                BlockPos bp=nativePos(p); BlockState state=level.getBlockState(bp);
+                return new SupportRecenterGeometry.Cell(true,
+                    NativeLoggingJump.forbiddenBlock(state) || state.is(net.minecraft.tags.BlockTags.CLIMBABLE),
+                    state.getCollisionShape(level,bp,CollisionContext.of(player)).toAabbs().stream().map(box).toList());
+            })) return false;
+            // No door exception, entity clipping, synthetic coordinates or input. This
+            // also catches native collision shapes extending beyond a sampled cell.
+            return mc.level==level && mc.player==player && player.onGround()
+                && level.noCollision(player,actual) && level.noCollision(player,swept);
+        } catch (RuntimeException unavailable) { return false; }
+    }
     private boolean uniformFloor(Pos feet) {
         BlockPos floor=nativePos(feet).below();
         var boxes=mc.level.getBlockState(floor).getCollisionShape(mc.level,floor).toAabbs();

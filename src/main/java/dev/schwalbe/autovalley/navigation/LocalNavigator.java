@@ -53,6 +53,8 @@ public final class LocalNavigator implements Navigation {
     private ActionPort lastActions;
     private WorldAccess lastWorld;
     private DescentController descent;
+    private GroundRecenterController groundRecenter;
+    private boolean recenterAttempted;
     private boolean interruptedDescent;
     private java.util.Map<String,Object> lastFailure=java.util.Map.of();
     /** One bounded original controller failure; subsequent routing guards cannot overwrite it. */
@@ -76,6 +78,7 @@ public final class LocalNavigator implements Navigation {
         report.put("pathLength",path.size());report.put("nextIndex",nextIndex);
         report.put("descentHandoffs",descent==null ? 0 : descent.completedEdges());
         report.put("descentFlow",descent!=null && descent.flowing());
+        report.put("recenterAnchor",groundRecenter==null ? null : groundRecenter.anchor());
         report.put("searchLimit",search==null ? 0 : search.nodeLimit());
         report.put("lastFailure",lastFailure);report.put("lastAscentFailure",lastAscentFailure);
         return java.util.Collections.unmodifiableMap(report);
@@ -91,7 +94,7 @@ public final class LocalNavigator implements Navigation {
                 || c.profile()!=requestProfile || c.session()!=requestSession || requestMode==null
                 || c.profile().navigationMode!=requestMode || !requestInteractions || loggingPath || !plantingTargets.isEmpty()
                 || !"FOLLOWING".equals(diagnostic) || !previousMoving || failureKind!=Failure.NONE || destination==null || domain==null
-                || loggingJump!=null || descent!=null || interruptedLanding || interruptedDescent || !interruptedJumps.isEmpty()
+                || loggingJump!=null || descent!=null || groundRecenter!=null || interruptedLanding || interruptedDescent || !interruptedJumps.isEmpty()
                 || doorTicket>=0 || endpointSettleTick>=0 || search!=null || frontier!=null || frontierWait>=0
                 || nextIndex<=0 || nextIndex>=path.size()) return false;
             WorldAccess world=c.world();PlayerState player=world.player();MenuData menu=world.menu();
@@ -210,6 +213,7 @@ public final class LocalNavigator implements Navigation {
         // may finish the move before two grounded landing observations.
         if (loggingJump!=null) { diagnostic="STEP_UP";return continueLoggingJump(context); }
         if (descent!=null) return continueDescent(context);
+        if (groundRecenter!=null) return continueGroundRecenter(context);
         Pos walkingFeet = NavigationFeet.resolve(world,player);
         if (!domain.contains(walkingFeet)) return blocked(actions,Failure.INVALID_START,"현재 이동 요청의 안전 탐색 영역 밖입니다.");
         if (!world.loaded(target) && !domain.terrain()) return blocked(actions,Failure.UNLOADED,"목표 청크가 로드되지 않았습니다.");
@@ -236,6 +240,16 @@ public final class LocalNavigator implements Navigation {
             if (rejectedEndpoints.size() >= MAX_REJECTED_ENDPOINTS)
                 return blocked(actions,Failure.REACH,"정지 후에도 확인한 접근 위치 4곳에서 목표가 보이지 않거나 손이 닿지 않습니다.");
             if (domain.terrain() || goal!=TerrainPathSearch.Goal.INTERACTION) {
+                // Only a normal public request may recover an unsupported grid
+                // origin. Never substitute a neighbouring cell into the path:
+                // first walk inward under a separate current-pose native proof.
+                if (domain.terrain() && allowDoors && search==null && !recenterAttempted && !world.canStand(walkingFeet)) {
+                    Pos anchor=recenterAnchor(context,player);
+                    if (anchor!=null) {
+                        recenterAttempted=true;groundRecenter=new GroundRecenterController(anchor,context);
+                        return continueGroundRecenter(context);
+                    }
+                }
                 Result planned=planTerrain(context,walkingFeet);
                 if (planned!=null) return planned;
             } else {
@@ -518,6 +532,7 @@ public final class LocalNavigator implements Navigation {
             if (p!=null) evidence.put("player",java.util.Map.of("x",p.x(),"y",p.y(),"z",p.z(),"onGround",p.onGround()));
         }
         lastFailure=java.util.Collections.unmodifiableMap(evidence);
+        cancelGroundRecenter();
         cancelDescent();
         cancelLoggingJump();
         actions.stopMovement();
@@ -530,6 +545,7 @@ public final class LocalNavigator implements Navigation {
     }
 
     @Override public void reset() {
+        cancelGroundRecenter();recenterAttempted=false;
         cancelDescent();
         cancelLoggingJump();
         if (lastActions!=null) lastActions.stopMovement();
@@ -547,6 +563,40 @@ public final class LocalNavigator implements Navigation {
         domain=null;requestProfile=null;requestSession=null;requestMode=null;requestInteractions=false;goal=TerrainPathSearch.Goal.INTERACTION;
         search=null;frontier=null;frontierWait=-1;rejectedFrontiers.clear();frontierAttempts=0;replans=0;requestNodes=0;
         failureKind=Failure.NONE;diagnostic="IDLE";
+    }
+
+    private Pos recenterAnchor(Context c,PlayerState player) {
+        if (!player.onGround() || !Double.isFinite(player.x()) || !Double.isFinite(player.y()) || !Double.isFinite(player.z())
+            || c.actions().busy() || c.actions().pauseReason()!=null || c.world().menu()==null
+            || c.world().menu().container() || !c.world().menu().carried().empty()) return null;
+        Pos raw=player.feet(),best=null;double bestDistance=Double.POSITIVE_INFINITY;
+        // At most eighteen local centres. Unknown adapters opt out by default;
+        // native proof must establish that THIS support already holds the body.
+        for(int dy=0;dy<=1;dy++) for(int dx=-1;dx<=1;dx++) for(int dz=-1;dz<=1;dz++) {
+            long x=(long)raw.x()+dx,y=(long)raw.y()+dy,z=(long)raw.z()+dz;
+            if (x<Integer.MIN_VALUE || x>Integer.MAX_VALUE || y<Integer.MIN_VALUE || y>Integer.MAX_VALUE || z<Integer.MIN_VALUE || z>Integer.MAX_VALUE) continue;
+            Pos candidate=new Pos((int)x,(int)y,(int)z);double distance=Math.hypot(player.x()-candidate.x()-.5,player.z()-candidate.z()-.5);
+            if (distance>1.25 || distance>=bestDistance || !domain.contains(candidate) || !TerrainPathSearch.loadedStance(c.world(),candidate)
+                || !c.world().canStand(candidate) || !c.world().fullFlatSupport(candidate)) continue;
+            double height=c.world().standingY(candidate);
+            if (!Double.isFinite(height) || Math.abs(player.y()-height)>1.0e-5 || !c.world().canRecenterOnSupport(candidate)) continue;
+            best=candidate;bestDistance=distance;
+        }
+        return best;
+    }
+    private Result continueGroundRecenter(Context c) {
+        diagnostic="GROUND_RECENTER";
+        Result result=groundRecenter.tick(c);previousMoving=result==Result.MOVING;previousSprint=false;
+        if (result==Result.BLOCKED) return blocked(c.actions(),Failure.INVALID_START,groundRecenter.failureReason());
+        if (result==Result.ARRIVED) {
+            groundRecenter=null;path=List.of();search=null;nextIndex=0;lastDistance=Double.POSITIVE_INFINITY;
+            progressTick=c.world().tick();previousMoving=false;diagnostic="GROUND_RECENTER_COMPLETE";
+        }
+        // Rebuild A* from the actual, quietly observed cell on the next tick.
+        return Result.MOVING;
+    }
+    private void cancelGroundRecenter() {
+        if (groundRecenter!=null) { groundRecenter.cancel();groundRecenter=null; }
     }
 
     private Result continueLoggingJump(Context context) {
