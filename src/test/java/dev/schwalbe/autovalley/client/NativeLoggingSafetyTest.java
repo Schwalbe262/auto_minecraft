@@ -99,4 +99,14 @@ class NativeLoggingSafetyTest {
                 ItemData.TOMATO,ItemData.WINE,ItemData.PRESERVES,ItemData.PINE_TAR,"minecraft:diamond_sword"))
             assertFalse(NativeTrashSlot.disposableBuffer(data(id)));
     }
+    @Test void protectedTrashBufferNamesTheUnsentPrerequisiteWithoutDeletingOtherItems() {
+        assertNull(NativeTrashSlot.bufferRejection(ItemData.EMPTY));
+        for (String id:List.of(ItemData.ROTTEN,LoggingRules.TWIG,LoggingRules.SAPLING))
+            assertNull(NativeTrashSlot.bufferRejection(data(id)));
+        for (String id:List.of(ItemData.TOMATO,ItemData.WINE,"minecraft:diamond_sword")) {
+            String refusal=NativeTrashSlot.bufferRejection(data(id));
+            assertTrue(refusal.contains(id)); assertTrue(refusal.contains("삭제 요청은 보내지 않았습니다"));
+        }
+        assertNotNull(NativeTrashSlot.bufferRejection(null));
+    }
 }

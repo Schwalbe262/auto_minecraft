@@ -28,6 +28,8 @@ public final class DisposalModule implements AutomationModule {
         if (c.world().menu().container()) { ticket = c.actions().submit(new Action.CloseContainer(c.world().menu().id())); return WorkResult.busy("Closing container before disposal"); }
         if (!c.world().menu().carried().empty()) return fail("Clear the inventory cursor before disposal");
         if (c.actions().supportsInventoryTrash()) {
+            String rejection=c.actions().inventoryTrashRejection();
+            if (rejection!=null) return fail(rejection);
             ItemSlot rotten=c.world().inventory().stream().filter(s -> s.player() && s.inventoryIndex()>=0 && s.inventoryIndex()<36
                 && s.item().is(ItemData.ROTTEN)).findFirst().orElse(null);
             if (rotten==null) return fail("No normal inventory rotten tomato stack is available");

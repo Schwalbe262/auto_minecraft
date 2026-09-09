@@ -57,13 +57,8 @@ final class NativeTrashSlot {
         List<Slot> matching=player.inventoryMenu.slots.stream().filter(s -> s.container==player.getInventory()
             && s.getContainerSlot()==inventoryIndex).toList();
         if (matching.size()!=1 || player.inventoryMenu.slots.size()>128) throw new IllegalArgumentException("Ambiguous inventory trash slot");
-        try {
-            Object buffer=HOOKS.trashSlot().invoke(null);
-            if (!(buffer instanceof Slot slot)) throw new IllegalStateException("TrashSlot buffer is unavailable");
-            ItemStack retained=slot.getItem();
-            if (!retained.isEmpty() && !disposableBuffer(MinecraftWorld.item(retained)))
-                throw new IllegalStateException("Recover the other item retained in TrashSlot before disposing tomatoes");
-        } catch (ReflectiveOperationException failure) { throw new IllegalStateException("TrashSlot buffer could not be checked",failure); }
+        String rejection=preflightRejection();
+        if (rejection!=null) throw new PreflightRejected(rejection);
         sourceMenuSlot=matching.get(0).index;
         menuId=player.inventoryMenu.containerId; quantity=expected.count();
         before=stacks(player.inventoryMenu.slots.stream().map(Slot::getItem).toList());
@@ -77,6 +72,25 @@ final class NativeTrashSlot {
     }
     static boolean disposableBuffer(ItemData item) {
         return item!=null && (item.empty() || item.is(ItemData.ROTTEN) || LoggingRules.waste(item));
+    }
+    static final class PreflightRejected extends IllegalStateException {
+        PreflightRejected(String message) { super(message); }
+    }
+    static String bufferRejection(ItemData retained) {
+        if (disposableBuffer(retained)) return null;
+        if (retained==null) return "쓰레기칸을 확인할 수 없어 삭제 요청을 보내지 않았습니다.";
+        // Reduced registry ID/count only: never export the retained stack's NBT.
+        return "쓰레기칸에 보호 품목 "+retained.id()+" ×"+retained.count()
+            +"개가 남아 있어 폐기 보류 중입니다. 인벤토리에서 회수하거나 직접 비워 주세요. 삭제 요청은 보내지 않았습니다.";
+    }
+    static String preflightRejection() {
+        if (!available()) return "서버 TrashSlot을 사용할 수 없어 삭제 요청을 보내지 않았습니다.";
+        try {
+            Object buffer=HOOKS.trashSlot().invoke(null);
+            return bufferRejection(buffer instanceof Slot slot ? MinecraftWorld.item(slot.getItem()) : null);
+        } catch (ReflectiveOperationException | LinkageError | RuntimeException failure) {
+            return "쓰레기칸 조회에 실패하여 삭제 요청을 보내지 않았습니다. ("+failure.getClass().getSimpleName()+")";
+        }
     }
     void send() {
         try {

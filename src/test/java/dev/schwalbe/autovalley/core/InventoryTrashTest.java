@@ -46,6 +46,23 @@ class InventoryTrashTest {
         assertTrue(result.message().contains("TrashSlot")); assertTrue(f.sent.isEmpty());
     }
 
+    @Test void protectedRecoveryBufferBlocksOnlyDisposalWithoutSendingOrInventingAnAcknowledgement() {
+        Fixture f=new Fixture(); f.put(2,rotten(5)); f.trashRejection="Protected recovery item; request not sent";
+        DisposalModule module=new DisposalModule();
+        for (int i=0;i<10;i++) {
+            WorkResult result=module.tick(f.context);
+            assertEquals(WorkResult.State.BLOCKED,result.state());
+            assertEquals(f.trashRejection,result.message());
+        }
+        assertTrue(f.sent.isEmpty()); assertNull(f.pauseReason()); assertEquals(rotten(5),f.items.get(2).item());
+        f.trashRejection=null;
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context).state());
+        assertEquals(List.of(new Action.TrashRotten(2,rotten(5))),f.sent);
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context).state());
+        f.put(2,ItemData.EMPTY); f.reply=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"exact acknowledgement",5);
+        assertEquals(WorkResult.State.IDLE,module.tick(f.context).state());
+    }
+
     @Test void disabledFeatureAndOtherOneShotCannotDeleteButExplicitDisposalCan() {
         Fixture f=new Fixture(); f.put(2,rotten(1)); Action action=new Action.TrashRotten(2,rotten(1));
         f.profile.enabled.put(Feature.DISPOSAL,false); assertNotNull(SafetyPolicy.rejection(action,f.context));
@@ -98,10 +115,11 @@ class InventoryTrashTest {
         final Context context=new Context(this,this,this,profile,session);
         final List<ItemSlot> items=new ArrayList<>(); final List<Action> sent=new ArrayList<>();
         ActionOutcome reply=new ActionOutcome(ActionOutcome.State.PENDING,"");
-        ItemData cursor=ItemData.EMPTY; boolean container,trashAvailable=true; int navigationCalls;
+        ItemData cursor=ItemData.EMPTY; boolean container,trashAvailable=true; int navigationCalls; String trashRejection;
         Fixture() { for(int i=0;i<36;i++) put(i,ItemData.EMPTY); put(4,TOOL); }
         void put(int index,ItemData item) { ItemSlot slot=new ItemSlot(index,index,true,item); if(index<items.size()) items.set(index,slot); else items.add(slot); }
         public boolean supportsInventoryTrash() { return trashAvailable; }
+        public String inventoryTrashRejection() { return trashRejection; }
         public long tick() { return 10; } public long dayTime() { return 5000; }
         public PlayerState player() { return new PlayerState(.5,0,.5,0,0,true,false,20,20,4,true,true); }
         public BlockData block(Pos pos) { return new BlockData(pos,"minecraft:air",Map.of()); }

@@ -65,6 +65,7 @@ public final class MinecraftActions implements ActionPort {
     }
     @Override public boolean supportsMovingHarvest() { return true; }
     @Override public boolean supportsInventoryTrash() { return NativeTrashSlot.available(); }
+    @Override public String inventoryTrashRejection() { return NativeTrashSlot.preflightRejection(); }
     @Override public String recoveryStatus() {
         if (pending instanceof Action.ConsolidateInventory && consolidationRecovery!=null && consolidationRecovery.recovering())
             return "인벤토리 정리 재확인 중 ("+((consolidationRecovery.remainingTicks(world.tick())+19)/20)
@@ -88,6 +89,8 @@ public final class MinecraftActions implements ActionPort {
         String paused=pauseReason();
         if (paused!=null) { put(ticket,ActionOutcome.State.FAILED,paused); return ticket; }
         String rejection=SafetyPolicy.rejection(action,context);
+        if (rejection==null && (action instanceof Action.TrashRotten || action instanceof Action.TrashLogging))
+            rejection=inventoryTrashRejection();
         if(rejection==null && action instanceof Action.UseBlock use && use.purpose()==Action.Use.ARTISAN)
             rejection=artisanRejection(use.pos());
         ContainerShape requestedShape=null;
@@ -114,7 +117,13 @@ public final class MinecraftActions implements ActionPort {
         wineFeedAttempt=null;
         put(ticket,ActionOutcome.State.PENDING,"");
         try { execute(action); }
-        catch (RuntimeException e) { finish(ActionOutcome.State.FAILED,"Game rejected the action: " + e.getClass().getSimpleName()); }
+        catch (RuntimeException e) {
+            boolean waste=action instanceof Action.TrashRotten || action instanceof Action.TrashLogging;
+            String message=waste && e instanceof NativeTrashSlot.PreflightRejected && !trashInFlight && trash==null
+                ? e.getMessage() : "Game rejected the action: "+e.getClass().getSimpleName()
+                    +" ["+action.getClass().getSimpleName()+(waste ? trashInFlight ? ", deletion send attempted" : ", before deletion send" : "")+"]";
+            finish(ActionOutcome.State.FAILED,message);
+        }
         return ticket;
     }
     private String transferRejection(Action.QuickMove transfer) {
@@ -527,7 +536,10 @@ public final class MinecraftActions implements ActionPort {
     private void finishTrash(ActionOutcome.State state,String message) {
         if (!(pending instanceof Action.TrashRotten) && !(pending instanceof Action.TrashLogging)) return;
         if (trashInFlight && trash!=null) lateTrashReply=trash;
-        if (state==ActionOutcome.State.FAILED) { trashFailure=message; trashFailureGeneration=observations.generation(); }
+        // Construction/preflight never sends. Only a possibly-sent request owns
+        // the global acknowledgement fence; a local refusal is still FAILED,
+        // never a fabricated successful deletion. Keep all post-send fences.
+        if (state==ActionOutcome.State.FAILED && trashInFlight) { trashFailure=message; trashFailureGeneration=observations.generation(); }
         trash=null; trashInFlight=false;
     }
     /** Null means unsafe, not a single chest fallback: both halves must be observable and reciprocal. */
