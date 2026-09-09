@@ -541,3 +541,16 @@ This is geometry and detached-test evidence; native fractional descent acceptanc
 is still pending. Before installation the latest client observation was already
 back on ground in continuous mode, so the original handoff position must not be
 assumed to persist or recreated by teleportation.
+
+The same client restarted normally with the tested fractional-support artifact
+at 05:01:49 UTC and connected automatically. Continuous mode was confirmed at
+05:04:29.953 UTC. Wine's persisted remaining set is 112; an unfinished working
+member prevents starting a partial rack. Its completion was not fabricated, and
+the scheduler yielded to other work instead of spending the cooldown in a
+wine-only test.
+
+On day 477 all 144 preserves jars were serviced. The inventory reached 144
+preserves and then zero at the registered shipping destination. Retained native
+outcomes 257, 258 and 259 confirm transfers of 64, 64 and 16 respectively; 256
+confirmed the open container and 260 its close. The engine then began seed-maker
+work. This proves the deposit, not a later payout or ownership match to the HUD.
