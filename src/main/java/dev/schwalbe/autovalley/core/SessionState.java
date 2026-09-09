@@ -11,6 +11,8 @@ public final class SessionState {
     /** Live evidence does not survive reconnect; persisted output debts do. */
     public final Set<String> liveMachineOutputs=new HashSet<>();
     public String activeMachineOutputId;
+    /** Explicit, non-persistent shipment permission; never resolves a production ledger entry. */
+    public PendingShipmentRecovery pendingShipmentRecovery;
     public boolean allows(Profile profile,Feature feature) { return oneShotFeature==null ? profile.enabled(feature) : oneShotFeature==feature; }
     public final Map<Integer,WineSalePermit> wineSalePermits=new HashMap<>();
     /** Local inspection evidence, not permission to transfer; retained after a one-shot finishes. */

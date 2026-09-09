@@ -77,6 +77,7 @@ public final class ClientControl {
                     case "once" -> runtime.runOnce(parsed.feature());
                     case "import_work" -> runtime.importWorkDefinitions();
                     case "move_once" -> runtime.runMoveOnce(parsed.position());
+                    case "recover_pending_ship" -> runtime.recoverPendingShip(parsed.name());
                     case "observe_once" -> {
                         var draft=runtime.profile().coordinateDestinations.stream().filter(d -> d.name().equals(parsed.name())).findFirst().orElse(null);
                         yield runtime.runObserveOnce(draft);
@@ -161,6 +162,14 @@ public final class ClientControl {
                     if (length < 1 || length > 64 || name.codePoints().allMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c)))
                         throw new IOException("Recording name must contain 1 to 64 nonblank characters");
                     yield new Request(command,null,name);
+                }
+                case "recover_pending_ship" -> {
+                    if (!fields.keySet().equals(Set.of("command","name"))) throw new IOException("Expected only pending ID");
+                    String id=fields.get("name");
+                    try {
+                        if (!java.util.UUID.fromString(id).toString().equals(id)) throw new IllegalArgumentException("Noncanonical pending ID");
+                    } catch (IllegalArgumentException e) { throw new IOException("Invalid pending ID",e); }
+                    yield new Request(command,null,id);
                 }
                 default -> throw new IOException("Unsupported command");
             };

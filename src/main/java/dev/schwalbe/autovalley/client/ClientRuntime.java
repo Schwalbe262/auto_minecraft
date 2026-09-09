@@ -47,6 +47,9 @@ public final class ClientRuntime {
     private boolean wasFocused;
     private Boolean savedPauseOnLostFocus;
     private CoordinateTravel coordinateTravel;
+    private PendingShipmentRecovery pendingShipmentRecovery;
+    private Map<String,Object> lastPendingShipmentReport=Map.of();
+    private String pendingShipmentStatus;
     private ClientRuntime() { actions.context(context); }
     public static ClientRuntime instance() { return INSTANCE; }
     public static void install() { MinecraftForge.EVENT_BUS.register(new ClientEvents()); }
@@ -54,19 +57,52 @@ public final class ClientRuntime {
     public MinecraftWorld world() { return world; }
     public String status() {
         if (persistenceError!=null) return persistenceError;
+        if (pendingShipmentRecovery!=null) return pendingShipmentRecovery.status();
         if (coordinateTravel!=null) return coordinateTravel.status();
+        if (!engine.running() && pendingShipmentStatus!=null) return pendingShipmentStatus;
         String recovery=running() ? actions.recoveryStatus() : null;
         if (recovery!=null) return recovery;
         String detail=running() ? navigator.diagnosticStatus() : "";
         return engine.status() + (detail.isBlank() ? "" : " — " + detail);
     }
-    public boolean running() { return coordinateTravel!=null || engine.running(); }
+    public boolean running() { return pendingShipmentRecovery!=null || coordinateTravel!=null || engine.running(); }
     /** Bounded local diagnostic data; contains private destination coordinates. */
     public Map<String,Object> navigationReport() { return navigator.diagnostics(); }
     public boolean recording() { return recorder.recording(); }
     public String recordingStatus() { return recorder.status(); }
     public boolean recordingActive() { return recorder.capturing(); }
-    public String executionMode() { return coordinateTravel==null ? engine.mode().name() : "MOVE_ONCE"; }
+    public String executionMode() { return pendingShipmentRecovery!=null ? "RECOVER_PENDING_SHIP" : coordinateTravel==null ? engine.mode().name() : "MOVE_ONCE"; }
+    /** Explicit operator shipment only; never confirms or removes the selected durable ledger entry. */
+    public boolean recoverPendingShip(String pendingId) {
+        if (running() || automationStartBlocked() || recording() || persistenceError!=null || profileKey==null
+                || mc.screen!=null || mc.level==null || mc.player==null || mc.getConnection()==null) {
+            notifyUser("자동화를 정지하고 접속·화면·저장 상태를 확인한 뒤 출하 복구를 선택하세요."); return false;
+        }
+        try {
+            PendingShipmentRecovery recovery=PendingShipmentRecovery.start(context,pendingId);
+            // Do not call Engine.begin/stop or alter its pending-output/live-token state.
+            pendingShipmentRecovery=recovery; pendingShipmentStatus=null;
+            navigator.reset(); actions.stopMovement(); actions.enabled(true);
+            anglesValid=false; attackFence=true; updateBackgroundPause();
+            lastPendingShipmentReport=recovery.report();
+            return true;
+        } catch (RuntimeException e) {
+            if (pendingShipmentRecovery!=null) finishPendingShipment("복구 시작 확인에 실패했습니다.");
+            notifyUser(e.getMessage()==null ? "출하 복구를 시작하지 못했습니다." : e.getMessage()); return false;
+        }
+    }
+    /** Bounded explicit recovery evidence, including positive native transfer receipts; no profile dump. */
+    public Map<String,Object> pendingShipmentReport() {
+        return pendingShipmentRecovery==null ? lastPendingShipmentReport : pendingShipmentRecovery.report();
+    }
+    private void finishPendingShipment(String cancellation) {
+        PendingShipmentRecovery recovery=pendingShipmentRecovery;
+        if (recovery==null) return;
+        if (cancellation!=null) recovery.cancel(context,cancellation);
+        lastPendingShipmentReport=recovery.report(); pendingShipmentStatus=recovery.status();
+        pendingShipmentRecovery=null; actions.enabled(false); anglesValid=false;
+        attackFence=world.tick()<attackFenceUntil; updateBackgroundPause();
+    }
     /** Explicit movement only; it never enables a work feature or confirms a storage role. */
     public boolean runMoveOnce(Pos feet) { return beginCoordinateTravel(CoordinateTravel.position(feet)); }
     public boolean runObserveOnce(CoordinateDestination draft) {
@@ -127,6 +163,7 @@ public final class ClientRuntime {
         if (recording()) { notifyUser("직접 플레이 기록을 저장한 뒤 자동 작업을 실행하세요."); return false; }
         if (persistenceError!=null || mc.screen!=null) { notifyUser("열린 화면이나 설정 오류를 먼저 해결하세요."); return false; }
         pause("한 번 실행 준비");
+        pendingShipmentStatus=null;
         PoiKind destination=feature==null ? null : switch (feature) {
             case WINE -> PoiKind.WINE_KEG;
             case PRESERVES -> PoiKind.PRESERVES_JAR;
@@ -163,13 +200,15 @@ public final class ClientRuntime {
             if (automationStartBlocked()) return;
             if (recording()) { notifyUser("직접 플레이 기록을 저장한 뒤 자동화를 시작하세요."); return; }
             if (mc.screen!=null) { notifyUser("설정/인벤토리 화면을 닫은 뒤 F8을 누르세요."); return; }
+            pendingShipmentStatus=null;
             engine.start(context); actions.enabled(engine.running()); anglesValid=false; attackFence=engine.running();
             updateBackgroundPause();
         }
     }
     public void pause(String reason) {
         coordinateTravel=null;
-        engine.stop(context,AutomationEngine.State.PAUSED,reason);
+        if (pendingShipmentRecovery!=null) finishPendingShipment(reason);
+        else { pendingShipmentStatus=null; engine.stop(context,AutomationEngine.State.PAUSED,reason); }
         actions.enabled(false); anglesValid=false;
         updateBackgroundPause();
         attackFence=world.tick()<attackFenceUntil;
@@ -287,7 +326,7 @@ public final class ClientRuntime {
         if (manualScreen || world.menu().container() && !managedContainer) manualOutputInteraction();
         // Observe recovery while paused too, before any control request or consumer
         // can move the bottle out of inventory. Reconnect has no live proof tokens.
-        if (persistenceError==null) try {
+        if (persistenceError==null && pendingShipmentRecovery==null) try {
             MachineOutputLedger.archiveWinePickupTrackingDisabled(context);
             MachineOutputLedger.reconcile(context);
         }
@@ -305,12 +344,19 @@ public final class ClientRuntime {
         actions.enabled(running());
         attackFence=running() || world.tick()<attackFenceUntil;
         if (running()) {
-            long day=Math.floorDiv(world.dayTime(),24000);
-            if (profile.lastSeenDay>=0 && day<profile.lastSeenDay) { profile.nextEligibleDay.clear(); profile.wineBatchSchedule=null; pause("게임 날짜가 되돌아가 일정 확인이 필요합니다."); }
-            profile.lastSeenDay=day;
+            if (pendingShipmentRecovery==null) {
+                long day=Math.floorDiv(world.dayTime(),24000);
+                if (profile.lastSeenDay>=0 && day<profile.lastSeenDay) { profile.nextEligibleDay.clear(); profile.wineBatchSchedule=null; pause("게임 날짜가 되돌아가 일정 확인이 필요합니다."); }
+                profile.lastSeenDay=day;
+            }
             actions.tick();
             try {
-                if (coordinateTravel!=null) {
+                if (pendingShipmentRecovery!=null) {
+                    PendingShipmentRecovery.Result result=pendingShipmentRecovery.tick(context);
+                    if (result!=PendingShipmentRecovery.Result.MOVING) {
+                        finishPendingShipment(null); notifyUser(pendingShipmentStatus);
+                    }
+                } else if (coordinateTravel!=null) {
                     CoordinateTravel.Result result=coordinateTravel.tick(context);
                     if (result!=CoordinateTravel.Result.MOVING) {
                         String finished=coordinateTravel.status(); coordinateTravel=null;
@@ -320,11 +366,12 @@ public final class ClientRuntime {
                 } else engine.tick(context);
             }
             catch (RuntimeException e) {
+                if (pendingShipmentRecovery!=null) pause("출하 복구 중 예상하지 못한 오류로 중지했습니다.");
                 if (coordinateTravel!=null) pause("좌표 이동 중 예상하지 못한 오류로 중지했습니다.");
                 LogUtils.getLogger().error("Auto Valley stopped after {}",e.getClass().getSimpleName());
             }
             if (running() && world.menu().container() && !actions.ownsContainer() && !actions.openingContainer()) pause("예상하지 않은 상자 화면입니다.");
-            if (engine.state()==AutomationEngine.State.WAITING && world.menu().container()) pause(engine.status()+" — 상자를 확인한 뒤 닫고 다시 시작하세요.");
+            if (pendingShipmentRecovery==null && engine.state()==AutomationEngine.State.WAITING && world.menu().container()) pause(engine.status()+" — 상자를 확인한 뒤 닫고 다시 시작하세요.");
         }
         actions.enabled(running()); attackFence=running() || world.tick()<attackFenceUntil;
         updateBackgroundPause();
@@ -341,6 +388,8 @@ public final class ClientRuntime {
     private void connect(String key,Connection current) {
         if (connectionKey!=null) disconnect();
         profileKey=key; connectionKey=key; connection=current; persistenceError=null;
+        persistenceDiagnostic=null; persistenceFailureCause=null; pendingShipmentStatus=null;
+        lastPendingShipmentReport=Map.of();
         try { profile=store.load(key); }
         catch (IOException e) { profile=new Profile(); persistenceError="기존 설정 파일을 읽지 못했습니다. 원본을 보존하고 자동화를 중지합니다."; }
         context=new Context(world,actions,navigator,profile,new SessionState(),this::checkpointMachineState); actions.context(context);
@@ -351,6 +400,7 @@ public final class ClientRuntime {
     }
     private void disconnect() {
         recorder.stopCapture("disconnected_or_dimension_changed");
+        finishPendingShipment("접속 또는 차원이 변경되었습니다.");
         coordinateTravel=null;
         engine.stop(context,AutomationEngine.State.OFF,"접속 종료 — 자동화 OFF");
         updateBackgroundPause();

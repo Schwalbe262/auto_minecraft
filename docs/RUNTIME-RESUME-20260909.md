@@ -811,3 +811,33 @@ nine isolated persistence fault-injection tests. Artifact SHA256:
 Installation, actual shipment of the retained preserves and renewed continuous
 testing are still pending. The paused observer's elapsed time is not continuous
 automation uptime.
+
+### Explicit shipment recovery without clearing the production ledger
+
+A separate operator-selected recovery is available for exactly one pending
+preserves entry. It freezes the current 36-slot inventory projection and ships
+only its preserves lot to an existing registered smart shipping bin. It does not
+infer that the historical machine operation succeeded, modify the pending entry,
+change schedules, or automatically acknowledge recovery or loss.
+
+The controller accepts only positive retained native transfer quantities, checks
+the resulting frozen inventory delta, and requires the entire lot plus normal
+container-close completion before reporting success. Close completion is the
+client's normal menu returning to inventory, not a separately claimed server
+close packet. Native shipment evidence remains the server-confirmed transfer.
+An exact per-dispatch allow-list excludes machine use, other products, withdrawal,
+sorting, disposal and unrelated jobs. Ordinary pending-output and ascent guards
+remain unchanged. Cancellation, profile/session changes, unknown inventory
+changes and bounded timeouts stop without replaying the action or clearing debt.
+
+The UI exposes a separately confirmed **Ship current preserves** action; the
+bounded local equivalent is `recover_pending_ship` with the selected canonical
+UUID in `name`. A read-only bounded shipment report is included in diagnostics.
+Any subsequent operator resolution remains a separate existing explicit action.
+
+All **1,692 tests / 127 suites** passed with zero failures, errors or skips,
+including 12 new recovery regressions and two command/stop-priority tests.
+Artifact SHA256:
+`64714008640EBF5812DCA37FCC783A9BBCD812C4B34C1935DDE41E621F12A6DA`.
+This is detached test acceptance; live recovery and renewed continuous operation
+are still pending.

@@ -13,7 +13,7 @@ public final class EmergencyStartGate {
     }
     public static boolean rejectsCommand(boolean blocked,String command) {
         return blocked && ("start".equals(command) || "once".equals(command)
-            || "move_once".equals(command) || "observe_once".equals(command));
+            || "move_once".equals(command) || "observe_once".equals(command) || "recover_pending_ship".equals(command));
     }
     public static boolean shouldPoll(boolean blocked,long now,long nextPoll) { return blocked || now>=nextPoll; }
 }

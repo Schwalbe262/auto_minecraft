@@ -11,6 +11,8 @@ public final class SafetyPolicy {
         if (!player.connected() || (!profile.allowBackground && !player.focused())) return "Game is not connected or requires focus";
         MenuData menu = world.menu();
         if (menu == null || !menu.carried().empty()) return "Resolve the item on the cursor before resuming";
+        if (context.session().pendingShipmentRecovery!=null && !context.session().pendingShipmentRecovery.permits(action,context))
+            return "Pending-output recovery permits only its planned shipment and navigation doors";
         boolean surveying=context.session().oneShotFeature==Feature.STORAGE_SURVEY;
         if (surveying && (action instanceof Action.QuickMove || action instanceof Action.SwapHotbar
             || action instanceof Action.ConsolidateInventory || action instanceof Action.ThrowRotten || action instanceof Action.TrashRotten

@@ -21,7 +21,7 @@ import java.util.*;
 /** All registration is local and explicit. Opening settings never starts game actions. */
 public final class ValleyScreen extends Screen {
     private enum Tab { MODULES, REGISTER, FARMS, SAVED }
-    private enum ToolPage { MENU, RECORD_NAME, RUN_ONCE, PENDING_LIST, PENDING_DETAIL, PENDING_CONFIRM }
+    private enum ToolPage { MENU, RECORD_NAME, RUN_ONCE, PENDING_LIST, PENDING_DETAIL, PENDING_CONFIRM, PENDING_SHIP_CONFIRM }
     private enum MachineGroupPage { DETAIL, MEMBERS, REMOVE_CONFIRM }
     private enum LoggingPage { LIST, EDIT, SETTINGS, REMOVE }
     private static Tab rememberedTab = Tab.MODULES;
@@ -182,6 +182,7 @@ public final class ValleyScreen extends Screen {
             case PENDING_LIST -> pendingOutputList();
             case PENDING_DETAIL -> pendingOutputDetail();
             case PENDING_CONFIRM -> pendingOutputConfirmation();
+            case PENDING_SHIP_CONFIRM -> pendingShipmentConfirmation();
         }
     }
 
@@ -291,8 +292,15 @@ public final class ValleyScreen extends Screen {
         text(107, tr("pending.created", selectedPendingOutput.createdDay() + 1));
         text(123, tr(selectedPendingOutput.phase() == PendingMachineOutput.Phase.AWAITING_MACHINE_CONFIRMATION
                 ? "pending.machine_unconfirmed" : "pending.not_auto_verified"));
-        button(left, 145, panelWidth, tr("pending.recovered"), () -> choosePendingResolution(MachineOutputLedger.Resolution.RECOVERED_AND_HANDLED));
-        button(left, 169, panelWidth, tr("pending.lost"), () -> choosePendingResolution(MachineOutputLedger.Resolution.CONFIRMED_LOST));
+        if (selectedPendingOutput.feature()==Feature.PRESERVES) {
+            button(left,145,panelWidth,tr("pending.ship"),()->{ toolPage=ToolPage.PENDING_SHIP_CONFIRM; rebuild(); });
+            int half=(panelWidth-6)/2;
+            button(left,169,half,tr("pending.recovered"),()->choosePendingResolution(MachineOutputLedger.Resolution.RECOVERED_AND_HANDLED));
+            button(left+half+6,169,panelWidth-half-6,tr("pending.lost"),()->choosePendingResolution(MachineOutputLedger.Resolution.CONFIRMED_LOST));
+        } else {
+            button(left,145,panelWidth,tr("pending.recovered"),()->choosePendingResolution(MachineOutputLedger.Resolution.RECOVERED_AND_HANDLED));
+            button(left,169,panelWidth,tr("pending.lost"),()->choosePendingResolution(MachineOutputLedger.Resolution.CONFIRMED_LOST));
+        }
         button(left, 193, panelWidth, tr("back"), () -> {
             selectedPendingOutput = null; pendingResolution = null; toolPage = ToolPage.PENDING_LIST; rebuild();
         });
@@ -301,6 +309,22 @@ public final class ValleyScreen extends Screen {
     private void choosePendingResolution(MachineOutputLedger.Resolution reason) {
         if (!PendingOutputReview.manualResolution(reason)) { error("pending.error_changed"); return; }
         pendingResolution = reason; toolPage = ToolPage.PENDING_CONFIRM; rebuild();
+    }
+
+    private void pendingShipmentConfirmation() {
+        if (selectedPendingOutput==null || selectedPendingOutput.feature()!=Feature.PRESERVES) {
+            toolPage=ToolPage.PENDING_LIST; pendingOutputList(); return;
+        }
+        text(55,tr("pending.ship")); text(78,tr("pending.ship_inventory"));
+        text(99,tr("pending.ship_ledger")); text(123,tr("pending.ship_stop"));
+        Button cancel=button(left,145,panelWidth,tr("pending.cancel"),()->{ toolPage=ToolPage.PENDING_DETAIL; rebuild(); });
+        button(left,193,panelWidth,tr("pending.ship_confirm"),()->{
+            PendingMachineOutput current=runtime.pendingMachineOutputs().stream().filter(p->p.id().equals(selectedPendingOutput.id())).findFirst().orElse(null);
+            if (!selectedPendingOutput.equals(current)) { error("pending.error_changed"); return; }
+            String id=selectedPendingOutput.id(); onClose();
+            if (!runtime.recoverPendingShip(id) && Minecraft.getInstance().screen==null) Minecraft.getInstance().setScreen(this);
+        });
+        setInitialFocus(cancel);
     }
 
     private void pendingOutputConfirmation() {

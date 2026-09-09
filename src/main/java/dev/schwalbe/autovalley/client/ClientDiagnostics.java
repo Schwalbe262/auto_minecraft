@@ -69,6 +69,7 @@ public final class ClientDiagnostics {
         report.put("status",runtime.status());
         report.put("navigation",runtime.navigationReport());
         report.put("storageSurvey",runtime.storageSurveyReport());
+        report.put("pendingShipment",runtime.pendingShipmentReport());
         report.put("screenClass",mc.screen == null ? null : mc.screen.getClass().getName());
         report.put("screenTitle",mc.screen == null ? null : mc.screen.getTitle().getString());
         if (connected) {
