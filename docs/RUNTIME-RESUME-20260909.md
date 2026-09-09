@@ -476,3 +476,16 @@ repeat-race acceptance remain pending. The old failed ticket and its inventory
 fence have not been cleared or relabeled as successful. Recovering the borrowed
 hotbar item, then normally restarting the same instance, is a separate operation;
 extended all-feature stability is not implied by the detached test result.
+
+The bounded read-only trace records one continuous running interval from
+02:45:40.414 UTC through the last running sample at 03:29:28.683 UTC:
+**43 minutes 48.269 seconds**. The first paused/fenced sample is 03:29:29.682.
+The last wine observation without a pending action is 03:28:52.662; consolidation
+ticket 1502 begins at 03:28:54.661 with 124 members remaining. No progress after
+that point is inferred from observer uptime.
+
+Four actual sleeping intervals preceded the observed automatic day advances
+468 to 469, 469 to 470, 470 to 471 and 471 to 472. Later day advances occurred
+while running was false and are not counted as automation acceptance. This
+trace shows continuous engine execution, but cannot independently prove that
+no person interacted with the game during the interval.
