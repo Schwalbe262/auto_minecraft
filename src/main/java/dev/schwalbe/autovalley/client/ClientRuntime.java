@@ -32,6 +32,8 @@ public final class ClientRuntime {
     private Context context=new Context(world,actions,navigator,profile);
     private String profileKey, connectionKey;
     private String persistenceError;
+    private ProfileStore.Diagnostic persistenceDiagnostic;
+    private Throwable persistenceFailureCause;
     private Connection connection;
     private volatile boolean attackFence;
     private long attackFenceUntil;
@@ -194,7 +196,16 @@ public final class ClientRuntime {
         if (profileKey==null) throw new IllegalStateException("게임에 접속한 뒤 설정하세요.");
         if (persistenceError!=null) throw new IllegalStateException(persistenceError);
         try { store.save(profileKey,profile); savedScheduleHash=scheduleHash(); }
-        catch (IOException | RuntimeException e) { throw new IllegalStateException("설정을 저장하지 못했습니다. 기존 파일은 보존됩니다.",e); }
+        catch (IOException | RuntimeException e) {
+            // Retain the original exception in RAM for exact diagnosis. Public
+            // status/logs contain only the stage and class, never profile data.
+            persistenceFailureCause=e;persistenceDiagnostic=store.lastDiagnostic();
+            String stage=persistenceDiagnostic==null ? "UNKNOWN" : persistenceDiagnostic.stage().name();
+            String failureClass=persistenceDiagnostic==null ? e.getClass().getSimpleName() : persistenceDiagnostic.exceptionClass();
+            int attempts=persistenceDiagnostic==null ? 1 : persistenceDiagnostic.attempts();
+            LogUtils.getLogger().warn("Auto Valley profile persistence failed at {} after {} attempt(s): {}",stage,attempts,failureClass);
+            throw new IllegalStateException("설정을 저장하지 못했습니다 ("+stage+" / "+failureClass+"). 저장 오류를 확인한 뒤 다시 시도하세요.",e);
+        }
     }
     public boolean importWorkDefinitions() {
         if(running() || recording() || actions.busy() || profileKey==null || persistenceError!=null || actions.startRejection()!=null) {

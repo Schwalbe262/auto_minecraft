@@ -777,3 +777,37 @@ or unverified money increase. The engine continued into preserves service.
 This accepts the recovered production/storage sequence on the new artifact;
 the observed successful consolidations alone do not prove which internal receipt
 branch each used. Multi-hour uninterrupted stability is still pending.
+
+### Profile checkpoint failure and bounded persistence retries
+
+At approximately 06:34:17 UTC, the next preserves pass stopped with 124 preserves
+in inventory. Native ticket 381 retained a successful server interaction, but
+the profile checkpoint failed and the ledger rolled back to
+`AWAITING_MACHINE_CONFIRMATION`. This is a persistence failure, not evidence of
+a failed machine click. No native inventory/action fence was present. The old
+client discarded the original I/O cause, so a Windows sharing violation is only
+a possibility, not an established diagnosis.
+
+A read-only detached validation passed with 712 POIs, 539 scheduled entries,
+one pending output and 64 history entries. The profile was well below its size
+limit. At 06:49:54 UTC one explicitly scoped invocation of the existing store's
+normal save succeeded. The original error latch and pending output were left
+unchanged. At 06:50:42 a fresh read-only comparison proved the saved profile
+equal to the live profile. No action was repeated, no output phase was promoted,
+and no successful transfer or recovery was inferred from the inventory count.
+
+The persistence fix serializes and writes once, then permits at most two shared
+additional attempts across backup copy, atomic backup replacement and atomic
+primary replacement, with at most 20 ms of requested delay. Validation,
+serialization, size errors and structural filesystem errors are not retried.
+The old non-atomic fallback is removed. Temporary cleanup failure after a
+successful commit is diagnostic only; it no longer reports a failed checkpoint.
+Failure stage, exception class and original cause are retained without logging
+profile contents. Ledger and automation start guards are unchanged.
+
+All **1,678 tests / 125 suites** passed, zero failures, errors or skips, including
+nine isolated persistence fault-injection tests. Artifact SHA256:
+`1807DE7F1A68E8841C7DF73682B0D4324DFE59D906F2A80E9A00C0B305FF6746`.
+Installation, actual shipment of the retained preserves and renewed continuous
+testing are still pending. The paused observer's elapsed time is not continuous
+automation uptime.

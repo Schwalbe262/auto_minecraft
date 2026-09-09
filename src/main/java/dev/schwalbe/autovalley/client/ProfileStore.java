@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import dev.schwalbe.autovalley.core.*;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.*;
@@ -12,7 +13,37 @@ import java.util.*;
 public final class ProfileStore {
     private static final Gson GSON=new GsonBuilder().setPrettyPrinting().create();
     private final Path directory;
-    public ProfileStore(Path directory) { this.directory=directory; }
+    private final FileOperations files;
+    private final RetryPause retryPause;
+    private Diagnostic lastDiagnostic;
+    public enum Stage { VALIDATE, SERIALIZE, SIZE, DIRECTORY, TEMP_CREATE, TEMP_WRITE, BACKUP_COPY, BACKUP_REPLACE, REPLACE, CLEANUP }
+    public record Diagnostic(Stage stage,String exceptionClass,int attempts,boolean committed) { }
+    public static final class Failure extends IOException {
+        private final Stage stage;
+        private final int attempts;
+        Failure(Stage stage,int attempts,IOException cause) {
+            super("Profile persistence " + stage + " failed (" + cause.getClass().getSimpleName() + ")",cause);
+            this.stage=stage;this.attempts=attempts;
+        }
+        public Stage stage() { return stage; }
+        public int attempts() { return attempts; }
+    }
+    interface FileOperations {
+        default void copy(Path source,Path target) throws IOException { Files.copy(source,target,StandardCopyOption.REPLACE_EXISTING); }
+        default void replace(Path source,Path target) throws IOException {
+            Files.move(source,target,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
+        }
+        default boolean deleteIfExists(Path path) throws IOException { return Files.deleteIfExists(path); }
+    }
+    @FunctionalInterface interface RetryPause { void pause(long millis) throws InterruptedException; }
+    @FunctionalInterface private interface IoOperation { void run() throws IOException; }
+    private static final class RetryBudget { int retries; }
+    public ProfileStore(Path directory) { this(directory,new FileOperations() { },Thread::sleep); }
+    ProfileStore(Path directory,FileOperations files,RetryPause retryPause) {
+        this.directory=Objects.requireNonNull(directory);this.files=Objects.requireNonNull(files);this.retryPause=Objects.requireNonNull(retryPause);
+    }
+    /** No profile contents or filesystem paths are included in this summary. */
+    public Diagnostic lastDiagnostic() { return lastDiagnostic; }
     public static String key(String identity) {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(identity.getBytes(StandardCharsets.UTF_8))).substring(0,24); }
         catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
@@ -28,16 +59,92 @@ public final class ProfileStore {
         } catch (RuntimeException e) { throw new IOException("Profile is invalid; original file has been preserved",e); }
     }
     public void save(String key,Profile profile) throws IOException {
-        validate(profile);
-        Files.createDirectories(directory);
-        Path file=path(key), temp=Files.createTempFile(directory,key,".tmp");
+        lastDiagnostic=null;
+        try { validate(profile); }
+        catch (RuntimeException failure) { diagnostic(Stage.VALIDATE,failure,1,false);throw failure; }
+        Path file=path(key);
+        final byte[] serialized;
+        try { serialized=GSON.toJson(profile).getBytes(StandardCharsets.UTF_8); }
+        catch (RuntimeException failure) { diagnostic(Stage.SERIALIZE,failure,1,false);throw failure; }
+        if (serialized.length>2_000_000) throw failure(Stage.SIZE,new IOException("Profile is too large; previous file preserved"),1);
+        runOnce(Stage.DIRECTORY,() -> Files.createDirectories(directory));
+        Path temp=createTemp(key),backupTemp=null;
+        boolean committed=false;
+        Throwable primary=null;
+        RetryBudget budget=new RetryBudget();
         try {
-            Files.writeString(temp,GSON.toJson(profile),StandardCharsets.UTF_8);
-            if (Files.size(temp)>2_000_000) throw new IOException("Profile is too large; previous file preserved");
-            if (Files.exists(file)) Files.copy(file,directory.resolve(key+".json.bak"),StandardCopyOption.REPLACE_EXISTING);
-            try { Files.move(temp,file,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING); }
-            catch (AtomicMoveNotSupportedException e) { Files.move(temp,file,StandardCopyOption.REPLACE_EXISTING); }
-        } finally { Files.deleteIfExists(temp); }
+            // Serialize/write once. Every retry moves these same bytes; it never
+            // recaptures a possibly changed live checkpoint or repeats a game action.
+            runOnce(Stage.TEMP_WRITE,() -> Files.write(temp,serialized));
+            if (Files.exists(file)) {
+                backupTemp=createTemp(key+".bak");
+                Path preparedBackup=backupTemp;
+                retry(Stage.BACKUP_COPY,() -> files.copy(file,preparedBackup),budget);
+                retry(Stage.BACKUP_REPLACE,() -> files.replace(preparedBackup,directory.resolve(key+".json.bak")),budget);
+            } else if (!Files.notExists(file)) {
+                throw failure(Stage.BACKUP_COPY,new AccessDeniedException("Profile existence is unknown"),1);
+            }
+            // No non-atomic fallback: a refused replacement cannot destroy the
+            // original, and the previous contents have a complete atomic backup.
+            retry(Stage.REPLACE,() -> files.replace(temp,file),budget);
+            committed=true;
+        } catch (IOException | RuntimeException failure) {
+            primary=failure;throw failure;
+        } finally {
+            cleanup(temp,committed,primary);
+            if (backupTemp!=null) cleanup(backupTemp,committed,primary);
+        }
+    }
+    private Path createTemp(String prefix) throws IOException {
+        try { return Files.createTempFile(directory,prefix,".tmp"); }
+        catch (IOException failure) { throw failure(Stage.TEMP_CREATE,failure,1); }
+        catch (RuntimeException failure) { diagnostic(Stage.TEMP_CREATE,failure,1,false);throw failure; }
+    }
+    private void runOnce(Stage stage,IoOperation operation) throws IOException {
+        try { operation.run(); }
+        catch (IOException failure) { throw failure(stage,failure,1); }
+        catch (RuntimeException failure) { diagnostic(stage,failure,1,false);throw failure; }
+    }
+    private void retry(Stage stage,IoOperation operation,RetryBudget budget) throws IOException {
+        for (int attempt=1;;attempt++) {
+            try { operation.run();return; }
+            catch (IOException failure) {
+                // Two additional attempts are shared by ALL backup/replacement
+                // stages of this save, with at most 20 ms of requested delay.
+                if (!potentiallyTransient(failure) || budget.retries>=2 || Thread.currentThread().isInterrupted())
+                    throw failure(stage,failure,attempt);
+                budget.retries++;
+                try { retryPause.pause(10); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    InterruptedIOException stopped=new InterruptedIOException("Profile persistence retry interrupted");
+                    stopped.initCause(interrupted);stopped.addSuppressed(failure);
+                    throw failure(stage,stopped,attempt);
+                }
+            } catch (RuntimeException failure) { diagnostic(stage,failure,attempt,false);throw failure; }
+        }
+    }
+    private static boolean potentiallyTransient(IOException failure) {
+        return failure instanceof FileSystemException && !(failure instanceof AtomicMoveNotSupportedException)
+            && !(failure instanceof NoSuchFileException) && !(failure instanceof FileAlreadyExistsException)
+            && !(failure instanceof DirectoryNotEmptyException) && !(failure instanceof NotDirectoryException);
+    }
+    private Failure failure(Stage stage,IOException cause,int attempts) {
+        diagnostic(stage,cause,attempts,false);return new Failure(stage,attempts,cause);
+    }
+    private void diagnostic(Stage stage,Throwable cause,int attempts,boolean committed) {
+        lastDiagnostic=new Diagnostic(stage,cause.getClass().getSimpleName(),attempts,committed);
+    }
+    private void cleanup(Path path,boolean committed,Throwable primary) {
+        try { files.deleteIfExists(path); }
+        catch (IOException | RuntimeException cleanupFailure) {
+            if (primary!=null) primary.addSuppressed(cleanupFailure);
+            else diagnostic(Stage.CLEANUP,cleanupFailure,1,committed);
+            // A cleanup problem after successful atomic replacement is not a
+            // failed checkpoint. Keep only its bounded, content-free diagnostic.
+            System.getLogger(ProfileStore.class.getName()).log(System.Logger.Level.WARNING,
+                "Profile temporary cleanup failed: " + cleanupFailure.getClass().getSimpleName() + "; committed=" + committed);
+        }
     }
     private Path path(String key) {
         if (!key.matches("[a-f0-9]{24}")) throw new IllegalArgumentException("Invalid profile key");
