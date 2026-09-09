@@ -323,3 +323,17 @@ rejection. The full offline build passed **1,566 tests / 115 suites**, with zero
 failures, errors or skips. Artifact SHA-256:
 `6E8BDB5E74C05018AC3836F1E1F88B959CC0732098FBEF25FF91E09D559AAC74`.
 Installation and native post-fix acceptance are still pending at this checkpoint.
+
+### Guarded live custody recovery and installation
+
+Before restarting, a one-use recovery checked the retained outward-SWAP full
+reply, exact unchanged partners, the independently proven extra wine and all
+46 menu slots. With automation OFF, no pending or in-flight action and an empty
+cursor, it sent only the inverse inventory SWAP. A new full server reply proved
+the exact inverse across all 46 slots, including the restored **62 torches** and
+the separately received wine. One click was sent; no merge was retried, no old
+outcome was changed and no acknowledgement/fence was fabricated or cleared.
+
+The corrected 6E8BDB artifact was then installed through a normal same-instance
+restart, retaining the previous JAR, profile and private failure/recovery evidence.
+Post-install connection and resumed-batch acceptance remain to be observed.
