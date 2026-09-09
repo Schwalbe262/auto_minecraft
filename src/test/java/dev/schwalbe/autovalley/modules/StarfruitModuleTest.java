@@ -15,10 +15,11 @@ class StarfruitModuleTest {
         f.day+=24000;assertTrue(f.module.hasNearbyWork(f.context));
         assertEquals(1,f.clicked().size());assertEquals(1,f.stored);
     }
-    @Test void nearbyPassPicksItsSevenFruitCohortThenStoresOnceAndResumesTheExactOriginalInstance() {
-        Fixture f=new Fixture();List<Pos> cohort=List.of(FRUIT,new Pos(3,1,1),new Pos(3,1,-1),new Pos(4,1,0),
-            new Pos(4,1,1),new Pos(4,1,-1),new Pos(5,1,0));
-        f.patch(cohort.toArray(Pos[]::new));cohort.forEach(p->f.fruit(p,7));f.travelYield=true;
+    @Test void nearbyTriggerPicksAllSevenRegisteredRipeFruitBeyondItsInitialRadiusThenStoresAndResumesTheExactOrigin() {
+        Fixture f=new Fixture();List<Pos> cohort=List.of(FRUIT,new Pos(4,1,0),new Pos(5,1,0),new Pos(6,1,0),
+            new Pos(7,1,0),new Pos(8,1,0),new Pos(9,1,0));
+        assertTrue(cohort.stream().anyMatch(p->f.player().distance(p)>6));
+        f.patch(cohort.toArray(Pos[]::new));cohort.forEach(p->f.fruit(p,7));f.travelYield=true;f.followArrivals=true;
         TravelJob original=new TravelJob(Feature.WINE);AutomationEngine engine=f.engine(original);
         f.engineTick(engine);f.engineTick(engine);assertEquals(2,original.ticks);
         int resets=original.resets;
@@ -28,6 +29,8 @@ class StarfruitModuleTest {
         assertEquals(List.of(7),f.fruitUsesAtStoreOpen);assertEquals(1,f.storeOpens());
         assertEquals(1,f.submitted.stream().filter(Action.QuickMove.class::isInstance).count());
         assertEquals(1,f.submitted.stream().filter(Action.CloseContainer.class::isInstance).count());
+        cohort.forEach(p->f.fruit(p,7));f.x=.5;
+        assertFalse(f.module.hasNearbyWork(f.context),"Every confirmed member remains excluded even if it appears ripe again");
         for(int i=0;i<1100;i++)f.engineTick(engine);
         assertEquals(7,f.clicked().size());assertTrue(original.ticks>1000);assertTrue(engine.running());
     }
@@ -136,12 +139,15 @@ class StarfruitModuleTest {
             assertTrue(f.module.hasNearbyWork(c),"change="+change);assertTrue(f.submitted.isEmpty());
         }
     }
-    @Test void starfruitOneShotCompletionDoesNotClaimTheWholePatchWasExhausted() {
-        Fixture f=new Fixture();Pos other=new Pos(50,1,0);f.patch(FRUIT,other);f.fruit(other,7);
+    @Test void starfruitOneShotVisitsTheActivatedPatchButDoesNotClaimUnreachableFruitWasHarvested() {
+        Fixture f=new Fixture();Pos other=new Pos(8,1,0),unreachable=new Pos(50,1,0);
+        f.patch(FRUIT,other,unreachable);f.fruit(other,7);f.fruit(unreachable,7);f.followArrivals=true;
+        f.targetNavigation.put(unreachable,Navigation.Result.BLOCKED);
         AutomationEngine engine=new AutomationEngine(List.of(f.module));engine.startOnce(f.context,Feature.STARFRUIT);
         for(int i=0;i<100&&engine.running();i++)f.engineTick(engine);
-        assertEquals(AutomationEngine.State.COMPLETE,engine.state());assertEquals(7,f.blocks.get(other).number("age",-1));
-        assertFalse(engine.status().contains("no eligible work remains"));assertTrue(engine.status().contains("nearby fruit/storage pass"));
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state());assertEquals(List.of(FRUIT,other),f.clicked());
+        assertEquals(2,f.stored);assertEquals(1,f.storeOpens());assertEquals(7,f.blocks.get(unreachable).number("age",-1));
+        assertFalse(engine.status().contains("no eligible work remains"));assertTrue(engine.status().contains("registered patch fruit/storage pass"));
     }
     @Test void failedSideDepositDoesNotForceSleepingOrPauseOtherSafeWork() {
         Fixture f=new Fixture();f.travelYield=true;f.day=13000;f.profile.enabled.put(Feature.SLEEP,true);
@@ -230,23 +236,25 @@ class StarfruitModuleTest {
         assertEquals(WorkResult.State.IDLE,f.step().state());assertTrue(f.submitted.isEmpty());
     }
 
-    @Test void nearbyCohortNeverStartsAWholePatchPatrol() {
-        Fixture f=new Fixture();Pos other=new Pos(5,1,0);f.patch(FRUIT,other,new Pos(200,1,0));f.fruit(other,7);
+    @Test void activatedPatchNeverScansUnknownChunksOrExpandsToUnregisteredForestFruit() {
+        Fixture f=new Fixture();Pos other=new Pos(5,1,0),unloaded=new Pos(200,1,0),forest=new Pos(199,1,0);
+        f.patch(FRUIT,other,unloaded);f.fruit(other,7);f.fruit(unloaded,7);f.fruit(forest,7);f.unloaded.add(unloaded);
         f.run();assertEquals(List.of(FRUIT,other),f.clicked());assertTrue(f.travel.stream().allMatch(p -> p.equals(FRUIT)||p.equals(other)||p.equals(STORE)));
-        assertEquals(0,f.blocks.get(other).number("age",-1));assertTrue(f.blockReads.stream().noneMatch(p -> p.x()==200));
+        assertEquals(0,f.blocks.get(other).number("age",-1));assertFalse(f.blockReads.contains(unloaded));assertFalse(f.blockReads.contains(forest));
+        assertEquals(0,f.scans);
         assertEquals(2,f.stored);assertEquals(List.of(2),f.fruitUsesAtStoreOpen);
     }
 
-    @Test void anInitialCohortCannotExpandToNewlyNearbyRipeLoadedOrOtherPatchFruit() {
+    @Test void activatedPatchIncludesItsInitiallyDistantFruitButNotNewlyRipeLoadedOrOtherPatchFruit() {
         Fixture f=new Fixture();Pos included=new Pos(5,1,0),far=new Pos(8,1,0),unripe=new Pos(4,1,1),
             unloaded=new Pos(4,1,-1),otherPatch=new Pos(5,1,1);
         f.patch(FRUIT,included,far,unripe,unloaded);f.fruit(included,7);f.fruit(far,7);f.fruit(unripe,6);
         f.fruit(unloaded,7);f.unloaded.add(unloaded);f.fruit(otherPatch,7);
         f.profile.fruitPatches=List.of(f.profile.fruitPatches.get(0),new FruitPatch("other","fruit",List.of(otherPatch)));
-        assertEquals(WorkResult.State.BUSY,f.step().state());
+        f.followArrivals=true;assertEquals(WorkResult.State.BUSY,f.step().state());
         f.x=3.5;f.fruit(unripe,7);f.unloaded.clear();
-        f.run();assertEquals(List.of(FRUIT,included),f.clicked());assertEquals(2,f.stored);assertEquals(List.of(2),f.fruitUsesAtStoreOpen);
-        for(Pos excluded:List.of(far,unripe,unloaded,otherPatch)) {
+        f.run();assertEquals(List.of(FRUIT,included,far),f.clicked());assertEquals(3,f.stored);assertEquals(List.of(3),f.fruitUsesAtStoreOpen);
+        for(Pos excluded:List.of(unripe,unloaded,otherPatch)) {
             assertEquals(7,f.blocks.get(excluded).number("age",-1));assertFalse(f.travel.contains(excluded));
         }
         assertEquals(0,f.scans);
@@ -261,13 +269,14 @@ class StarfruitModuleTest {
         f.targetNavigation.clear();f.module.reset();assertFalse(f.module.hasNearbyWork(f.context));
     }
 
-    @Test void laterCohortMembersAreRecheckedForCurrentMaturityLoadAndLocalReach() {
-        for(String change:List.of("immature","unloaded","outOfReach")) {
-            Fixture f=new Fixture();Pos second=new Pos(5,1,0);f.patch(FRUIT,second);f.fruit(second,7);
+    @Test void laterPatchMembersAreRecheckedForCurrentMaturityLoadAndExactBlockIdentity() {
+        for(String change:List.of("immature","unloaded","wrongBlock","wrongPosition")) {
+            Fixture f=new Fixture();Pos second=new Pos(8,1,0);f.patch(FRUIT,second);f.fruit(second,7);f.followArrivals=true;
             f.untilFruit();f.complete(true);
             if(change.equals("immature"))f.fruit(second,6);
             if(change.equals("unloaded"))f.unloaded.add(second);
-            if(change.equals("outOfReach"))f.x=100;
+            if(change.equals("wrongBlock"))f.blocks.put(second,new BlockData(second,"minecraft:air",Map.of()));
+            if(change.equals("wrongPosition"))f.blocks.put(second,new BlockData(second.offset(1,0,0),FruitRules.BLOCK,Map.of("age","7")));
             f.run();assertEquals(List.of(FRUIT),f.clicked(),change);assertEquals(1,f.stored);assertEquals(1,f.storeOpens());
             assertTrue(f.profile.pendingMachineOutputs.isEmpty());
         }
@@ -329,12 +338,44 @@ class StarfruitModuleTest {
         assertEquals(7,f.blocks.get(second).number("age",-1));assertEquals(1,ModuleSupport.count(f.context,item->item.is(FruitRules.ITEM)));
     }
 
-    @Test void aTargetWhichLeavesLocalReachOrBecomesImmatureIsNotChasedOrClicked() {
-        for (boolean immature:List.of(false,true)) {
-            Fixture f=new Fixture();f.step();
-            if (immature) f.fruit(FRUIT,6);else f.x=100;
-            assertEquals(WorkResult.State.IDLE,f.step().state());assertTrue(f.clicked().isEmpty());
-            assertTrue(f.travel.stream().allMatch(FRUIT::equals));
+    @Test void walkingAroundTheActivatedTreeDoesNotDiscardItsOppositeRegisteredRipeFruit() {
+        Fixture f=new Fixture();Pos right=new Pos(5,1,0),left=new Pos(-4,1,0);
+        f.patch(FRUIT,right,left);f.fruit(right,7);f.fruit(left,7);f.followArrivals=true;
+        assertTrue(f.player().distance(left)<6);f.untilFruit();f.complete(true);f.untilFruit();
+        assertEquals(List.of(FRUIT,right),f.clicked());assertTrue(f.player().distance(left)>6);
+        f.complete(true);f.run();assertEquals(List.of(FRUIT,right,left),f.clicked());
+        assertEquals(3,f.stored);assertEquals(List.of(3),f.fruitUsesAtStoreOpen);assertEquals(1,f.storeOpens());
+    }
+
+    @Test void anActivatedTargetWhichBecomesImmatureBeforeUseIsStillSkipped() {
+        Fixture f=new Fixture();f.step();f.fruit(FRUIT,6);
+        assertEquals(WorkResult.State.IDLE,f.step().state());assertTrue(f.clicked().isEmpty());
+        assertTrue(f.travel.stream().allMatch(FRUIT::equals));
+    }
+
+    @Test void actualInteractionReachAndEachDistantApproachRemainBoundedBeforeOneFinalDeposit() {
+        for(boolean missingReach:List.of(false,true)) {
+            Fixture f=new Fixture();Pos second=new Pos(8,1,0),third=new Pos(9,1,0);
+            f.patch(FRUIT,second,third);f.fruit(second,7);f.fruit(third,7);f.followArrivals=true;
+            f.targetNavigation.put(FRUIT,Navigation.Result.MOVING);
+            if(missingReach)f.uninteractable.add(second);else f.targetNavigation.put(second,Navigation.Result.MOVING);
+            f.run();assertEquals(List.of(third),f.clicked());assertEquals(1,f.stored);assertEquals(1,f.storeOpens());
+            assertEquals(100,f.travel.stream().filter(FRUIT::equals).count());
+            assertTrue(f.travel.stream().anyMatch(second::equals));assertTrue(f.now<=220);
+            assertEquals(7,f.blocks.get(FRUIT).number("age",-1));assertEquals(7,f.blocks.get(second).number("age",-1));
+            int actions=f.submitted.size();f.module.reset();f.step();assertEquals(actions,f.submitted.size());
+        }
+    }
+
+    @Test void changingDayFinishesOnlyAnAlreadySentFruitAndDoesNotStartTheRemainingPatch() {
+        for(String phase:List.of("beforeSelect","selectPending","fruitPending")) {
+            Fixture f=new Fixture();Pos second=new Pos(8,1,0);f.patch(FRUIT,second);f.fruit(second,7);f.followArrivals=true;
+            boolean fruitSent=phase.equals("fruitPending");
+            if(fruitSent)f.untilFruit();else if(phase.equals("selectPending"))f.untilAction(Action.SelectHotbar.class);else f.step();
+            f.day+=24000;
+            if(!phase.equals("beforeSelect"))f.complete(true);
+            f.run();assertEquals(fruitSent?List.of(FRUIT):List.of(),f.clicked(),phase);assertEquals(fruitSent?1:0,f.stored);
+            assertEquals(7,f.blocks.get(second).number("age",-1));assertEquals(fruitSent?1:0,f.storeOpens());
         }
     }
 
@@ -519,7 +560,7 @@ class StarfruitModuleTest {
     private static final class Fixture implements WorldAccess,ActionPort,Navigation {
         final Profile profile=new Profile();final StarfruitModule module=new StarfruitModule();
         final Context context=new Context(this,this,this,profile);
-        final Map<Pos,BlockData> blocks=new HashMap<>();final Set<Pos> unloaded=new HashSet<>();
+        final Map<Pos,BlockData> blocks=new HashMap<>();final Set<Pos> unloaded=new HashSet<>(),uninteractable=new HashSet<>();
         final Map<Pos,Navigation.Result> targetNavigation=new HashMap<>();
         final List<Pos> blockReads=new ArrayList<>(),travel=new ArrayList<>();
         final List<ItemSlot> inventory=new ArrayList<>();final List<Action> submitted=new ArrayList<>();
@@ -527,7 +568,7 @@ class StarfruitModuleTest {
         final Map<Long,ActionOutcome> outcomes=new HashMap<>();
         final ItemData tool=new ItemData("minecraft:iron_hoe",1,0,null,true,100),food=new ItemData("farmersdelight:fruit_salad",57,0,null,false,0);
         long now,day=5000,current;int selected,stored,stops,resets,scans,sleepUses;
-        double x=.5;boolean open,externalBusy,changeAge=true,deliver=true,travelYield,sleeping;
+        double x=.5;boolean open,externalBusy,changeAge=true,deliver=true,travelYield,sleeping,followArrivals;
         ItemData cursor=ItemData.EMPTY;String actionFence;
         Navigation.Result navigationResult=Navigation.Result.ARRIVED;
         WorkResult result=WorkResult.busy("initial");
@@ -586,7 +627,8 @@ class StarfruitModuleTest {
             for(ItemSlot slot:inventory)slots.add(new ItemSlot(slot.inventoryIndex()+27,slot.inventoryIndex(),true,slot.item()));
             return new MenuData(12,1,slots,cursor,true);
         }
-        public boolean mayPlace(int slot,ItemData item){return slot>=0&&slot<27;}public boolean canInteract(Pos pos,double reach){return true;}
+        public boolean mayPlace(int slot,ItemData item){return slot>=0&&slot<27;}
+        public boolean canInteract(Pos pos,double reach){return !uninteractable.contains(pos)&&(!followArrivals||player().distance(pos)<=reach);}
         public boolean busy(){return externalBusy||current>0&&!outcomes.get(current).done();}
         public String pauseReason(){return actionFence;}
         public long submit(Action action){assertFalse(busy());assertNull(SafetyPolicy.rejection(action,context));
@@ -595,6 +637,12 @@ class StarfruitModuleTest {
         public ActionOutcome outcome(long ticket){return outcomes.get(ticket);}
         public void move(Movement movement){}public void stopMovement(){stops++;}public void cancel(){}
         public boolean canYieldTravel(Context c){return travelYield;}
-        public Result moveTo(Pos target,double reach,Context c){travel.add(target);return targetNavigation.getOrDefault(target,target.equals(TravelJob.DESTINATION)?Result.MOVING:navigationResult);}public void reset(){resets++;}
+        public Result moveTo(Pos target,double reach,Context c){
+            travel.add(target);Result result=targetNavigation.getOrDefault(target,target.equals(TravelJob.DESTINATION)?Result.MOVING:navigationResult);
+            // Detached navigation arrival, never a production position or velocity write.
+            if(followArrivals&&result==Result.ARRIVED)x=target.x()+.5;
+            return result;
+        }
+        public void reset(){resets++;}
     }
 }

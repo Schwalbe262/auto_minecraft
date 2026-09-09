@@ -245,7 +245,7 @@ public final class AutomationEngine {
         switch (result.state()) {
             case BUSY -> { state=State.RUNNING; status="One-shot " + oneShotFeature + ": " + result.message(); }
             case IDLE -> stop(c,State.COMPLETE,"One-shot " + oneShotFeature
-                + (oneShotFeature==Feature.STARFRUIT ? " complete: nearby fruit/storage pass finished; no whole-tree patrol" : " complete: no eligible work remains")
+                + (oneShotFeature==Feature.STARFRUIT ? " complete: registered patch fruit/storage pass finished; inaccessible fruit may remain" : " complete: no eligible work remains")
                 + (result.message()==null || result.message().isBlank() ? "" : " — "+result.message()));
             case BLOCKED -> stop(c,State.PAUSED,"One-shot " + oneShotFeature + " paused: " + result.message());
             case DEFERRED -> { if (defer(c,active,result)) { state=State.WAITING; status=deferred.get(active).message(); } }
