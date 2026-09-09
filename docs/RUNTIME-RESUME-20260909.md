@@ -619,3 +619,29 @@ The module rechecks its original cohort against the current six-block limit and
 does not record a removed out-of-range member as a failed target. The precise
 decision tick was not captured, so this is a supported explanation, not an exact
 historical proof or a reason to expand the opportunistic harvesting radius.
+
+### Combined artifact running again
+
+The combined `68B621...` artifact was installed after normal shutdown of the old
+client at 05:28:43 UTC. It connected automatically; continuous mode was confirmed
+at **05:30:10.890 UTC**. The latest loop has no inventory action fence.
+
+A two-minute high-rate ascent trace contained no outer-source-centering case, so
+it cannot be presented as native acceptance of that new branch. Its first ascent
+landed on the upper floor but timed out while waiting for a quiet centered landing
+at tick 3365, 41 ticks after launch. It is not counted as successful. Navigation
+then continued from the verified upper ground without relaunching that same edge;
+six subsequent edges each had one launch and reached grounded controller release,
+ultimately reaching the surface. The recovery worked, but the landing timeout
+remains an observed limitation for later tuning.
+
+Actual sleeping was observed at 05:33:28–05:33:32 UTC on day 478; day 479 then
+resumed automatically. Ancient fruit ripened by day 479 and inventory reached
+54. Native transfers 237 and 240 confirmed **52 + 2 fruit** into registered
+storage, with opens/closes 236/238 and 239/241. The subsequent shipping transfer
+243 confirmed **two pine tar**, with open 242 and close 244. These are retained
+server acknowledgements, not inferences from an idle HUD or a later money value.
+
+Multi-hour uninterrupted acceptance, completion of the remaining wine rack after
+its real cooldown, and a native occurrence of the new partial-feed branch remain
+pending. The current automation stays in continuous mode to continue those checks.
