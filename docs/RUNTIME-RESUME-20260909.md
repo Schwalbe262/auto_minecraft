@@ -652,3 +652,27 @@ confirmed 53 fruit, seed transfers 286 and 289 confirmed two each, and transfer
 292 returned the remaining 41 fruit. The menus closed normally. Thus the job
 resumed from temporary missing ingredients, produced/stored four seeds and
 returned unused input without a restart or manually changing its deadlines.
+
+### Day 480 continuous retry and crystal storage acceptance
+
+The same client stayed continuously ON through its next automatic sleep and
+day 480. Preserves service initially stopped approaching machine 123 after a
+PREPARE ascent-alignment timeout, without switching the entire engine OFF.
+Native shipping transfers 523 and 524 confirmed **64 + 58 preserves**. The
+engine performed other work, then retried the remaining machines. Transfer 842
+confirmed the final **22 preserves**, for **144 total**, with normal menu closes.
+This accepts automatic deferred-work recovery, not a failure-free first pass.
+
+The daily seed job again completed: input withdrawal 713 confirmed 41 ancient
+fruit, artisan receipts 716–719 succeeded, storage receipt 721 confirmed four
+seeds and 724 returned 29 unused fruit. Crystal-job artisan receipts 727–730
+succeeded and storage receipt 732 confirmed **three jade**, followed by close
+733. Its three registered machines were working again with next due day 485,
+consistent with the installed five-day recipe. One-second inventory samples
+did not capture every intermediate crystal count; the retained native transfer
+provides the deposit count rather than inferring three from that sparse trace.
+
+At 05:53 UTC the same continuous run was still ON, with no inventory action
+fence. The wine batch retained 112 pending machines while their actual production
+states were not yet all ready. No deadlines, inventory receipts or production
+states were manually changed to accelerate that wait.
