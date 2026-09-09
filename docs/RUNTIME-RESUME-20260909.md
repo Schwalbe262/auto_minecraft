@@ -604,3 +604,18 @@ registered-store transfer of one fruit (379), and normal open/close (378/380).
 This verifies a single-fruit pass, not yet multi-fruit cohort acceptance. Two
 other ripe targets were not used; their ephemeral skip/confirmation state is
 being inspected before restarting rather than inferred from one-second samples.
+
+On day 478 a subsequent nearby pass, without any source change, collected four
+fruit in sequence. Retained native use outcomes 381–384 succeeded; 385 opened the
+registered store, 386 confirmed one transfer of **four fruit**, and 387 closed it.
+The trace shows inventory 1, then 2, then 4 before that single deposit. The ripe
+unregistered fruit remained untouched. This accepts the finite multi-fruit pass,
+but does not by itself prove a suspended production/sleep origin was restored
+because this particular test used one-shot mode.
+
+The earlier one-fruit pass is consistent with its temporary approach position:
+the other two fruit were 6.606 and 6.020 blocks away in a post-use trace sample.
+The module rechecks its original cohort against the current six-block limit and
+does not record a removed out-of-range member as a failed target. The precise
+decision tick was not captured, so this is a supported explanation, not an exact
+historical proof or a reason to expand the opportunistic harvesting radius.
