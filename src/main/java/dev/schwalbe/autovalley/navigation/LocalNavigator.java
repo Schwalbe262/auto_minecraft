@@ -54,6 +54,10 @@ public final class LocalNavigator implements Navigation {
     private WorldAccess lastWorld;
     private DescentController descent;
     private GroundRecenterController groundRecenter;
+    private StairRecenterController stairRecenter;
+    private int stairRecoveryAttempts;
+    private int completedStairRecoveries;
+    private long stairRecoveryRetryAt=-1,stairRecoveryFailedAt=-1;
     private boolean recenterAttempted;
     private boolean interruptedDescent;
     private java.util.Map<String,Object> lastFailure=java.util.Map.of();
@@ -79,6 +83,10 @@ public final class LocalNavigator implements Navigation {
         report.put("descentHandoffs",descent==null ? 0 : descent.completedEdges());
         report.put("descentFlow",descent!=null && descent.flowing());
         report.put("recenterAnchor",groundRecenter==null ? null : groundRecenter.anchor());
+        report.put("stairRecenterAnchor",stairRecenter==null ? null : stairRecenter.anchor());
+        report.put("interruptedDescent",interruptedDescent);
+        report.put("stairRecoveryAttempts",stairRecoveryAttempts);
+        report.put("completedStairRecoveries",completedStairRecoveries);
         report.put("searchLimit",search==null ? 0 : search.nodeLimit());
         report.put("lastFailure",lastFailure);report.put("lastAscentFailure",lastAscentFailure);
         return java.util.Collections.unmodifiableMap(report);
@@ -94,7 +102,8 @@ public final class LocalNavigator implements Navigation {
                 || c.profile()!=requestProfile || c.session()!=requestSession || requestMode==null
                 || c.profile().navigationMode!=requestMode || !requestInteractions || loggingPath || !plantingTargets.isEmpty()
                 || !"FOLLOWING".equals(diagnostic) || !previousMoving || failureKind!=Failure.NONE || destination==null || domain==null
-                || loggingJump!=null || descent!=null || groundRecenter!=null || interruptedLanding || interruptedDescent || !interruptedJumps.isEmpty()
+                || loggingJump!=null || descent!=null || groundRecenter!=null || stairRecenter!=null || stairRecoveryRetryAt>=0
+                || interruptedLanding || interruptedDescent || !interruptedJumps.isEmpty()
                 || doorTicket>=0 || endpointSettleTick>=0 || search!=null || frontier!=null || frontierWait>=0
                 || nextIndex<=0 || nextIndex>=path.size()) return false;
             WorldAccess world=c.world();PlayerState player=world.player();MenuData menu=world.menu();
@@ -205,11 +214,27 @@ public final class LocalNavigator implements Navigation {
                 return blocked(actions,"중단된 벌목 오르기 뒤 실제 지면을 확인할 수 없습니다.");
             interruptedLanding=false;
         }
+        // A fresh actual-body proof, not the old path or a guessed grid height,
+        // owns a grounded recovery. Let it finish before checking the old latch.
+        if (stairRecenter!=null) return continueStairRecenter(context);
+        if (groundRecenter!=null) return continueGroundRecenter(context);
+        if (stairRecoveryRetryAt>=0) {
+            actions.stopMovement();previousMoving=false;diagnostic="STAIR_RECENTER_RETRY_WAIT";
+            if (world.tick()<stairRecoveryFailedAt) return blocked(actions,"계단 복구 대기 중 시간이 되돌아갔습니다.");
+            if (world.tick()<stairRecoveryRetryAt) return Result.MOVING;
+            stairRecoveryRetryAt=-1;recenterAttempted=false;
+            Result retried=beginGroundedRecovery(context,player,true);
+            if (retried!=null) return retried;
+            return blocked(actions,Failure.INVALID_START,"계단 복구 재시도에서 실제 발판과 조작 조건을 다시 확인할 수 없습니다.");
+        }
         if (interruptedDescent) {
             Pos landed=NavigationFeet.resolve(world,player);
             if (!player.onGround() || !world.canStand(landed) || !Double.isFinite(world.standingY(landed))
-                || Math.abs(player.y()-world.standingY(landed))>.10001)
+                || Math.abs(player.y()-world.standingY(landed))>.10001) {
+                Result recovered=beginGroundedRecovery(context,player,true);
+                if (recovered!=null) return recovered;
                 return blocked(actions,"중단된 하강의 안전한 착지가 아직 확인되지 않았습니다.");
+            }
             interruptedDescent=false;
         }
         // In flight, raw feet can occupy an unsupported cell. Only this controller
@@ -217,10 +242,18 @@ public final class LocalNavigator implements Navigation {
         // may finish the move before two grounded landing observations.
         if (loggingJump!=null) { diagnostic="STEP_UP";return continueLoggingJump(context); }
         if (descent!=null) return continueDescent(context);
-        if (groundRecenter!=null) return continueGroundRecenter(context);
         Pos walkingFeet = NavigationFeet.resolve(world,player);
         if (!domain.contains(walkingFeet)) return blocked(actions,Failure.INVALID_START,"현재 이동 요청의 안전 탐색 영역 밖입니다.");
         if (!world.loaded(target) && !domain.terrain()) return blocked(actions,Failure.UNLOADED,"목표 청크가 로드되지 않았습니다.");
+        // Also recover a half-tread origin after OFF/ON or a normal restart;
+        // starting A* above that actual pose would invent a full-height origin.
+        if (requestInteractions && domain.terrain() && path.isEmpty() && search==null
+            && Double.isFinite(world.standingY(walkingFeet))
+            && Math.abs(player.y()-world.standingY(walkingFeet))>.10001) {
+            Result recovered=beginGroundedRecovery(context,player,false);
+            if (recovered!=null) return recovered;
+            return blocked(actions,Failure.INVALID_START,"현재 계단 발판에서 안전하게 출발할 자세를 확인할 수 없습니다.");
+        }
         if (doorTicket >= 0) {
             actions.stopMovement();
             ActionOutcome outcome = actions.outcome(doorTicket);
@@ -536,6 +569,8 @@ public final class LocalNavigator implements Navigation {
             if (p!=null) evidence.put("player",java.util.Map.of("x",p.x(),"y",p.y(),"z",p.z(),"onGround",p.onGround()));
         }
         lastFailure=java.util.Collections.unmodifiableMap(evidence);
+        cancelStairRecenter();
+        stairRecoveryRetryAt=-1;
         cancelGroundRecenter();
         cancelDescent();
         cancelLoggingJump();
@@ -549,6 +584,8 @@ public final class LocalNavigator implements Navigation {
     }
 
     @Override public void reset() {
+        cancelStairRecenter();
+        stairRecoveryAttempts=0;stairRecoveryRetryAt=stairRecoveryFailedAt=-1;
         cancelGroundRecenter();recenterAttempted=false;
         cancelDescent();
         cancelLoggingJump();
@@ -567,6 +604,32 @@ public final class LocalNavigator implements Navigation {
         domain=null;requestProfile=null;requestSession=null;requestMode=null;requestInteractions=false;goal=TerrainPathSearch.Goal.INTERACTION;
         search=null;frontier=null;frontierWait=-1;rejectedFrontiers.clear();frontierAttempts=0;replans=0;requestNodes=0;
         failureKind=Failure.NONE;diagnostic="IDLE";
+    }
+
+    private Result beginGroundedRecovery(Context c,PlayerState player,boolean includeFlat) {
+        if (!requestInteractions || domain==null || !domain.terrain() || recenterAttempted || doorTicket>=0
+            || loggingJump!=null || descent!=null || interruptedLanding || !player.onGround()
+            || !Double.isFinite(player.x()) || !Double.isFinite(player.y()) || !Double.isFinite(player.z())
+            || !domain.contains(NavigationFeet.resolve(c.world(),player))
+            || c.actions().busy() || c.actions().pauseReason()!=null || c.world().menu()==null
+            || c.world().menu().container() || c.world().menu().carried()==null || !c.world().menu().carried().empty()) return null;
+        Pos flat=includeFlat ? recenterAnchor(c,player) : null;
+        Pos stair=NavigationFeet.resolve(c.world(),player);
+        boolean stairProof=flat==null && TerrainPathSearch.loadedStance(c.world(),stair)
+            && c.world().canStand(stair) && c.world().canRecenterOnStair(stair);
+        if (flat==null && !stairProof) return null;
+        // Retire only navigation's old route/failure. Native action receipts,
+        // uncertain inventory ownership and all module checkpoints stay intact.
+        c.actions().stopMovement();recenterAttempted=true;
+        path=List.of();search=null;frontier=null;frontierWait=-1;clearEndpointSettle();
+        rejectedEndpoints.clear();rejectedFrontiers.clear();frontierAttempts=0;replans=0;requestNodes=0;
+        failure="";failureKind=Failure.NONE;previousMoving=false;
+        if (flat!=null) {
+            groundRecenter=new GroundRecenterController(flat,c);
+            return continueGroundRecenter(c);
+        }
+        stairRecoveryAttempts++;stairRecenter=new StairRecenterController(stair,c);
+        return continueStairRecenter(c);
     }
 
     private Pos recenterAnchor(Context c,PlayerState player) {
@@ -593,6 +656,8 @@ public final class LocalNavigator implements Navigation {
         Result result=groundRecenter.tick(c);previousMoving=result==Result.MOVING;previousSprint=false;
         if (result==Result.BLOCKED) return blocked(c.actions(),Failure.INVALID_START,groundRecenter.failureReason());
         if (result==Result.ARRIVED) {
+            interruptedDescent=false;
+            recenterAttempted=false;stairRecoveryAttempts=0;
             groundRecenter=null;path=List.of();search=null;nextIndex=0;lastDistance=Double.POSITIVE_INFINITY;
             progressTick=c.world().tick();previousMoving=false;diagnostic="GROUND_RECENTER_COMPLETE";
         }
@@ -601,6 +666,33 @@ public final class LocalNavigator implements Navigation {
     }
     private void cancelGroundRecenter() {
         if (groundRecenter!=null) { groundRecenter.cancel();groundRecenter=null; }
+    }
+
+    private Result continueStairRecenter(Context c) {
+        diagnostic="STAIR_RECENTER";
+        Result result=stairRecenter.tick(c);previousMoving=result==Result.MOVING;previousSprint=false;
+        if (result==Result.BLOCKED) {
+            String reason=stairRecenter.failureReason();
+            if (stairRecoveryAttempts>=3) return blocked(c.actions(),Failure.INVALID_START,reason);
+            // A second bump during alignment must not become another permanent
+            // latch. Stop briefly, then demand a NEW complete native body proof
+            // and new quiet observations. No receipt/fence is reset or ignored.
+            cancelStairRecenter();previousMoving=false;
+            stairRecoveryFailedAt=c.world().tick();stairRecoveryRetryAt=stairRecoveryFailedAt+10;
+            diagnostic="STAIR_RECENTER_RETRY_WAIT";
+            return Result.MOVING;
+        }
+        if (result==Result.ARRIVED) {
+            stairRecenter=null;interruptedDescent=false;path=List.of();search=null;nextIndex=0;
+            completedStairRecoveries++;recenterAttempted=false;stairRecoveryAttempts=0;
+            lastDistance=Double.POSITIVE_INFINITY;progressTick=c.world().tick();previousMoving=false;
+            diagnostic="STAIR_RECENTER_COMPLETE";
+        }
+        return Result.MOVING;
+    }
+
+    private void cancelStairRecenter() {
+        if (stairRecenter!=null) { stairRecenter.cancel();stairRecenter=null; }
     }
 
     private Result continueLoggingJump(Context context) {

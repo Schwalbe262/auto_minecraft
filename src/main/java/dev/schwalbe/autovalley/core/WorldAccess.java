@@ -13,6 +13,8 @@ public interface WorldAccess {
     default boolean fullFlatSupport(Pos feet) { return false; }
     /** Current grounded body already overlaps this support; its entire inward sweep is natively safe. */
     default boolean canRecenterOnSupport(Pos feet) { return false; }
+    /** Current body already stands on this exact straight stair; ordinary inward half-step only. */
+    default boolean canRecenterOnStair(Pos anchor) { return false; }
     boolean canTraverse(Pos from, Pos to);
     /** Geometry-only opt-in proof for one cardinal, exactly one-support-block logging ascent. */
     default boolean canLoggingJump(LoggingJumpEdge edge,Profile profile) { return false; }

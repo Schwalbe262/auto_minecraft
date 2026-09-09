@@ -200,6 +200,47 @@ public final class MinecraftWorld implements WorldAccess {
                 && level.noCollision(player,actual) && level.noCollision(player,swept);
         } catch (RuntimeException unavailable) { return false; }
     }
+    @Override public boolean canRecenterOnStair(Pos anchor) {
+        try {
+            if (mc.level==null || mc.player==null || !mc.isSameThread() || !mc.player.onGround()
+                    || !NativeLoggingJump.normalPhysics(mc) || anchor==null
+                    || Math.abs((long)anchor.x())>29_999_984 || Math.abs((long)anchor.z())>29_999_984
+                    || anchor.y() < -2032 || anchor.y()>1967 || !loaded(anchor.offset(0,-1,0))) return false;
+            var level=mc.level; var player=mc.player;
+            BlockPos floor=nativePos(anchor).below(); BlockState support=level.getBlockState(floor);
+            if (support.getBlock().getClass()!=StairBlock.class
+                    || !BuiltInRegistries.BLOCK.getKey(support.getBlock()).getNamespace().equals("minecraft")
+                    || support.getValue(StairBlock.HALF)!=net.minecraft.world.level.block.state.properties.Half.BOTTOM
+                    || support.getValue(StairBlock.SHAPE)!=net.minecraft.world.level.block.state.properties.StairsShape.STRAIGHT) return false;
+            var facing=support.getValue(StairBlock.FACING); var context=CollisionContext.of(player);
+            var defaultShape=support.getCollisionShape(level,floor);
+            AABB actual=player.getBoundingBox();
+            var proof=StairRecenterGeometry.inspect(player.getX(),player.getY(),player.getZ(),player.getBbWidth(),player.getBbHeight(),
+                actual,anchor,player.maxUpStep(),true,facing.getStepX(),facing.getStepZ(),
+                defaultShape.toAabbs(),support.getCollisionShape(level,floor,context).toAabbs());
+            if (proof==null || !insideBorder(actual) || !insideBorder(proof.envelope())) return false;
+            if (!StairRecenterGeometry.clear(proof,p -> {
+                if (!loaded(p)) return new NativeLoggingJump.Cell(false,false,true,false,List.of());
+                BlockPos bp=nativePos(p); BlockState state=level.getBlockState(bp); var block=state.getBlock();
+                return new NativeLoggingJump.Cell(true,true,
+                    NativeLoggingJump.forbiddenBlock(state) || state.is(net.minecraft.tags.BlockTags.CLIMBABLE),
+                    NativeLoggingJump.normalSurface(block.getJumpFactor(),block.getSpeedFactor(),state.getFriction(level,bp,player)),
+                    state.getCollisionShape(level,bp,context).toAabbs());
+            })) return false;
+            if (!level.noCollision(player,actual) || !level.noCollision(player,proof.raisedSweep())
+                    || !level.getEntityCollisions(player,proof.envelope()).isEmpty()) return false;
+            // Native collision iteration catches shapes extending from neighbours.
+            // Only the exact, positively verified supporting stair may intersect.
+            var permitted=defaultShape.move(floor.getX(),floor.getY(),floor.getZ());
+            int collisions=0;
+            for (var collision:level.getBlockCollisions(player,proof.envelope())) {
+                if (++collisions>StairRecenterGeometry.MAX_CELLS
+                        || net.minecraft.world.phys.shapes.Shapes.joinIsNotEmpty(collision,permitted,
+                            net.minecraft.world.phys.shapes.BooleanOp.NOT_SAME)) return false;
+            }
+            return mc.level==level && mc.player==player && player.onGround() && NativeLoggingJump.normalPhysics(mc);
+        } catch (RuntimeException unavailable) { return false; }
+    }
     private boolean uniformFloor(Pos feet) {
         BlockPos floor=nativePos(feet).below();
         var boxes=mc.level.getBlockState(floor).getCollisionShape(mc.level,floor).toAabbs();
