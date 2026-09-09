@@ -8,6 +8,97 @@ import static org.junit.jupiter.api.Assertions.*;
 class ArtisanModuleTest {
     private static ItemData item(String id,int count,int quality) { return new ItemData(id,count,quality,null,false,999); }
 
+    @Test void coolingMachinesWithoutOwnedItemsYieldImmediatelyOnEverySweep() {
+        for(ArtisanRecipe recipe:List.of(ArtisanRecipe.ANCIENT_SEED,ArtisanRecipe.JADE_CRYSTAL)) {
+            Fixture f=new Fixture(recipe,4);coolJob(f,"job",500);
+            f.inventory[8]=item("minecraft:egg",7,0);
+            f.inventory[7]=item("society:pristine_jade",1,0);
+            Map<String,Long> schedule=Map.copyOf(f.profile.nextEligibleDay);
+            ArtisanModule module=new ArtisanModule(recipe.feature());
+            for(int i=0;i<40;i++){assertEquals(WorkResult.State.IDLE,module.tick(f.context()).state());f.now++;}
+            assertTrue(f.history.isEmpty());assertTrue(f.navigationTargets.isEmpty());
+            assertEquals(schedule,f.profile.nextEligibleDay);assertEquals(7,f.inventory[8].count());
+        }
+    }
+    @Test void noConfiguredJobAlsoYieldsOnItsFirstTick() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.profile.artisanJobs.clear();
+        assertEquals(WorkResult.State.IDLE,new ArtisanModule(f.recipe.feature()).tick(f.context()).state());
+        assertTrue(f.history.isEmpty());assertTrue(f.navigationTargets.isEmpty());
+    }
+    @Test void quietFirstJobDoesNotHideALaterDueJob() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);coolJob(f,"job",500);
+        Pos quiet=f.machineStates.keySet().iterator().next(),due=new Pos(20,64,0);
+        f.machineStates.put(due,f.state(due,true,false));
+        f.profile.artisanJobs.put("later",new ArtisanJob("later",f.recipe.id(),List.of(due),"input","output"));
+        f.chests.get(f.input)[0]=item(f.recipe.inputId(),3,0);
+        ArtisanModule module=new ArtisanModule(f.recipe.feature());
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+        assertEquals(WorkResult.State.IDLE,f.run(module,300).state());
+        assertEquals(0,f.machineUses(quiet));assertEquals(1,f.machineUses(due));
+        assertFalse(f.navigationTargets.contains(quiet));assertEquals(500L,f.profile.nextEligibleDay.get(f.profile.artisanJobs.get("job").scheduleKey(quiet)));
+    }
+    @Test void coolingJobsStillStoreActualHeldInputsAndOutputsWithoutVisitingMachines() {
+        for(ArtisanRecipe recipe:List.of(ArtisanRecipe.ANCIENT_SEED,ArtisanRecipe.JADE_CRYSTAL)) {
+            Fixture f=new Fixture(recipe,2);coolJob(f,"job",500);
+            f.inventory[1]=item(recipe.inputId(),7,0);
+            if(!recipe.sameInputAndOutput())f.inventory[2]=item(recipe.outputId(),2,0);
+            ArtisanModule module=new ArtisanModule(recipe.feature());
+            assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+            assertEquals(WorkResult.State.IDLE,f.run(module,200).state());
+            assertEquals(0,f.uses);assertEquals(0,f.withdrawals);
+            assertTrue(f.navigationTargets.stream().noneMatch(f.machineStates::containsKey));
+            assertEquals(recipe.sameInputAndOutput()?7:2,f.stored(f.output,recipe.outputId()));
+            if(!recipe.sameInputAndOutput())assertEquals(7,f.stored(f.input,recipe.inputId()));
+            assertEquals(WorkResult.State.IDLE,module.tick(f.context()).state());
+        }
+    }
+    @Test void continuousEngineReachesLowerWorkAndActualSleepWhileBothArtisansAreCooling() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,2);coolJob(f,"job",500);
+        ArtisanRecipe jade=ArtisanRecipe.JADE_CRYSTAL;Pos crystal=new Pos(30,64,0),jadeStore=new Pos(31,64,0);
+        f.profile.enabled.put(Feature.CRYSTAL_COPY,true);f.profile.enabled.put(Feature.STARFRUIT,true);f.profile.enabled.put(Feature.SLEEP,true);
+        f.profile.commodityStores.put("jade",new CommodityStore("jade","Jade",Set.of(jade.inputId()),List.of(jadeStore)));
+        f.profile.artisanJobs.put("crystal",new ArtisanJob("crystal",jade.id(),List.of(crystal),"jade","jade"));coolJob(f,"crystal",500);
+        f.profile.pois.add(new Poi(new Pos(3,64,0),PoiKind.BED,"Bed",null));
+        int[] lowerTicks={0};
+        AutomationModule lower=new AutomationModule(){
+            public Feature feature(){return Feature.STARFRUIT;}public int priority(){return 80;}
+            public WorkResult tick(Context c){return ++lowerTicks[0]<=3?WorkResult.busy("lower work"):WorkResult.idle();}
+            public void reset(){}
+        };
+        Context c=f.context();AutomationEngine engine=new AutomationEngine(List.of(new ArtisanModule(Feature.SEED_MAKER),
+            new ArtisanModule(Feature.CRYSTAL_COPY),lower,new SleepModule()));engine.start(c);
+        for(int i=0;i<100;i++){engine.tick(c);f.now++;}
+        assertTrue(lowerTicks[0]>3);assertTrue(engine.running());assertEquals(AutomationEngine.State.WAITING,engine.state());
+        assertTrue(f.history.isEmpty());assertTrue(f.navigationTargets.isEmpty());
+        f.dayTime=435L*24000+13000;
+        for(int i=0;i<100 && f.sleepUses==0;i++){engine.tick(c);f.now++;}
+        assertEquals(1,f.sleepUses);assertEquals(0,f.uses);
+        engine.tick(c);f.now++; // Observe actual sleeping before advancing the test world's day.
+        f.dayTime=436L*24000+5000;f.sleeping=false;int before=lowerTicks[0];
+        for(int i=0;i<100;i++){engine.tick(c);f.now++;}
+        assertTrue(lowerTicks[0]>before);assertTrue(engine.running());
+        assertEquals(1,f.history.size());assertTrue(f.profile.nextEligibleDay.values().stream().allMatch(d->d==500));
+        assertTrue(f.navigationTargets.stream().noneMatch(p->f.machineStates.containsKey(p)||p.equals(crystal)));
+    }
+    @Test void quietTrailingJobDoesNotEraseEarlierTargetUncertainty() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);Pos uncertain=f.machineStates.keySet().iterator().next(),quiet=new Pos(20,64,0);
+        f.uncertainTargets.put(uncertain,"unconfirmed target");
+        f.machineStates.put(quiet,f.state(quiet,true,false));
+        f.profile.artisanJobs.put("quiet",new ArtisanJob("quiet",f.recipe.id(),List.of(quiet),"input","output"));coolJob(f,"quiet",500);
+        ArtisanModule module=new ArtisanModule(f.recipe.feature());WorkResult result=f.run(module,100);
+        assertEquals(WorkResult.State.DEFERRED,result.state());assertTrue(result.message().contains("job: unconfirmed target"));
+        assertTrue(module.sleepSafeDeferred(f.context()));assertTrue(f.history.isEmpty());assertTrue(f.navigationTargets.isEmpty());
+    }
+    @Test void coolingSelectedOneShotCompletesWithoutRunningNeighbouringModules() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);coolJob(f,"job",500);f.dayTime=435L*24000+13000;
+        Context c=f.context();AutomationEngine engine=new AutomationEngine(List.of(new ArtisanModule(f.recipe.feature()),new SleepModule()));
+        engine.startOnce(c,f.recipe.feature());engine.tick(c);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state());assertTrue(f.history.isEmpty());assertTrue(f.navigationTargets.isEmpty());
+    }
+    private static void coolJob(Fixture f,String id,long due) {
+        ArtisanJob job=f.profile.artisanJobs.get(id);for(Pos pos:job.machines())f.profile.nextEligibleDay.put(job.scheduleKey(pos),due);
+    }
+
     @Test void seedMakerCollectsFourOldSeedsRefillsOnceAndReturnsOnlyUnusedFruit() {
         Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,4);f.inventory[1]=item(f.recipe.inputId(),16,0);
         f.inventory[8]=item("minecraft:egg",7,0);
@@ -423,6 +514,7 @@ class ArtisanModuleTest {
         final Map<Pos,Integer> opens=new HashMap<>();final List<Integer> usedGrades=new ArrayList<>(),handCounts=new ArrayList<>();
         final List<Delayed> delayed=new ArrayList<>();
         final List<String> statuses=new ArrayList<>();
+        final List<Pos> navigationTargets=new ArrayList<>();
         final Map<Pos,String> uncertainTargets=new LinkedHashMap<>();final Set<Pos> failUncertainUses=new HashSet<>();
         long now=100,dayTime=435L*24000+5000,lastTicket;int selected=1,menuId,uses,consumed,withdrawals,pickupDelay,sleepUses;
         int seedConsumption=-1;
@@ -439,7 +531,7 @@ class ArtisanModuleTest {
         }
         private ItemData[] emptyChest(){ItemData[] items=new ItemData[27];Arrays.fill(items,ItemData.EMPTY);return items;}
         BlockData state(Pos pos,boolean mature,boolean working){return new BlockData(pos,recipe.machineId(),Map.of("mature",""+mature,"working",""+working,"upgraded",""+upgraded));}
-        Context context(){return new Context(this,this,new Navigation(){public Result moveTo(Pos p,double reach,Context c){return navigationBlocked?Result.BLOCKED:Result.ARRIVED;}public boolean retryableFailure(){return navigationBlocked;}public Failure failureKind(){return navigationBlocked?Failure.NO_PATH:Failure.NONE;}public void reset(){}},profile,new SessionState(),()->{if(failCheckpoint)throw new IllegalStateException("checkpoint failed");});}
+        Context context(){return new Context(this,this,new Navigation(){public Result moveTo(Pos p,double reach,Context c){navigationTargets.add(p);return navigationBlocked?Result.BLOCKED:Result.ARRIVED;}public boolean retryableFailure(){return navigationBlocked;}public Failure failureKind(){return navigationBlocked?Failure.NO_PATH:Failure.NONE;}public void reset(){}},profile,new SessionState(),()->{if(failCheckpoint)throw new IllegalStateException("checkpoint failed");});}
         WorkResult run(ArtisanModule module,int limit){WorkResult r=WorkResult.busy("");for(int i=0;i<limit;i++){for(Iterator<Delayed> it=delayed.iterator();it.hasNext();){Delayed d=it.next();if(now>=d.at){put(inventory,d.item);it.remove();}}r=module.tick(context());statuses.add(r.message());now++;if(r.state()!=WorkResult.State.BUSY)return r;}return r;}
         void awaitUse(ArtisanModule module){for(int i=0;i<100 && uses==0;i++){assertEquals(WorkResult.State.BUSY,module.tick(context()).state());now++;}assertEquals(1,uses);}
         int stored(Pos p,String id){return Arrays.stream(chests.get(p)).filter(i->i.is(id)).mapToInt(ItemData::count).sum();}

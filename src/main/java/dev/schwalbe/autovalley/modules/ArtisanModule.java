@@ -82,30 +82,9 @@ public final class ArtisanModule implements AutomationModule {
                     .filter(e -> e.getValue()!=null && e.getKey().equals(e.getValue().id()) && e.getValue().recipe().feature()==feature)
                     .map(Map.Entry::getValue).toList();
                 jobIndex=0;stage=Stage.JOB;
+                return selectJob(c);
             }
-            case JOB -> {
-                if (jobIndex>=jobs.size()) {
-                    if (!uncertainJobs.isEmpty()) {
-                        String unsafe=uncertaintySkipRejection(c);
-                        if (unsafe!=null) return fail(unsafe);
-                        return deferClean(c,"미확정 기계는 재클릭하지 않았습니다. 나머지 가공 작업과 보유품 정리를 마치고 보류합니다");
-                    }
-                    reset();return WorkResult.idle();
-                }
-                job=jobs.get(jobIndex);recipe=job.recipe();
-                inputStore=CommodityStorageRules.store(c.profile(),job.inputStoreId());
-                CommodityStore output=CommodityStorageRules.store(c.profile(),job.outputStoreId());
-                if (inputStore==null || output==null || !inputStore.items().contains(recipe.inputId()) || !output.items().contains(recipe.outputId()))
-                    return fail("가공 작업의 입력·출력 품목 저장고를 등록하세요");
-                if (Math.floorMod(c.world().dayTime(),24000)<240 && job.machines().stream().anyMatch(p -> eligible(c,p)))
-                    return WorkResult.busy(status("아침 기계 상태 갱신 대기"));
-                machines=job.machines().stream().filter(p -> eligible(c,p))
-                    .sorted(Comparator.comparingDouble(p -> c.world().player().distance(p))).toList();
-                machineIndex=0;scanPasses=0;stockReady=false;stock.clear();stockDay=-1;
-                outputStorage=new CommodityStorageModule(feature,job.outputStoreId(),Set.of(recipe.outputId()));
-                inputReturn=new CommodityStorageModule(feature,job.inputStoreId(),Set.of(recipe.inputId()));
-                stage=Stage.TARGET;
-            }
+            case JOB -> { return selectJob(c); }
             case TARGET -> {
                 if (machineIndex>=machines.size()) { stage=Stage.OUTPUT;break; }
                 String uncertainty=c.actions().artisanRejection(target());
@@ -266,6 +245,38 @@ public final class ArtisanModule implements AutomationModule {
             }
         }
         return WorkResult.busy(status(phaseLabel()));
+    }
+
+    private WorkResult selectJob(Context c) {
+        // The scheduler restarts at its highest priority after a BUSY module
+        // finishes. Quiet jobs must therefore yield in this same tick, not
+        // reserve another multi-tick 0/0 pass that starves every later module.
+        while (jobIndex<jobs.size()) {
+            job=jobs.get(jobIndex);recipe=job.recipe();
+            inputStore=CommodityStorageRules.store(c.profile(),job.inputStoreId());
+            CommodityStore output=CommodityStorageRules.store(c.profile(),job.outputStoreId());
+            if (inputStore==null || output==null || !inputStore.items().contains(recipe.inputId()) || !output.items().contains(recipe.outputId()))
+                return fail("가공 작업의 입력·출력 품목 저장고를 등록하세요");
+            boolean due=job.machines().stream().anyMatch(p -> eligible(c,p));
+            boolean held=c.world().inventory().stream().map(ItemSlot::item)
+                .anyMatch(item -> item.is(recipe.inputId()) || item.is(recipe.outputId()));
+            if (!due && !held) { jobIndex++;continue; }
+            if (due && Math.floorMod(c.world().dayTime(),24000)<240)
+                return WorkResult.busy(status("아침 기계 상태 갱신 대기"));
+            machines=job.machines().stream().filter(p -> eligible(c,p))
+                .sorted(Comparator.comparingDouble(p -> c.world().player().distance(p))).toList();
+            machineIndex=0;scanPasses=0;stockReady=false;stock.clear();stockDay=-1;
+            outputStorage=new CommodityStorageModule(feature,job.outputStoreId(),Set.of(recipe.outputId()));
+            inputReturn=new CommodityStorageModule(feature,job.inputStoreId(),Set.of(recipe.inputId()));
+            stage=machines.isEmpty() ? Stage.OUTPUT : Stage.TARGET;
+            return WorkResult.busy(status(phaseLabel()));
+        }
+        if (!uncertainJobs.isEmpty()) {
+            String unsafe=uncertaintySkipRejection(c);
+            if (unsafe!=null) return fail(unsafe);
+            return deferClean(c,"미확정 기계는 재클릭하지 않았습니다. 나머지 가공 작업과 보유품 정리를 마치고 보류합니다");
+        }
+        reset();return WorkResult.idle();
     }
 
     private String phaseLabel() {

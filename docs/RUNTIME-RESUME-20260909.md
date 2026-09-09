@@ -98,3 +98,32 @@ acknowledged in CONTINUOUS mode, equivalent to starting with F8.
 Logging recovery, quantitative native stair timing and continuous multi-cycle
 operation remain to be verified. No twofold stair-speed or hours-long stability
 claim follows from these successful one-shot checks.
+
+## Cooldown scheduler regression found during continuous testing
+
+The resumed continuous run serviced all 144 preserves jars: all were observed
+working with later eligibility dates, and no preserves or tomatoes remained in
+inventory afterward. It then repeatedly selected a zero-target seed-maker pass
+even though those four machines were scheduled for the following day. This was
+an actual scheduler starvation, not an inventory acknowledgement or navigation
+failure: START returned BUSY for an empty pass, and the engine selected that same
+high-priority module again before reaching starfruit or sleep.
+
+Artisan job selection now skips jobs with neither due machines nor currently
+held input/output in the same tick. An entirely quiet module returns IDLE
+immediately. A later due job, actual item cleanup and accumulated uncertain-target
+deferrals retain their existing behavior. No scheduler priorities, machine dates
+or action fences were reset to work around the bug.
+
+Seven new regressions include the actual continuous engine with both artisan
+modules, lower-priority work, sleep and a following-day sweep. The complete
+offline Java 17 `test build` passed **1,465 tests / 109 suites**, zero failures,
+errors or skips. The tested JAR has SHA-256
+`BB2C80DACDB565E434A98E797A196FBA5E63CC80141CF4B5B12DA1431DC1CF49`.
+It was installed through a normal same-instance restart with the previous JAR
+and pre-restart profile retained in private backups.
+
+Before that restart, a separate native sleep one-shot reached the registered bed,
+was observed actually sleeping on day 459, and completed after day 460 began.
+This establishes the bed interaction/day transition, but by itself is not a
+continuous-scheduler sleep acceptance of the new cooldown fix.
