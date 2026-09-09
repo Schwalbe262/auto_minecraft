@@ -157,3 +157,17 @@ confirmed that the middle extended envelope is rejected while a later two-edge
 stair corridor is independently valid. The final platform is not a stair. At this
 checkpoint, re-entering flow after that observed ordinary handoff is under test;
 the rejected middle envelope has not been waived or enlarged.
+
+The follow-up source change now permits that re-entry only after a completed
+ordinary handoff, a consecutive actual full-support grounded observation and all
+of the existing normal handoff bounds (including its 0.12 speed ceiling). It then
+requires a fresh independent native flow proof. Airborne/half-tread/missing samples,
+unsafe motion, pending actions and unknown calibration cannot acquire the new
+proof. A lost existing proof still fails before any replacement; acquiring a
+proof does not advance a path index or mark another landing complete.
+
+Five new tests plus the existing descent selection passed **58/58** standalone.
+The gap-and-ceiling physics fixture improved from 112 to 107 ticks, retaining
+ordinary handling of the final solid platform and the existing quiet stop. This
+is a model measurement; this follow-up has not yet been installed or timed in the
+live client at this checkpoint.

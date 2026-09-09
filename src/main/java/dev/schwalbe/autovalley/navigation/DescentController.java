@@ -91,7 +91,14 @@ final class DescentController {
         // extending: newly safe cells cannot excuse lost borrowed clearance.
         if (flowing() && !world.canFlowDescent(flowProof,c.profile()))
             return fail("연속 계단의 검증된 제동 공간이 바뀌어 이동을 멈춥니다.");
-        if (flowing() || phase==Phase.PREPARE) {
+        // A previous corridor may end before a separately safe lower stair run.
+        // Re-enter only from an actually observed full support after a normal
+        // handoff, with that handoff's original slow-motion/calibration bounds.
+        // This is a new native proof, never an extension across the rejected gap.
+        boolean groundedRestart=!flowing() && phase==Phase.DESCEND && completedEdges>0 && measured
+            && p.onGround() && Math.abs(p.y()-fromHeight)<.00001
+            && canHandOff(world,p,from,to,vx,vz);
+        if (flowing() || phase==Phase.PREPARE || groundedRestart) {
             List<Pos> prefix=verifiedFlowPrefix(c,preview,continuation);
             if (!prefix.isEmpty()) flowProof=prefix;
         }
