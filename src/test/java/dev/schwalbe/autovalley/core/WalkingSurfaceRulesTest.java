@@ -21,6 +21,20 @@ class WalkingSurfaceRulesTest {
         assertFalse(WalkingSurfaceRules.canStep(Double.NEGATIVE_INFINITY,72,0.6,false));
         assertFalse(WalkingSurfaceRules.canStep(72,72.5,0.4,false));
     }
+    @Test void oneBlockPlusOneSixteenthIsTheExactNonCropDescentLimit() {
+        assertEquals(1.0625,WalkingSurfaceRules.MAX_DESCENT_HEIGHT);
+        assertTrue(WalkingSurfaceRules.canStep(75,73.9375,0.6,false));
+        assertTrue(WalkingSurfaceRules.canStep(75,73.9375-.000005,0.6,false),"only the existing numeric tolerance extends the bound");
+        assertFalse(WalkingSurfaceRules.canStep(75,73.9375-.00002,0.6,false));
+        assertFalse(WalkingSurfaceRules.canStep(75,73.875,0.6,false));
+        assertFalse(WalkingSurfaceRules.canStep(75,73,0.6,false));
+        assertFalse(WalkingSurfaceRules.canStep(73.9375,75,0.6,false),"a descent allowance is never a new upward step permission");
+    }
+    @Test void theFractionalDescentAllowanceDoesNotPermitDroppingOntoFarmland() {
+        assertTrue(WalkingSurfaceRules.canStep(74,73.9375,0.6,true));
+        assertFalse(WalkingSurfaceRules.canStep(75,73.9375,0.6,true));
+        assertFalse(WalkingSurfaceRules.canStep(74.0625,73.9375,0.6,true));
+    }
     @Test void hypotheticalPickupDistanceUsesActualStandingHeight() {
         Pos target=new Pos(1,72,0), beside=new Pos(0,72,0);
         assertTrue(WalkingSurfaceRules.positionalDistance(beside,71.9375,target)>1.0);

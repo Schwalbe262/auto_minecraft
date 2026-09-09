@@ -36,8 +36,9 @@ final class DescentController {
     boolean flowing() { return !flowProof.isEmpty(); }
     static boolean descending(Pos from,Pos to,WorldAccess world) {
         double a=world.standingY(from),b=world.standingY(to);
-        return Math.abs(to.x()-from.x())+Math.abs(to.z()-from.z())==1 && to.y()<=from.y()
-            && Double.isFinite(a) && Double.isFinite(b) && a-b>HEIGHT_TOLERANCE && a-b<=1.00001;
+        return Math.abs(to.x()-from.x())+Math.abs(to.z()-from.z())==1 && to.y()<=from.y() && from.y()-to.y()<=1
+            && Double.isFinite(a) && Double.isFinite(b) && a-b>HEIGHT_TOLERANCE
+            && a-b<=WalkingSurfaceRules.MAX_DESCENT_HEIGHT+1.0e-5;
     }
     Navigation.Result tick(Context c) {
         return tick(c,List.of(from,to));

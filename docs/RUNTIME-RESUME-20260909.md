@@ -520,3 +520,24 @@ The tested `42A0F2918314C2712FC9D1E4527ED8611B84A16B48296A3CBEA2D25EF6A222FB`
 artifact is now installed; previous JAR and profile/evidence backups are retained.
 This installs both the receiver fix and nearby fruit cohort revision. Reconnection,
 remaining-rack completion, native cohort acceptance and extended stability follow.
+
+### Fractional support at the handoff position
+
+The first resume and a coordinate-only exit attempt found no path from the raised
+handoff platform; neither issued movement or inventory actions. A bounded native
+read-only geometry probe found a normal five-edge route to ground. Exactly one
+edge failed solely because the wine-keg surface is recessed by 1/16 block:
+the actual one-cell descent is 1.0625, not 1.0. All ten native surface/body samples
+and the final landing height passed when only that numeric limit was changed.
+
+Walking, descent control and the retained navigation edge check now agree on the
+1.0625 maximum, still requiring a single grid-height step. Native clearance,
+loaded support, farmland protection, actual-height braking and no airborne input
+remain unchanged. Fractional landings cannot borrow the integer-stair shortcut.
+Full offline verification passed **1,610 tests / 118 suites**, zero failures,
+errors or skips, including eight new boundary and landing regressions. The new
+artifact SHA256 is `23D06B97707D18917C39A11A603BAD5D83726AD18B55865F868EAB49C616F6BD`.
+This is geometry and detached-test evidence; native fractional descent acceptance
+is still pending. Before installation the latest client observation was already
+back on ground in continuous mode, so the original handoff position must not be
+assumed to persist or recreated by teleportation.

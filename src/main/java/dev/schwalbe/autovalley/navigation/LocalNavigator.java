@@ -486,10 +486,10 @@ public final class LocalNavigator implements Navigation {
         if (nextIndex <= 0) return false;
         Pos from = path.get(nextIndex - 1);
         int dx = next.x() - from.x(), dz = next.z() - from.z();
-        if (Math.abs(dx) + Math.abs(dz) != 1 || next.y() > from.y()) return false;
+        if (Math.abs(dx) + Math.abs(dz) != 1 || next.y() > from.y() || from.y()-next.y()>1) return false;
         double fromHeight = world.standingY(from), toHeight = world.standingY(next);
         if (!Double.isFinite(fromHeight) || !Double.isFinite(toHeight)
-            || fromHeight - toHeight <= .10001 || fromHeight - toHeight > 1.00001
+            || fromHeight - toHeight <= .10001 || fromHeight - toHeight > WalkingSurfaceRules.MAX_DESCENT_HEIGHT+1.0e-5
             || player.y() < toHeight - .10001 || player.y() > fromHeight + .10001) return false;
         double relativeX = player.x() - from.x() - .5, relativeZ = player.z() - from.z() - .5;
         double along = relativeX * dx + relativeZ * dz;

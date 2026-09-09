@@ -2,11 +2,14 @@ package dev.schwalbe.autovalley.core;
 
 /** Shared numeric checks for sampled walking surfaces; never requests a jump. */
 public final class WalkingSurfaceRules {
+    /** One grid step onto a support recessed by 1/16 (for example a wine keg).
+     * Not permission for a two-block drop; native collision and farmland checks remain required. */
+    public static final double MAX_DESCENT_HEIGHT=1.0625;
     private WalkingSurfaceRules() { }
     public static boolean canStep(double from, double to, double stepHeight, boolean farmland) {
         if (!Double.isFinite(from) || !Double.isFinite(to) || !Double.isFinite(stepHeight) || stepHeight<0) return false;
         double delta=to-from;
-        if (delta>Math.min(0.6,stepHeight)+1.0e-5 || delta < -1.00001) return false;
+        if (delta>Math.min(0.6,stepHeight)+1.0e-5 || delta < -MAX_DESCENT_HEIGHT-1.0e-5) return false;
         // The normal 1/16-block farmland depression is walkable; do not fall onto crops.
         return !farmland || delta>=-0.10001;
     }
