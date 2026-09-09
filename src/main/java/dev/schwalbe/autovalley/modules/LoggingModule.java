@@ -31,6 +31,9 @@ public final class LoggingModule implements AutomationModule {
     private WorkResult approachResult;
     private LoggingApproachSearch choppingApproach;
     private long visibilityRetryAt=-1;
+    // Temporary negative observations only: never reorder or complete the saved batch.
+    private final Map<Pos,LoggingApproachSearch> invisiblePlots=new LinkedHashMap<>();
+    private long visibilityScanTick=Long.MIN_VALUE;
     private final Map<Pos,List<String>> initialPlotObservations=new HashMap<>();
     private long initialObservationDay=Long.MIN_VALUE;
     private final ModuleSupport.ObservationWindow observationWindow=new ModuleSupport.ObservationWindow();
@@ -43,7 +46,7 @@ public final class LoggingModule implements AutomationModule {
         if (!LoggingRules.allowed(c)) return WorkResult.idle();
         if (failure!=null) return WorkResult.blocked(failure);
         if (!c.world().player().connected()) return fail("벌목 중 연결이 끊겼습니다. 재접속 후 다시 실행하세요.");
-        if (lastTick>c.world().tick()) { nextCheckTick=-1; saplingWaitUntil=-1; clearCleanupQuiet(); }
+        if (lastTick>c.world().tick()) { nextCheckTick=-1; saplingWaitUntil=-1; clearCleanupQuiet(); clearVisibilitySweep(); }
         lastTick=c.world().tick();
         try {
             if (ticket>=0) {
@@ -135,7 +138,7 @@ public final class LoggingModule implements AutomationModule {
                 Pos corner=nextPlot(c);
                 plot=c.profile().loggingPlots.stream().filter(p -> p.corner().equals(corner)).findFirst().orElseThrow();
                 if (plot.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) return observePlot(c,plot);
-                inspect(c,plot); chopStrokes=0; saplingWaitUntil=-1; choppingApproach=null; visibilityRetryAt=-1;
+                inspect(c,plot); chopStrokes=0; saplingWaitUntil=-1; choppingApproach=invisiblePlots.get(corner);
                 plantingStanceReady=false; plantingOrder=List.of();
                 // A mixed sapling/log plot can contain a newly regrown planting. Never recut it on resume.
                 if (c.profile().loggingReplantingPlots.contains(corner)
@@ -151,7 +154,12 @@ public final class LoggingModule implements AutomationModule {
                 List<Pos> stumps=plot.plantingPositions().stream().filter(p -> LoggingRules.stump(c.world().block(p))).toList();
                 // Installed FallingTrees uses a four-second fall lifetime. This is a fixed
                 // settling delay, never a requirement to observe or count dropped items.
-                if (stumps.isEmpty()) { choppingApproach=null; markReplanting(c,plot.corner()); settleUntil=c.world().tick()+80; stage=Stage.SETTLE; return busy("벌목 후 잠시 대기"); }
+                if (stumps.isEmpty()) {
+                    // A genuinely felled tree can expose a neighbour's canopy. A selected
+                    // axe, FOUND stance or partial chop acknowledgement cannot do this.
+                    clearVisibilitySweep(); markReplanting(c,plot.corner());
+                    settleUntil=c.world().tick()+80; stage=Stage.SETTLE; return busy("벌목 후 잠시 대기");
+                }
                 int axe=c.profile().loggingAxeHotbarSlot;
                 if (axe<0 || axe==c.profile().hoeHotbarSlot || !item(c,axe).is(LoggingRules.AXE)
                     || item(c,axe).durability()<=1 || !c.world().loggingAxe(axe)) return fail("등록한 사용 가능한 네더라이트 도끼가 필요합니다.");
@@ -310,21 +318,27 @@ public final class LoggingModule implements AutomationModule {
             fail("벌목 이동 중 메뉴나 커서가 바뀌었습니다."); c.actions().stopMovement(); return null;
         }
         if (choppingApproach!=null && !choppingApproach.matches(c.world(),stumps)) {
-            choppingApproach=null; visibilityRetryAt=-1;
+            invisiblePlots.remove(plot.corner()); choppingApproach=null; visibilityRetryAt=-1;
         }
         if (visibilityRetryAt>=0 && (c.world().tick()>=visibilityRetryAt
             || c.world().tick()<visibilityRetryAt-VISIBILITY_RETRY_TICKS)) {
             // The scheduler keeps this module's confirmed phase during the wait.
             // Its 1200-tick retry must examine a fresh canopy, not a cached failure.
-            choppingApproach=null; visibilityRetryAt=-1;
+            clearVisibilitySweep(); stage=Stage.PLOT;
+            approachResult=busy("시야 대기 후 남은 등록 구역 전체를 새로 확인"); return null;
         }
         // Existing actual-eye visibility is sufficient to choose another base of
         // this SAME plot. The dispatch still requires native whole-tree proof.
         // The preflight stops movement. Do not repeat four actual-eye queries
         // outside its slice on every SEARCHING tick; retry/reset starts a fresh
         // check, and dispatch still validates the current eye before any chop.
-        if (choppingApproach==null)
+        if (choppingApproach==null && visibilityScanTick==c.world().tick()) {
+            approachResult=busy("다음 등록 구역의 시야 확인 차례 대기"); return null;
+        }
+        if (choppingApproach==null) {
+            visibilityScanTick=c.world().tick();
             for (Pos stump:stumps) if (c.world().canInteract(stump,4)) { choppingApproach=null; return stump; }
+        }
         if (choppingApproach==null) choppingApproach=new LoggingApproachSearch(c.world(),plot,stumps);
         if (choppingApproach.status()==LoggingApproachSearch.Status.FOUND) {
             if (c.world().canInteract(choppingApproach.target(),4) || choppingApproach.endpointValid(c.world()))
@@ -335,6 +349,7 @@ public final class LoggingModule implements AutomationModule {
             return null;
         }
         c.actions().stopMovement();
+        visibilityScanTick=c.world().tick();
         LoggingApproachSearch.Status state=choppingApproach.advance(c.world());
         if (state==LoggingApproachSearch.Status.FOUND) return choppingApproach.target();
         if (state==LoggingApproachSearch.Status.SEARCHING)
@@ -344,6 +359,15 @@ public final class LoggingModule implements AutomationModule {
         else if (state==LoggingApproachSearch.Status.CHANGED)
             approachResult=WorkResult.deferred("벌목 밑동 또는 월드 관측이 바뀌었습니다. 미완료 구역을 보존하고 다시 확인합니다.");
         else {
+            invisiblePlots.put(plot.corner(),choppingApproach);
+            if (resourceReadiness(c)==ResourceReadiness.UNSAFE) {
+                fail("벌목 시야 대기의 안전한 작업 경계를 확인할 수 없습니다. 미완료 구역을 보존하고 중지합니다."); return null;
+            }
+            Pos next=nextPlot(c);
+            if (!next.equals(plot.corner())) {
+                stage=Stage.PLOT;
+                approachResult=busy("시야가 막힌 구역은 보존하고 다음 등록 구역 확인"); return null;
+            }
             if (visibilityRetryAt<0) visibilityRetryAt=Math.addExact(c.world().tick(),VISIBILITY_RETRY_TICKS);
             if (resourceReadiness(c)!=ResourceReadiness.WAITING)
                 fail("벌목 시야 대기의 안전한 작업 경계를 확인할 수 없습니다. 미완료 구역을 보존하고 중지합니다.");
@@ -352,6 +376,9 @@ public final class LoggingModule implements AutomationModule {
                 +"1200틱 후 다시 확인합니다. 잎·다른 블록은 임의로 제거하지 않습니다.");
         }
         return null;
+    }
+    private void clearVisibilitySweep() {
+        invisiblePlots.clear(); choppingApproach=null; visibilityRetryAt=-1; visibilityScanTick=Long.MIN_VALUE;
     }
     private boolean approachPlanting(Context c,List<Pos> remaining) {
         approachResult=null;
@@ -398,6 +425,11 @@ public final class LoggingModule implements AutomationModule {
             else if (sapling || !chopped && trunks!=4)
                 throw new IllegalStateException("등록한 2x2 나무가 일부만 남거나 묘목과 섞였습니다. 건드리지 않고 확인을 기다립니다.");
         }
+        invisiblePlots.entrySet().removeIf(entry -> !c.profile().loggingRemainingPlots.contains(entry.getKey())
+            || c.profile().loggingReplantingPlots.contains(entry.getKey())
+            || registeredPlot(c,entry.getKey()).plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))
+            || !entry.getValue().matches(c.world(),registeredPlot(c,entry.getKey()).plantingPositions().stream()
+                .filter(p -> LoggingRules.stump(c.world().block(p))).toList()));
         int seeds=availableSaplings(c).stream().mapToInt(s -> s.item().count()).sum();
         for (Pos corner:c.profile().loggingReplantingPlots) {
             LoggingPlot candidate=registeredPlot(c,corner);
@@ -412,7 +444,11 @@ public final class LoggingModule implements AutomationModule {
         // Only existing, unprocessed batch members are considered. Native tree
         // footprint validation and the registered axe still guard every actual cut.
         for (Pos corner:c.profile().loggingRemainingPlots)
-            if (!c.profile().loggingReplantingPlots.contains(corner)) return corner;
+            if (!c.profile().loggingReplantingPlots.contains(corner) && !invisiblePlots.containsKey(corner)) return corner;
+        // All unprocessed trees were checked once. Anchor the wait to a real
+        // negative proof rather than bouncing between it and a seed-short PLANT.
+        for (Pos corner:c.profile().loggingRemainingPlots)
+            if (invisiblePlots.containsKey(corner)) return corner;
         return c.profile().loggingReplantingPlots.get(0);
     }
     private static LoggingPlot registeredPlot(Context c,Pos corner) {
@@ -448,7 +484,7 @@ public final class LoggingModule implements AutomationModule {
         if (!c.profile().loggingPlots.contains(plot) || !c.profile().loggingRemainingPlots.contains(plot.corner())) return ResourceReadiness.UNSAFE;
         if (stage==Stage.CHOP) {
             if (c.profile().loggingReplantingPlots.contains(plot.corner()) || choppingApproach==null
-                || choppingApproach.status()!=LoggingApproachSearch.Status.NO_VISIBLE_STANCE || visibilityRetryAt<0
+                || choppingApproach.status()!=LoggingApproachSearch.Status.NO_VISIBLE_STANCE
                 || !c.world().player().onGround() || c.actions().busy() || c.actions().pauseReason()!=null
                 || c.world().menu()==null || c.world().menu().container() || !c.world().menu().carried().empty()
                 || MachineOutputLedger.hasPending(c) || plot.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p)))
@@ -456,10 +492,18 @@ public final class LoggingModule implements AutomationModule {
             List<Pos> stumps=plot.plantingPositions().stream().filter(p -> LoggingRules.stump(c.world().block(p))).toList();
             if (!choppingApproach.matches(c.world(),stumps)) return ResourceReadiness.UNSAFE;
         } else if (!c.profile().loggingReplantingPlots.contains(plot.corner())) return ResourceReadiness.UNSAFE;
-        boolean unprocessed=false;
+        boolean unprocessed=false,unobservedNegative=false;
         for (Pos corner:c.profile().loggingRemainingPlots) {
             LoggingPlot candidate=registeredPlot(c,corner);
-            if (candidate.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) continue;
+            LoggingApproachSearch negative=invisiblePlots.get(corner);
+            if (candidate.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) {
+                // Another consumer can unload a non-current negative. Wake for
+                // ordinary observation, not a new all-blocked/safe-sleep claim.
+                if (negative!=null) unobservedNegative=true;
+                continue;
+            }
+            if (negative!=null && !negative.matches(c.world(),candidate.plantingPositions().stream()
+                .filter(p -> LoggingRules.stump(c.world().block(p))).toList())) return ResourceReadiness.UNSAFE;
             try { inspect(c,candidate); }
             catch (RuntimeException changed) { return ResourceReadiness.UNSAFE; }
             long trunks=candidate.plantingPositions().stream().filter(p -> c.world().block(p).id().equals(LoggingRules.LOG)).count();
@@ -469,16 +513,24 @@ public final class LoggingModule implements AutomationModule {
                 if (trunks>0 && trunks<4 || chopped) return ResourceReadiness.UNSAFE;
             } else {
                 if (sapling && trunks>0 || !chopped && trunks>0 && trunks<4) return ResourceReadiness.UNSAFE;
-                unprocessed=true;
+                if (negative==null) unprocessed=true;
             }
         }
         List<ItemSlot> stock=inventory(c).stream().sorted(Comparator.comparingInt(ItemSlot::inventoryIndex)).toList();
         if (stock.size()!=36) return ResourceReadiness.UNSAFE;
         for (int i=0;i<36;i++) if (stock.get(i).inventoryIndex()!=i || stock.get(i).item()==null) return ResourceReadiness.UNSAFE;
-        if (stage==Stage.CHOP) return c.world().tick()>=visibilityRetryAt || c.world().tick()<visibilityRetryAt-VISIBILITY_RETRY_TICKS
-            ? ResourceReadiness.READY : ResourceReadiness.WAITING;
         int seeds=availableSaplings(c).stream().mapToInt(s -> s.item().count()).sum();
-        if (unprocessed) return ResourceReadiness.READY;
+        if (unprocessed || unobservedNegative) return ResourceReadiness.READY;
+        if (stage==Stage.CHOP) {
+            if (!c.profile().loggingReplantingPlots.isEmpty()) {
+                LoggingPlot oldest=registeredPlot(c,c.profile().loggingReplantingPlots.get(0));
+                long missing=oldest.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p)) ? 4
+                    : oldest.plantingPositions().stream().filter(p -> air(c.world().block(p))).count();
+                if (seeds>=missing) return ResourceReadiness.READY;
+            }
+            return visibilityRetryAt<0 || c.world().tick()>=visibilityRetryAt || c.world().tick()<visibilityRetryAt-VISIBILITY_RETRY_TICKS
+                ? ResourceReadiness.READY : ResourceReadiness.WAITING;
+        }
         // Other work can unload this site. Keep its existing obligation; the normal
         // PLANT observation path revalidates every cell before any resumed use.
         if (plot.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p)))
@@ -636,7 +688,7 @@ public final class LoggingModule implements AutomationModule {
         // a per-tick scan. Explicit one-shot and durable active resumes bypass it.
         chopStrokes=trashOperations=craftOperations=0; settleUntil=0; saplingWaitUntil=-1; saplingWaitRequired=0; failure=null;
         plantingStanceReady=false; plantingOrder=List.of();
-        approachResult=null; choppingApproach=null; visibilityRetryAt=-1; initialPlotObservations.clear(); initialObservationDay=Long.MIN_VALUE;
+        approachResult=null; clearVisibilitySweep(); initialPlotObservations.clear(); initialObservationDay=Long.MIN_VALUE;
         observationWindow.clear();
         clearCleanupQuiet();
         // Explicit stop/reconnect may start a fresh bounded seed wait. The durable

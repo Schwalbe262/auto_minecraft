@@ -18,13 +18,110 @@ class LoggingModuleTest {
     }
 
     @Test void fullyOccludedTreeWaitsWithoutLaunchingWorldWideTerrainSearchOrDiscardingPlots() {
-        Fixture f=new Fixture(2); List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
-        f.occludedChopping.addAll(bases); f.blockAllChopRays=true;
+        Fixture f=new Fixture(2);
+        f.profile.loggingPlots.forEach(plot -> f.occludedChopping.addAll(plot.plantingPositions())); f.blockAllChopRays=true;
         WorkResult result=f.finish();
         assertEquals(WorkResult.State.RESOURCE_WAIT,result.state()); assertTrue(result.message().contains("시야") || result.message().contains("볼 수"));
-        assertEquals(0,f.moves); assertTrue(f.actions.isEmpty()); assertTrue(f.chopRays>0); assertTrue(f.chopRays<8000);
+        assertEquals(0,f.moves); assertTrue(f.actions.isEmpty()); assertTrue(f.chopRays>0); assertTrue(f.chopRays<16000);
+        assertTrue(f.profile.loggingPlots.stream().allMatch(plot -> plot.plantingPositions().stream().anyMatch(f.chopRayTargets::contains)));
         assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.loggingRunActive);
         assertTrue(f.profile.loggingReplantingPlots.isEmpty()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void anInvisibleFirstPlotCannotPreventTheOtherFourRegisteredTreesBeingProcessed() {
+        Fixture f=new Fixture(5); LoggingPlot first=f.profile.loggingPlots.get(0);
+        f.occludedChopping.addAll(first.plantingPositions()); f.blockAllChopRays=true;
+        WorkResult result=f.finish();
+        assertEquals(WorkResult.State.RESOURCE_WAIT,result.state(),result.message());
+        assertEquals(8,f.chops); assertEquals(16,f.plants);
+        assertFalse(f.actions.stream().filter(a -> a instanceof Action.ChopTree)
+            .map(a -> ((Action.ChopTree)a).pos()).anyMatch(first.plantingPositions()::contains));
+        assertEquals(List.of(first.corner()),f.profile.loggingRemainingPlots);
+        assertTrue(f.profile.loggingReplantingPlots.isEmpty()); assertTrue(f.profile.loggingRunActive);
+        assertTrue(f.profile.nextEligibleDay.isEmpty()); assertEquals(0,f.trashed); assertEquals(0,f.crafted);
+    }
+
+    @Test void allInvisiblePlotsAreCheckedOnceBeforeWaitingAndOneShotDoesNotRunNeighbours() {
+        Fixture f=new Fixture(3);
+        f.profile.loggingPlots.forEach(plot -> f.occludedChopping.addAll(plot.plantingPositions())); f.blockAllChopRays=true;
+        int[] neighbours={0}; f.profile.enabled.put(Feature.SHIPPING,true);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.SHIPPING,40,c -> { neighbours[0]++; return WorkResult.idle(); })));
+        engine.startOnce(f.context,Feature.LOGGING);
+        engineUntil(f,engine,() -> engine.state()==AutomationEngine.State.WAITING);
+        assertTrue(engine.running(),engine.status()); assertEquals(0,neighbours[0]); assertTrue(f.actions.isEmpty());
+        assertEquals(12,f.actualChopQueries,"Each plot gets one actual-eye pass in the bounded sweep");
+        assertTrue(f.profile.loggingPlots.stream().allMatch(plot -> plot.plantingPositions().stream().anyMatch(f.chopRayTargets::contains)));
+        int rays=f.chopRays;
+        for(int i=0;i<10;i++) { f.ticks+=20; engine.tick(f.context); }
+        assertEquals(rays,f.chopRays); assertEquals(12,f.actualChopQueries);
+        assertEquals(3,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void invisibleTreesAndAnOlderSeedShortPlotWaitWithoutReadyPlotPingPong() {
+        Fixture f=new Fixture(3); f.continuous(); f.profile.loggingRunActive=true;
+        f.profile.loggingRemainingPlots.addAll(f.profile.loggingPlots.stream().map(LoggingPlot::corner).toList());
+        LoggingPlot oldest=f.profile.loggingPlots.get(0); f.setPlot(0,"minecraft:air");
+        f.profile.loggingReplantingPlots.add(oldest.corner()); f.add(LoggingRules.SAPLING,2);
+        f.profile.loggingPlots.subList(1,3).forEach(plot -> f.occludedChopping.addAll(plot.plantingPositions()));
+        f.blockAllChopRays=true;
+        int[] sleeps={0}; f.profile.enabled.put(Feature.SLEEP,true);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.SLEEP,100,c -> { sleeps[0]++; return WorkResult.idle(); })));
+        engine.start(f.context); engineUntil(f,engine,() -> sleeps[0]>0);
+        assertEquals(AutomationEngine.State.WAITING,engine.state()); assertEquals(0,f.plants); assertTrue(f.actions.isEmpty());
+        int rays=f.chopRays;
+        for(int i=0;i<10;i++) { f.ticks+=20; engine.tick(f.context); }
+        assertTrue(engine.running(),engine.status()); assertEquals(rays,f.chopRays); assertTrue(sleeps[0]>1);
+        f.add(LoggingRules.SAPLING,2); f.ticks+=20;
+        engineUntil(f,engine,() -> f.plants==4);
+        assertEquals(0,f.chops);
+        assertTrue(f.actions.stream().filter(a -> a instanceof Action.PlantSapling)
+            .map(a -> ((Action.PlantSapling)a).pos()).allMatch(oldest.plantingPositions()::contains));
+        assertTrue(f.profile.loggingRunActive); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void allInvisibleRetryChecksALaterNewlyVisiblePlotWithoutRepeatingTheFirstForever() {
+        Fixture f=new Fixture(2); f.continuous();
+        f.profile.loggingPlots.forEach(plot -> f.occludedChopping.addAll(plot.plantingPositions())); f.blockAllChopRays=true;
+        int[] sleeps={0}; f.profile.enabled.put(Feature.SLEEP,true);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.SLEEP,100,c -> { sleeps[0]++; return WorkResult.idle(); })));
+        engine.start(f.context); engineUntil(f,engine,() -> sleeps[0]>0);
+        LoggingPlot later=f.profile.loggingPlots.get(1); f.occludedChopping.removeAll(later.plantingPositions());
+        f.ticks+=1200;
+        engineUntil(f,engine,() -> f.pending instanceof Action.ChopTree);
+        assertTrue(later.plantingPositions().contains(((Action.ChopTree)f.pending).pos()));
+        assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.loggingReplantingPlots.isEmpty());
+    }
+
+    @Test void invisibleFirstPlotCannotBypassUnknownSecondGeometryOrWholeTreeRejection() {
+        for(boolean unknown:List.of(false,true)) {
+            Fixture f=new Fixture(2); f.occludedChopping.addAll(f.profile.loggingPlots.get(0).plantingPositions());
+            f.profile.loggingRunActive=true;
+            f.profile.loggingRemainingPlots.addAll(f.profile.loggingPlots.stream().map(LoggingPlot::corner).toList());
+            f.blockAllChopRays=true;
+            if(unknown) f.unloaded.add(f.profile.loggingPlots.get(1).corner());
+            else f.treeRejection="connected structure outside registered 2x2";
+            assertEquals(unknown ? WorkResult.State.DEFERRED : WorkResult.State.BLOCKED,f.finish().state());
+            assertFalse(f.actions.stream().anyMatch(a -> a instanceof Action.ChopTree));
+            assertTrue(f.profile.loggingRunActive); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+
+    @Test void unloadingANonCurrentNegativeWakesOrdinaryObservationWithoutReadingUnknownBlocks() {
+        Fixture f=new Fixture(2); f.continuous();
+        f.profile.loggingPlots.forEach(plot -> f.occludedChopping.addAll(plot.plantingPositions())); f.blockAllChopRays=true;
+        int[] sleeps={0}; f.profile.enabled.put(Feature.SLEEP,true);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.SLEEP,100,c -> { sleeps[0]++; return WorkResult.idle(); })));
+        engine.start(f.context); engineUntil(f,engine,() -> sleeps[0]>0);
+        Pos other=f.profile.loggingPlots.get(1).corner(); f.unloaded.add(other);
+        f.rejectUnloadedBlockReads=true; f.observeLoads=true;
+        assertEquals(AutomationModule.ResourceReadiness.READY,f.module.resourceReadiness(f.context));
+        f.ticks+=20; engineUntil(f,engine,() -> f.observed.contains(other));
+        assertTrue(engine.running(),engine.status()); assertTrue(f.actions.isEmpty());
+        assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.nextEligibleDay.isEmpty());
     }
 
     @Test void nativeVisibleApproachCanChooseAnotherBaseButStillRequiresWholeTreeSafetyProof() {
@@ -993,6 +1090,7 @@ class LoggingModuleTest {
         final Set<Pos> occludedPlanting=new HashSet<>();
         final Set<Pos> occludedChopping=new HashSet<>();
         boolean blockAllChopRays,movementExposesChop; int chopRays,actualChopQueries;
+        final Set<Pos> chopRayTargets=new HashSet<>();
         Pos chopGoalTarget,chopGoalFeet; String treeRejection;
         boolean grounded=true,forcedNativeBusy; String nativeFence; ItemData cursor=ItemData.EMPTY;
         final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
@@ -1000,7 +1098,7 @@ class LoggingModuleTest {
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
         double playerX=.5;
         int fingerprintCalls,fingerprintEpoch,omittedInventorySlot=-1;
-        boolean fingerprintSupported=true,duplicateInventorySlot,manualCraftBatches,observeLoads,retryableObserve;
+        boolean fingerprintSupported=true,duplicateInventorySlot,manualCraftBatches,observeLoads,retryableObserve,rejectUnloadedBlockReads;
         final List<Pos> observed=new ArrayList<>();
         int containerId,nextContainer=1; Pos opened;
         Action pending; ActionOutcome outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
@@ -1118,7 +1216,10 @@ class LoggingModuleTest {
         public long tick() { return ticks; }
         public long dayTime() { return day*24000+1000; }
         public PlayerState player() { return new PlayerState(playerX,64,.5,0,0,grounded,false,20,20,selected,true,true); }
-        public BlockData block(Pos pos) { return new BlockData(pos,id(pos),Map.of()); }
+        public BlockData block(Pos pos) {
+            if(rejectUnloadedBlockReads) assertTrue(loaded(pos),"An unknown cell must be observed before reading its block");
+            return new BlockData(pos,id(pos),Map.of());
+        }
         public boolean loaded(Pos pos) { return !unloaded.contains(pos); }
         public boolean canStand(Pos pos) { return true; }
         public boolean canTraverse(Pos a,Pos b) { return true; }
@@ -1127,7 +1228,7 @@ class LoggingModuleTest {
             return loaded(pos) && !occludedChopping.contains(pos);
         }
         public boolean canInteractFrom(Pos feet,Pos target,double reach) {
-            chopRays++;
+            chopRays++; chopRayTargets.add(target);
             return Objects.equals(feet,chopGoalFeet) && Objects.equals(target,chopGoalTarget)
                 || !blockAllChopRays && WorldAccess.super.canInteractFrom(feet,target,reach);
         }
