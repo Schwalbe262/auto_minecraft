@@ -326,6 +326,9 @@ public final class MinecraftActions implements ActionPort {
         }
     }
     private void sendConsolidationClick() {
+        // Baseline refresh is only for the next UNSENT primitive. An in-flight
+        // click must be handled by its authoritative ACK dispatcher, never here.
+        if (consolidationInFlight) return;
         if (!enabled || consolidation==null || consolidationRecovery==null || !consolidationRecovery.mayContinue(world.tick())) {
             finish(ActionOutcome.State.FAILED,"인벤토리 정리 재확인 시간이 끝났습니다. 미확인 클릭과 임시 슬롯은 보존했습니다."); return;
         }

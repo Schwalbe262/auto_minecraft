@@ -297,3 +297,29 @@ and ingredients were preserved. This is an inventory-restoration fence, not a
 navigation failure or proof of a completed wine batch. No restart, old-click
 resend or forced fence clearing was used at discovery. Diagnosis of the retained
 native transaction is in progress; this run does **not** pass multi-hour stability.
+
+### Cause: a verified same-kind pickup before an unsent merge
+
+A bounded read-only native snapshot retained the exact outward SWAP full reply,
+one acknowledged primitive, stage MERGE and no in-flight click. Both swap partners
+were unchanged. The only difference was a separate receiver slot changing from
+empty to one wine; a later authoritative slot packet exactly matched its current
+native identity/count. This was not a passive wine-metadata change.
+
+The old pre-click refresh reused the concurrent-ACK rule that excludes the moved
+item's native identity. That is necessary when interpreting an in-flight move's
+reply, but needlessly rejected the proven pickup before the next move was sent.
+A separate explicit pre-MERGE receiver proof now admits this narrow case after
+the outward SWAP acknowledgement. Its refreshed count becomes the next exact
+conservation baseline. The old overloads, concurrent-ACK classifier, swap partners
+and native moved-versus-received verification remain unchanged. An in-flight
+primitive cannot enter this pre-click refresh path. The historical failed action
+is not converted into success and this change does not clear its retained fence.
+
+Fourteen new detached core/native regression tests cover the captured sequence,
+old-overload strictness, exact subsequent merge/restoration, positive partial
+receiver pickups, malformed/missing proofs, protected participants and atomic
+rejection. The full offline build passed **1,566 tests / 115 suites**, with zero
+failures, errors or skips. Artifact SHA-256:
+`6E8BDB5E74C05018AC3836F1E1F88B959CC0732098FBEF25FF91E09D559AAC74`.
+Installation and native post-fix acceptance are still pending at this checkpoint.

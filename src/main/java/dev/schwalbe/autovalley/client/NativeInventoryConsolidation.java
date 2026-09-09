@@ -83,8 +83,8 @@ final class NativeInventoryConsolidation {
         if (expectedMenu.equals(live)) return true;
         if (acknowledgedSequence<0) return false;
 
-        // A pickup can arrive after a complete click ACK but before its inverse
-        // SWAP. Only the actual subsequent per-slot packet item is evidence;
+        // A pickup can arrive after a complete click ACK but before the next
+        // unsent MERGE or inverse SWAP. Only the subsequent packet item is evidence;
         // appliedMenu is client state and must never stand in for a full ACK.
         Map<Integer,InventoryConsolidation.Stack> latestServerItems=new HashMap<>();
         for (var update:observations.nativeSlotSnapshotsSince(menuId,acknowledgedSequence))
@@ -93,22 +93,37 @@ final class NativeInventoryConsolidation {
         if (changed==null || changed.isEmpty()) return false;
         Set<Integer> verifiedInventoryIndices=new HashSet<>();
         Set<Integer> verifiedProductionAdditions=new HashSet<>();
+        Set<Integer> verifiedPreMergeReceiverAdditions=new HashSet<>();
         for (int slot:changed) {
             int index=-1;
             for (int candidate=0;candidate<menuSlots.length;candidate++) if (menuSlots[candidate]==slot) { index=candidate; break; }
             if (index<0 || index==protectedHotbar) return false;
             var old=expectedMenu.get(slot); var now=live.get(slot);
-            if (productionAddition(old,now)) verifiedProductionAdditions.add(index);
+            if (productionAddition(old,now)) {
+                verifiedProductionAdditions.add(index);
+                if (preMergeReceiverAddition(transaction,index,now)) verifiedPreMergeReceiverAdditions.add(index);
+            }
             else if (!NativeWineMetadata.passiveChange(old,now,level,wineYear)) return false;
             verifiedInventoryIndices.add(index);
         }
         // This cannot acknowledge a click or change the next primitive. The
-        // core excludes participants and same-identity implicit receivers. Only after an exact
-        // MERGE may a verified pickup fill the EMPTY borrowed scratch: the next
+        // core excludes participants. An explicitly proven pre-MERGE receiver
+        // pickup becomes the next conservation baseline, never a click ACK.
+        // Only after an exact MERGE may a pickup fill the EMPTY borrowed scratch: the next
         // exact inverse SWAP preserves that pickup and restores the borrowed item.
-        if (!transaction.rebaseVerifiedUpdates(inventory(live),verifiedInventoryIndices,verifiedProductionAdditions)) return false;
+        if (!transaction.rebaseVerifiedUpdates(inventory(live),verifiedInventoryIndices,verifiedProductionAdditions,
+                verifiedPreMergeReceiverAdditions)) return false;
         expectedMenu=live;
         return true;
+    }
+
+    /** Candidate only; core checks the acknowledged stage, all participants and positive counts. */
+    static boolean preMergeReceiverAddition(InventoryConsolidation transaction,int index,InventoryConsolidation.Stack now) {
+        if (transaction==null || transaction.complete() || index<0 || index>=36 || now==null || now.empty()) return false;
+        var click=transaction.click();
+        if (click.type()!=InventoryConsolidation.Type.QUICK_MOVE || (index<9)==(click.sourceIndex()<9)) return false;
+        var source=transaction.expectedLive().items().get(click.sourceIndex());
+        return !source.empty() && source.identity().equals(now.identity()) && source.limit()==now.limit();
     }
 
     /** Detached exact comparison; callers supply only post-ACK server packet items. */

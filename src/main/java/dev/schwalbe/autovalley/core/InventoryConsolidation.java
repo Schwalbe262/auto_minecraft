@@ -120,8 +120,34 @@ public final class InventoryConsolidation {
      */
     public boolean rebaseVerifiedUpdates(Snapshot after,Set<Integer> verifiedUpdates,
                                          Set<Integer> verifiedProductionAdditions) {
-        if (after==null || verifiedUpdates==null || verifiedProductionAdditions==null || acknowledgedPrimitives==0
+        return rebaseVerifiedUpdates(after,verifiedUpdates,verifiedProductionAdditions,Set.of());
+    }
+
+    /**
+     * A server-authored pickup after the outward SWAP ACK and BEFORE sending
+     * QUICK_MOVE may fill one of that still-unsent move's implicit receivers.
+     * Unlike a concurrent addition inside a move ACK, the same native identity
+     * is safe here: the refreshed count is part of the next conservation baseline.
+     * The native caller must separately prove post-ACK packet origin and must
+     * never call this to acknowledge or rebase an in-flight primitive.
+     * The legacy overloads and all move-ACK rules remain unchanged.
+     */
+    public boolean rebaseVerifiedUpdates(Snapshot after,Set<Integer> verifiedUpdates,
+                                         Set<Integer> verifiedProductionAdditions,
+                                         Set<Integer> verifiedPreMergeReceiverAdditions) {
+        if (after==null || verifiedUpdates==null || verifiedProductionAdditions==null
+                || verifiedPreMergeReceiverAdditions==null || acknowledgedPrimitives==0
                 || stage!=Stage.MERGE && stage!=Stage.RESTORE) return false;
+        for (Integer index:verifiedPreMergeReceiverAdditions) {
+            if (index==null || index<0 || index>=36 || stage!=Stage.MERGE || acknowledgedPrimitives!=1
+                    || plan.direct() || !nonparticipant(index)
+                    || (index<9)==(plan.quickMoveIndex()<9)
+                    || !verifiedUpdates.contains(index) || !verifiedProductionAdditions.contains(index)) return false;
+            Stack old=before.items().get(index),now=after.items().get(index);
+            if (now.empty() || now.limit()>64 || now.count()<=old.count()
+                    || !old.empty() && !old.sameKind(now)
+                    || !before.items().get(plan.quickMoveIndex()).sameKind(now)) return false;
+        }
         for (Integer index:verifiedProductionAdditions) {
             if (index==null || index<0 || index>=36 || !verifiedUpdates.contains(index)) return false;
             Stack old=before.items().get(index),now=after.items().get(index);
@@ -135,7 +161,8 @@ public final class InventoryConsolidation {
             if (stage==Stage.MERGE && (index==plan.quickMoveIndex()
                     || (index<9)!=(plan.quickMoveIndex()<9)
                         && (!verifiedProductionAdditions.contains(index)
-                            || !allowsConcurrentAddition(index,after.items().get(index))))) return false;
+                            || !allowsConcurrentAddition(index,after.items().get(index))
+                                && !verifiedPreMergeReceiverAdditions.contains(index)))) return false;
         }
         for (int index=0;index<36;index++) {
             if (!before.items().get(index).equals(after.items().get(index))
