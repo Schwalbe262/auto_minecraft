@@ -12,6 +12,7 @@ public final class LoggingModule implements AutomationModule {
     private enum Stage { START, PLOT, CHOP, SETTLE, PLANT, WASTE, RESTORE, CRAFT_OPEN, CRAFT, CRAFT_CLOSE, WOOD, BERRIES, FINISH }
     private enum Pending { SELECT, SWAP, BORROW, RESTORE, CHOP, PLANT, TRASH, OPEN, CRAFT, CLOSE }
     private Stage stage=Stage.START;
+    private boolean restoreBeforePlot;
     private Pending pending;
     private long ticket=-1, settleUntil, nextCheckTick=-1, lastTick=-1;
     private long saplingWaitUntil=-1;
@@ -69,7 +70,10 @@ public final class LoggingModule implements AutomationModule {
                 } else if (completed==Pending.RESTORE) {
                     LoggingHotbarLease lease=c.profile().loggingHotbarLease;
                     if (lease==null || !restored(c,lease)) return fail("임시 단축바의 원래 아이템 복원이 확인되지 않았습니다.");
-                    saveLease(c,null); stage=nextAfterWaste(c);
+                    saveLease(c,null);
+                    stage=restoreBeforePlot ? Stage.PLOT : nextAfterWaste(c);
+                    if (restoreBeforePlot) clearCleanupQuiet();
+                    restoreBeforePlot=false;
                 } else if (completed==Pending.OPEN) {
                     if (!c.world().menu().container() || !c.world().loggingCraftingMenu()
                         || !c.world().loggingCraftingGridEmpty() || !c.world().menu().carried().empty())
@@ -250,6 +254,8 @@ public final class LoggingModule implements AutomationModule {
             }
             case RESTORE -> {
                 LoggingHotbarLease lease=c.profile().loggingHotbarLease;
+                if (restoreBeforePlot && (lease==null || !plotRestoreBoundary(c)))
+                    return fail("다음 벌목 구역 확인 전 단축바 복원 경계를 확인할 수 없습니다. 복원 의무를 보존했습니다.");
                 if (lease==null) { stage=nextAfterWaste(c); return busy("단축바 복원 완료"); }
                 if (lease.stage()!=LoggingHotbarLease.Stage.PARKED || !parked(c,lease))
                     return fail("빌린 단축바나 보관한 원래 아이템이 바뀌었습니다. 임의로 교환하지 않습니다.");
@@ -360,6 +366,16 @@ public final class LoggingModule implements AutomationModule {
             approachResult=WorkResult.deferred("벌목 밑동 또는 월드 관측이 바뀌었습니다. 미완료 구역을 보존하고 다시 확인합니다.");
         else {
             invisiblePlots.put(plot.corner(),choppingApproach);
+            if (c.profile().loggingHotbarLease!=null) {
+                LoggingHotbarLease lease=c.profile().loggingHotbarLease;
+                if (!plotRestoreBoundary(c) || lease.stage()!=LoggingHotbarLease.Stage.PARKED || !parked(c,lease)) {
+                    fail("시야 대기 전 빌린 단축바의 원래 아이템과 복원 경계를 확인할 수 없습니다. 복원 의무를 보존했습니다."); return null;
+                }
+                // A negative visibility proof never waives custody. Use the normal
+                // checkpointed native inverse, then resume selection, not cleanup.
+                restoreBeforePlot=true; clearCleanupQuiet(); stage=Stage.RESTORE;
+                approachResult=busy("다음 구역 확인 전 빌린 단축바를 먼저 복원"); return null;
+            }
             if (resourceReadiness(c)==ResourceReadiness.UNSAFE) {
                 fail("벌목 시야 대기의 안전한 작업 경계를 확인할 수 없습니다. 미완료 구역을 보존하고 중지합니다."); return null;
             }
@@ -379,6 +395,11 @@ public final class LoggingModule implements AutomationModule {
     }
     private void clearVisibilitySweep() {
         invisiblePlots.clear(); choppingApproach=null; visibilityRetryAt=-1; visibilityScanTick=Long.MIN_VALUE;
+    }
+    private boolean plotRestoreBoundary(Context c) {
+        return pending==null && ticket<0 && c.profile().loggingRunActive && c.world().player().onGround()
+            && !c.actions().busy() && c.actions().pauseReason()==null && c.world().menu()!=null
+            && !c.world().menu().container() && c.world().menu().carried().empty() && !MachineOutputLedger.hasPending(c);
     }
     private boolean approachPlanting(Context c,List<Pos> remaining) {
         approachResult=null;
@@ -683,7 +704,7 @@ public final class LoggingModule implements AutomationModule {
     private static WorkResult busy(String text) { return WorkResult.busy("벌목: "+text); }
     private WorkResult fail(String text) { failure=text; return WorkResult.blocked(text); }
     @Override public void reset() {
-        stage=Stage.START; pending=null; ticket=-1; actionPos=null; plot=null; table=null; craftingMenu=-1;
+        stage=Stage.START; restoreBeforePlot=false; pending=null; ticket=-1; actionPos=null; plot=null; table=null; craftingMenu=-1;
         // Scheduler resets must not turn the bounded ALL_GROWN readiness poll into
         // a per-tick scan. Explicit one-shot and durable active resumes bypass it.
         chopStrokes=trashOperations=craftOperations=0; settleUntil=0; saplingWaitUntil=-1; saplingWaitRequired=0; failure=null;

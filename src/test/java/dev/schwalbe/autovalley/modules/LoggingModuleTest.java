@@ -124,6 +124,70 @@ class LoggingModuleTest {
         assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.nextEligibleDay.isEmpty());
     }
 
+    @Test void visibilitySkipRestoresTheBorrowedHotbarBeforeSelectingAnotherPlotWithoutCleanup() {
+        Fixture f=parkedVisibilityFixture(); ItemData original=f.profile.loggingHotbarLease.original();
+        f.until(() -> f.pending instanceof Action.SwapHotbar);
+        assertEquals(1,f.actions.size()); assertEquals(LoggingHotbarLease.Stage.RESTORING,f.profile.loggingHotbarLease.stage());
+        assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.loggingReplantingPlots.isEmpty());
+        f.advance(); f.step();
+        assertNull(f.profile.loggingHotbarLease); assertEquals(original,f.inventory[0]);
+        assertTrue(f.profile.loggingRunActive); assertEquals(2,f.profile.loggingRemainingPlots.size());
+        assertEquals(0,f.trashed); assertEquals(0,f.crafted); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        f.until(() -> f.pending instanceof Action.ChopTree);
+        assertTrue(f.profile.loggingPlots.get(1).plantingPositions().contains(((Action.ChopTree)f.pending).pos()));
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        assertNull(f.profile.loggingHotbarLease); assertEquals(original,f.inventory[0]);
+        assertEquals(2,f.chops); assertEquals(4,f.plants); assertEquals(1,f.profile.loggingRemainingPlots.size());
+        assertEquals(0,f.trashed); assertEquals(0,f.crafted); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void visibilityRestoreMustAwaitItsSingleNativeAckAndCannotReplayAFailedInverse() {
+        Fixture f=parkedVisibilityFixture(); f.until(() -> f.pending instanceof Action.SwapHotbar);
+        int sent=f.actions.size();
+        for(int i=0;i<100;i++) { f.ticks++; assertEquals(WorkResult.State.BUSY,f.step().state()); }
+        assertEquals(sent,f.actions.size()); assertEquals(LoggingHotbarLease.Stage.RESTORING,f.profile.loggingHotbarLease.stage());
+        assertEquals(AutomationModule.ResourceReadiness.UNSAFE,f.module.resourceReadiness(f.context));
+        f.reject("unconfirmed inverse"); assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertNotNull(f.profile.loggingHotbarLease); f.restart();
+        assertEquals(WorkResult.State.BLOCKED,f.step().state()); assertEquals(sent,f.actions.size());
+        assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void visibilityRestoreCannotSendAcrossChangedIdentityNativeUncertaintyOrUnsafeBoundary() {
+        for(String unsafe:List.of("identity","fingerprint","busy","fence","cursor","container","airborne","output","save")) {
+            Fixture f=parkedVisibilityFixture();
+            switch(unsafe) {
+                case "identity" -> f.inventory[9]=item("minecraft:diamond",1);
+                case "fingerprint" -> f.fingerprintEpoch++;
+                case "busy" -> f.forcedNativeBusy=true;
+                case "fence" -> f.nativeFence="unconfirmed native action";
+                case "cursor" -> f.cursor=item(LoggingRules.SAPLING,1);
+                case "container" -> { f.opened=f.woodPos; f.containerId=10; }
+                case "airborne" -> f.grounded=false;
+                case "output" -> {
+                    String id="11111111-1111-1111-1111-111111111111";
+                    f.profile.pendingMachineOutputs.put(id,new PendingMachineOutput(id,Feature.PRESERVES,new Pos(30,64,0),1,null,1,PendingMachineOutput.Phase.AWAITING_MACHINE_CONFIRMATION));
+                }
+                case "save" -> f.failNextCheckpoint=true;
+                default -> throw new AssertionError(unsafe);
+            }
+            assertEquals(WorkResult.State.BLOCKED,f.finish().state(),unsafe);
+            assertTrue(f.actions.isEmpty(),unsafe); assertNotNull(f.profile.loggingHotbarLease,unsafe);
+            assertEquals(LoggingHotbarLease.Stage.PARKED,f.profile.loggingHotbarLease.stage(),unsafe);
+            assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+
+    private static Fixture parkedVisibilityFixture() {
+        Fixture f=new Fixture(2); f.fillHotbar(); ItemData original=f.inventory[0];
+        f.inventory[9]=original; f.inventory[0]=item(LoggingRules.SAPLING,4);
+        f.profile.loggingHotbarLease=new LoggingHotbarLease(9,0,original,f.loggingItemFingerprint(9),LoggingHotbarLease.Stage.PARKED);
+        f.profile.loggingRunActive=true;
+        f.profile.loggingRemainingPlots.addAll(f.profile.loggingPlots.stream().map(LoggingPlot::corner).toList());
+        f.occludedChopping.addAll(f.profile.loggingPlots.get(0).plantingPositions()); f.blockAllChopRays=true;
+        return f;
+    }
+
     @Test void nativeVisibleApproachCanChooseAnotherBaseButStillRequiresWholeTreeSafetyProof() {
         Fixture f=new Fixture(1); List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
         f.occludedChopping.addAll(bases); f.blockAllChopRays=true;

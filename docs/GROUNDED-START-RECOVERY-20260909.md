@@ -27,6 +27,10 @@ Harvest lookahead and ongoing jump/descent controllers cannot use this recovery.
 
 Validation includes seven pure geometry tests and nine controller/navigation
 tests. The controller tests use detached response models, not a live Minecraft
-physics simulator. Native acceptance remains a separate deployment check.
+physics simulator. Native acceptance was checked separately after deployment:
+the previously rejected edge start progressed through ordinary movement to the
+logging plots, followed by two tree fellings and eight sapling plantings. A later
+borrowed-hotbar restoration boundary stopped that run; this is not evidence of
+whole-routine completion.
 The combined offline Java 17 build passed 1,825 tests across 138 suites, with
 zero failures, errors or skips, including a rerun after the final test edit.
