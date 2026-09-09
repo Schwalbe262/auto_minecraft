@@ -645,3 +645,10 @@ server acknowledgements, not inferences from an idle HUD or a later money value.
 Multi-hour uninterrupted acceptance, completion of the remaining wine rack after
 its real cooldown, and a native occurrence of the new partial-feed branch remain
 pending. The current automation stays in continuous mode to continue those checks.
+
+The previously ingredient-starved seed job retried after the harvest deposit.
+At 05:37 UTC all four native artisan actions 281–284 succeeded. Withdrawal 278
+confirmed 53 fruit, seed transfers 286 and 289 confirmed two each, and transfer
+292 returned the remaining 41 fruit. The menus closed normally. Thus the job
+resumed from temporary missing ingredients, produced/stored four seeds and
+returned unused input without a restart or manually changing its deadlines.
