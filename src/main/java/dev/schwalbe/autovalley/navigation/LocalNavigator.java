@@ -54,6 +54,8 @@ public final class LocalNavigator implements Navigation {
     private DescentController descent;
     private boolean interruptedDescent;
     private java.util.Map<String,Object> lastFailure=java.util.Map.of();
+    /** One bounded original controller failure; subsequent routing guards cannot overwrite it. */
+    private java.util.Map<String,Object> lastAscentFailure=java.util.Map.of();
 
     public void setSprint(boolean sprint) { this.sprint = sprint; }
     public String failureReason() { return failure; }
@@ -74,7 +76,8 @@ public final class LocalNavigator implements Navigation {
         report.put("descentHandoffs",descent==null ? 0 : descent.completedEdges());
         report.put("descentFlow",descent!=null && descent.flowing());
         report.put("searchLimit",search==null ? 0 : search.nodeLimit());
-        report.put("lastFailure",lastFailure);return java.util.Collections.unmodifiableMap(report);
+        report.put("lastFailure",lastFailure);report.put("lastAscentFailure",lastAscentFailure);
+        return java.util.Collections.unmodifiableMap(report);
     }
     @Override public boolean permitsTransit(Pos feet,Context c) {
         return domain!=null && destination!=null && c.profile()==requestProfile && c.session()==requestSession
@@ -357,7 +360,7 @@ public final class LocalNavigator implements Navigation {
             return Result.MOVING;
         long began=System.nanoTime();
         if (search==null) search=new TerrainPathSearch(walkingFeet,destination,destinationReach,world,c.profile(),domain,
-            rejectedEndpoints,rejectedFrontiers,loggingPath,goal,plantingTargets,domain.terrain(),requestInteractions);
+            rejectedEndpoints,rejectedFrontiers,loggingPath,goal,plantingTargets,domain.terrain(),requestInteractions,interruptedJumps);
         long remaining=TerrainPathSearch.SLICE_NANOS-sliceNanos-(System.nanoTime()-began);
         TerrainPathSearch.Status state=search.status();
         if (remaining>0 && state==TerrainPathSearch.Status.SEARCHING) {
@@ -509,10 +512,14 @@ public final class LocalNavigator implements Navigation {
     }
 
     private Result continueLoggingJump(Context context) {
+        LoggingJumpController.Phase priorPhase=loggingJump.phase();
         Result result=loggingJump.tick(context);
         previousMoving=result==Result.MOVING;
         previousSprint=false;
-        if (result==Result.BLOCKED) return blocked(context.actions(),Failure.JUMP_UNCERTAIN,loggingJump.failureReason());
+        if (result==Result.BLOCKED) {
+            rememberAscentFailure(priorPhase,loggingJump.failureReason());
+            return blocked(context.actions(),Failure.JUMP_UNCERTAIN,loggingJump.failureReason());
+        }
         if (result==Result.ARRIVED) {
             loggingJump=null;
             if (settledAtFrontier(context)) return arriveFrontier(context,frontier.standing());
@@ -574,10 +581,23 @@ public final class LocalNavigator implements Navigation {
 
     private void cancelLoggingJump() {
         if (loggingJump==null) return;
+        LoggingJumpController.Phase priorPhase=loggingJump.phase();
         if (loggingJump.attempted() && loggingJump.phase()!=LoggingJumpController.Phase.COMPLETE) {
             interruptedJumps.add(loggingJump.edge());
             interruptedLanding=true;
         }
-        loggingJump.cancel(); loggingJump=null;
+        loggingJump.cancel();
+        if (priorPhase!=LoggingJumpController.Phase.FAILED && priorPhase!=LoggingJumpController.Phase.COMPLETE)
+            rememberAscentFailure(priorPhase,loggingJump.failureReason());
+        loggingJump=null;
+    }
+    private void rememberAscentFailure(LoggingJumpController.Phase priorPhase,String reason) {
+        java.util.Map<String,Object> evidence=new java.util.LinkedHashMap<>();
+        evidence.put("reason",reason.length()>512 ? reason.substring(0,512) : reason);
+        evidence.put("phase",priorPhase.name());evidence.put("edge",loggingJump.edge());
+        evidence.put("attempted",loggingJump.attempted());
+        evidence.put("authority",loggingJump instanceof StepUpController ? "TRANSIT" : "LOGGING");
+        if (lastWorld!=null) evidence.put("tick",lastWorld.tick());
+        lastAscentFailure=java.util.Collections.unmodifiableMap(evidence);
     }
 }

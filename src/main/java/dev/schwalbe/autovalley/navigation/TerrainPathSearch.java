@@ -21,6 +21,7 @@ public final class TerrainPathSearch {
     private final TravelDomain domain;
     private final Set<Pos> excluded;
     private final Set<Frontier> rejected;
+    private final Set<LoggingJumpEdge> interruptedJumps;
     private final boolean logging,frontiers,allowStepUp;
     private final Goal goal;
     private final List<Pos> planting;
@@ -44,8 +45,15 @@ public final class TerrainPathSearch {
     }
     public TerrainPathSearch(Pos start,Pos target,double reach,WorldAccess world,Profile profile,TravelDomain domain,
             Set<Pos> excluded,Set<Frontier> rejected,boolean logging,Goal goal,List<Pos> planting,boolean frontiers,boolean allowStepUp) {
+        this(start,target,reach,world,profile,domain,excluded,rejected,logging,goal,planting,frontiers,allowStepUp,Set.of());
+    }
+    /** A cancelled directed jump is unavailable, but never removes a natively walkable edge. */
+    public TerrainPathSearch(Pos start,Pos target,double reach,WorldAccess world,Profile profile,TravelDomain domain,
+            Set<Pos> excluded,Set<Frontier> rejected,boolean logging,Goal goal,List<Pos> planting,boolean frontiers,boolean allowStepUp,
+            Set<LoggingJumpEdge> interruptedJumps) {
         this.start=start;this.target=target;this.reach=reach;this.profile=profile;this.domain=domain;
         this.excluded=Set.copyOf(excluded);this.rejected=Set.copyOf(rejected);this.logging=logging;
+        this.interruptedJumps=Set.copyOf(interruptedJumps);
         this.goal=goal;this.planting=List.copyOf(planting);this.frontiers=frontiers && domain.terrain();this.allowStepUp=allowStepUp;
         if (!Double.isFinite(reach) || reach<0 || !domain.contains(start) || !loadedStance(world,start) || !world.canStand(start)) {
             status=Status.INVALID_START;return;
@@ -106,6 +114,7 @@ public final class TerrainPathSearch {
             boolean jump=false;
             if (!traversable && !diagonal && allowStepUp) {
                 LoggingJumpEdge edge=new LoggingJumpEdge(current.pos(),next);
+                if (interruptedJumps.contains(edge)) continue;
                 jump=logging && LoggingJumpRules.verifiedSupports(edge,world,profile) && world.canLoggingJump(edge,profile);
                 if (!jump && domain.terrain())
                     jump=StepUpRules.verifiedSupports(edge,world,profile) && world.canStepUp(edge,profile);
