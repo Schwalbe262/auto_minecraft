@@ -9,6 +9,8 @@ public interface WorldAccess {
     boolean canStand(Pos feet);
     /** Verified support height for a standing cell; unknown adapters must not invent a floor. */
     default double standingY(Pos feet) { return Double.NaN; }
+    /** Native full-footprint flat support; a high stair tread or an unknown adapter is not proof. */
+    default boolean fullFlatSupport(Pos feet) { return false; }
     boolean canTraverse(Pos from, Pos to);
     /** Geometry-only opt-in proof for one cardinal, exactly one-support-block logging ascent. */
     default boolean canLoggingJump(LoggingJumpEdge edge,Profile profile) { return false; }

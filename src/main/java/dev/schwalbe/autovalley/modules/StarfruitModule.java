@@ -22,9 +22,18 @@ public final class StarfruitModule implements AutomationModule {
     private boolean lateCleanup;
     private int fruitBefore;
     private CommodityStorageModule storage;
+    private static final int SKIP_TICKS=1200,MAX_SKIPPED_TARGETS=4096;
+    private record SkippedFruit(FruitPatch patch,CommodityStore store,long day,long tick) { }
+    private final Map<Pos,SkippedFruit> skippedTargets=new LinkedHashMap<>();
 
     @Override public Feature feature() { return Feature.STARFRUIT; }
     @Override public int priority() { return 80; }
+
+    /** Read-only candidate query; it neither selects a target nor consumes same-day evidence. */
+    @Override public boolean hasNearbyWork(Context c) {
+        return stage==Stage.FIND && ticket<0 && !c.actions().busy() && c.session().allows(c.profile(),feature())
+            && clearMenu(c) && safeHotbar(c)>=0 && hasPickupRoom(c) && findNearby(c)!=null;
+    }
 
     @Override public WorkResult tick(Context c) {
         if (stage==Stage.FIND) {
@@ -34,10 +43,12 @@ public final class StarfruitModule implements AutomationModule {
             long today=Math.floorDiv(c.world().dayTime(),24000L);
             if (observedProfile!=c.profile()) {
                 lastConfirmedPatch=null;lastConfirmedTarget=null;lastConfirmedStore=null;
+                skippedTargets.clear();
             }
             if (observedProfile!=c.profile() || confirmedDay!=today) {
                 confirmedToday.clear();observedProfile=c.profile();confirmedDay=today;
             }
+            skippedTargets.entrySet().removeIf(e->!skipActive(c,e.getKey(),e.getValue()));
             if (lateFruitReady(c)) {
                 // This is an actual currently held item, not a pickup debt or a
                 // prediction. A delayed arrival can use the same still-registered
@@ -135,22 +146,30 @@ public final class StarfruitModule implements AutomationModule {
     }
 
     private void chooseNearby(Context c) {
-        target=null;patch=null;
-        if (c.profile().fruitPatches==null) return;
+        Nearby nearby=findNearby(c);
+        target=nearby==null ? null : nearby.target();patch=nearby==null ? null : nearby.patch();
+    }
+    private record Nearby(FruitPatch patch,Pos target) { }
+    private Nearby findNearby(Context c) {
+        Nearby chosen=null;
+        if (c.profile().fruitPatches==null) return null;
+        boolean sameDay=observedProfile==c.profile() && confirmedDay==Math.floorDiv(c.world().dayTime(),24000L);
         double nearest=NEARBY_REACH;
         for (FruitPatch candidate:c.profile().fruitPatches) {
             if (candidate==null || !candidate.valid() || !validStore(c,candidate)) continue;
             for (Pos pos:candidate.fruits()) {
                 double distance=c.world().player().distance(pos);
-                if (distance>nearest || confirmedToday.contains(pos) || !c.world().loaded(pos)) continue;
+                if (distance>nearest || sameDay && confirmedToday.contains(pos)
+                        || skipActive(c,pos,skippedTargets.get(pos)) || !c.world().loaded(pos)) continue;
                 // Loaded + nearby is checked before reading any native block.
                 BlockData block=c.world().block(pos);
                 if (block!=null && pos.equals(block.pos()) && FruitRules.mature(block)
                         && candidate.equals(FruitRules.patch(c.profile(),pos))) {
-                    target=pos;patch=candidate;nearest=distance;
+                    chosen=new Nearby(candidate,pos);nearest=distance;
                 }
             }
         }
+        return chosen;
     }
     private boolean registered(Context c) {
         return target!=null && patch!=null && patch.equals(FruitRules.patch(c.profile(),target)) && validStore(c,patch)
@@ -193,8 +212,24 @@ public final class StarfruitModule implements AutomationModule {
             && s.inventoryIndex()<36 && s.item()!=null && s.item().empty());
     }
     private static int fruitCount(Context c) { return ModuleSupport.count(c,i -> i.is(FruitRules.ITEM)); }
+    private boolean skipActive(Context c,Pos pos,SkippedFruit skip) {
+        return skip!=null && observedProfile==c.profile() && skip.day()==Math.floorDiv(c.world().dayTime(),24000L)
+            && c.world().tick()>=skip.tick() && c.world().tick()-skip.tick()<SKIP_TICKS
+            && skip.patch().equals(FruitRules.patch(c.profile(),pos))
+            && Objects.equals(skip.store(),CommodityStorageRules.store(c.profile(),skip.patch().storeId()));
+    }
     private void submit(Context c,Action action,Pending next) { pending=next;ticket=c.actions().submit(action); }
-    private WorkResult skip(Context c) { c.actions().stopMovement();c.navigation().reset();reset();return WorkResult.idle(); }
+    private WorkResult skip(Context c) {
+        // Only a pre-use approach/equipment skip comes here. This is never a
+        // receipt resolution or permission to resend an uncertain native use.
+        if (target!=null && patch!=null && registered(c)) {
+            if (skippedTargets.size()>=MAX_SKIPPED_TARGETS && !skippedTargets.containsKey(target))
+                skippedTargets.remove(skippedTargets.keySet().iterator().next());
+            skippedTargets.put(target,new SkippedFruit(patch,CommodityStorageRules.store(c.profile(),patch.storeId()),
+                Math.floorDiv(c.world().dayTime(),24000L),c.world().tick()));
+        }
+        c.actions().stopMovement();c.navigation().reset();reset();return WorkResult.idle();
+    }
     private WorkResult fail(Context c,String message) { c.actions().stopMovement();c.navigation().reset();reset();return WorkResult.blocked(message); }
     @Override public void reset() {
         if (storage!=null) storage.reset();

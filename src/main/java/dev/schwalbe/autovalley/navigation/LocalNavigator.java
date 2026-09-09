@@ -18,6 +18,7 @@ public final class LocalNavigator implements Navigation {
     private boolean sprint;
     private PlayerState previousPlayer;
     private boolean previousMoving;
+    private long lastTravelTick=Long.MIN_VALUE;
     private boolean previousSprint;
     private double walkingDistance;
     private double sprintingDistance;
@@ -82,6 +83,41 @@ public final class LocalNavigator implements Navigation {
     @Override public boolean permitsTransit(Pos feet,Context c) {
         return domain!=null && destination!=null && c.profile()==requestProfile && c.session()==requestSession
             && c.profile().navigationMode==requestMode && failureKind==Failure.NONE && domain.contains(feet) && c.world().loaded(feet);
+    }
+    /** No controller, action, route or ownership state is changed by this optional-work query. */
+    @Override public boolean canYieldTravel(Context c) {
+        try {
+            if (c==null || c.navigation()!=this || c.world()!=lastWorld || c.actions()!=lastActions
+                || c.profile()!=requestProfile || c.session()!=requestSession || requestMode==null
+                || c.profile().navigationMode!=requestMode || !requestInteractions || loggingPath || !plantingTargets.isEmpty()
+                || !"FOLLOWING".equals(diagnostic) || !previousMoving || failureKind!=Failure.NONE || destination==null || domain==null
+                || loggingJump!=null || descent!=null || interruptedLanding || interruptedDescent || !interruptedJumps.isEmpty()
+                || doorTicket>=0 || endpointSettleTick>=0 || search!=null || frontier!=null || frontierWait>=0
+                || nextIndex<=0 || nextIndex>=path.size()) return false;
+            WorldAccess world=c.world();PlayerState player=world.player();MenuData menu=world.menu();
+            long now=world.tick();
+            if (lastTravelTick==Long.MIN_VALUE || now<lastTravelTick || now-lastTravelTick>1
+                || player==null || !player.connected() || !player.onGround() || player.sleeping()
+                || !player.focused() && !c.profile().allowBackground
+                || !Double.isFinite(player.x()) || !Double.isFinite(player.y()) || !Double.isFinite(player.z())
+                || c.actions().busy() || menu==null || menu.container() || menu.carried()==null || !menu.carried().empty()) return false;
+            Pos from=path.get(nextIndex-1),next=path.get(nextIndex),feet=NavigationFeet.resolve(world,player);
+            int dx=Math.abs(next.x()-from.x()),dz=Math.abs(next.z()-from.z());
+            if (from.y()!=next.y() || dx>1 || dz>1 || dx+dz==0 || !feet.equals(from) && !feet.equals(next)) return false;
+            double surface=world.standingY(from);
+            if (!Double.isFinite(surface) || Math.abs(player.y()-surface)>1.0e-4) return false;
+            // The actual feet must already equal one of these two cells.
+            for (Pos cell:List.of(from,next)) {
+                if (!domain.contains(cell) || !TerrainPathSearch.loadedStance(world,cell) || !world.canStand(cell)
+                    || !world.fullFlatSupport(cell) || !Double.isFinite(world.standingY(cell))
+                    || Math.abs(world.standingY(cell)-surface)>1.0e-4) return false;
+                for (int dy=0;dy<=1;dy++) {
+                    BlockData block=world.block(cell.offset(0,dy,0));
+                    if (block==null || block.id()==null || !cell.offset(0,dy,0).equals(block.pos()) || block.id().endsWith("_door")) return false;
+                }
+            }
+            return canTraverse(from,next,world,domain);
+        } catch (RuntimeException unavailable) { return false; }
     }
     @Override public boolean permitsStepUp(LoggingJumpEdge edge,Context c) {
         return requestInteractions && loggingJump instanceof StepUpController && loggingJump.edge().equals(edge)
@@ -291,6 +327,7 @@ public final class LocalNavigator implements Navigation {
         previousMoving = true;
         previousSprint = sprint && flat && distance > 0.55;
         diagnostic="FOLLOWING";
+        lastTravelTick=world.tick();
         actions.move(new Movement(yaw, 0, true, previousSprint, false, false));
         return Result.MOVING;
     }
@@ -504,6 +541,7 @@ public final class LocalNavigator implements Navigation {
         progressTick = 0;
         nextIndex = 0;
         previousMoving = false;
+        lastTravelTick=Long.MIN_VALUE;
         failure = "";
         rejectedEndpoints.clear(); clearEndpointSettle();
         domain=null;requestProfile=null;requestSession=null;requestMode=null;requestInteractions=false;goal=TerrainPathSearch.Goal.INTERACTION;

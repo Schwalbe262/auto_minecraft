@@ -21,6 +21,8 @@ public interface Navigation {
     default Pos failureDestination() { return null; }
     default String diagnosticStatus() { return ""; }
     default java.util.Map<String,Object> diagnostics() { return java.util.Map.of(); }
+    /** Read-only proof that the current flat travel may stop for a separately authorised nearby job. */
+    default boolean canYieldTravel(Context context) { return false; }
     /** Native movement rechecks the active request's domain, not a reusable global permission. */
     default boolean permitsTransit(Pos feet,Context context) { return false; }
     /** Only the exact active one-pulse controller may request a native general ascent. */

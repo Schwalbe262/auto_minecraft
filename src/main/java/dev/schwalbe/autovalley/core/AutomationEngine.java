@@ -14,6 +14,11 @@ public final class AutomationEngine {
     private boolean loggingSuspended;
     private long lastTick=Long.MIN_VALUE;
     private AutomationModule active;
+    private AutomationModule nearbyOrigin;
+    private Profile nearbyProfile;
+    private SessionState nearbySession;
+    private WorldAccess nearbyWorld;
+    private long nearbyStarted,nearbyRetryAt;
     private State state=State.OFF;
     private RunMode mode=RunMode.CONTINUOUS;
     private Feature oneShotFeature;
@@ -85,6 +90,7 @@ public final class AutomationEngine {
         blockedThisSweep.clear();
         deferred.clear(); clearResourceWait(); loggingSuspended=false; lastTick=Long.MIN_VALUE;
         active=null;
+        clearNearby();nearbyRetryAt=0;
         c.session().oneShotFeature=null;
         c.session().activeMachineOutputId=null;
         state=next;
@@ -97,6 +103,9 @@ public final class AutomationEngine {
         if (!c.profile().allowBackground && !player.focused()) { stop(c,State.PAUSED,"Game lost focus"); return; }
         if (player.health()<=4 || player.food()<=4) { stop(c,State.PAUSED,"Low health or hunger: take over manually"); return; }
         if (pauseForActions(c)) return;
+        if (nearbyOrigin!=null && !nearbyOwnershipValid(c)) {
+            stop(c,State.PAUSED,"주변 수확 중 원작업 또는 벌목 소유권이 바뀌어 중지했습니다.");return;
+        }
         if (lastTick>c.world().tick()) { deferred.clear(); resourceCheckAt=0; retryAt=0; }
         lastTick=c.world().tick();
         if (c.world().tick()<retryAt) return;
@@ -113,7 +122,9 @@ public final class AutomationEngine {
             if (active!=null) {
                 WorkResult result=active.tick(c);
                 if (pauseForActions(c)) return;
-                if (result.state()==WorkResult.State.BUSY) { state=State.RUNNING; status=result.message(); return; }
+                if (result.state()==WorkResult.State.BUSY) {
+                    state=State.RUNNING;status=result.message();tryNearbyWork(c);return;
+                }
                 if (result.state()==WorkResult.State.RESOURCE_WAIT && !grantResourceWait(c,active,result)) return;
                 if (pauseForUnfinishedLogging(c,active,result)) return;
                 if (MachineOutputLedger.hasPending(c)) { stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return; }
@@ -125,6 +136,20 @@ public final class AutomationEngine {
                     // Yield the rest of this sweep. Restarting the same multi-tick failure
                     // from the highest priority would starve work capable of resolving it.
                     blockedThisSweep.put(active,result.message());
+                }
+                if (nearbyOrigin!=null) {
+                    if (!nearbyOwnershipValid(c) || !resourceBoundary(c)) {
+                        stop(c,State.PAUSED,"주변 수확 뒤 원작업을 재개하기 전에 조작·메뉴를 확인하세요.");return;
+                    }
+                    AutomationModule origin=nearbyOrigin;clearNearby();nearbyRetryAt=c.world().tick()+1200;
+                    if (origin.feature()!=Feature.SLEEP || result.state()==WorkResult.State.IDLE) {
+                        active=origin;state=State.RUNNING;status="주변 스타프루트 처리 후 원래 작업으로 복귀";
+                        // Resume this exact instance next tick, before any priority scan.
+                        return;
+                    }
+                    // A failed/deferred deposit must retain the scheduler's normal
+                    // sleep suppression. The idle travel-stage Sleep instance is
+                    // preserved for a later ordinary selection, not forcibly reset.
                 }
                 active=null;
             }
@@ -172,6 +197,33 @@ public final class AutomationEngine {
             throw e;
         }
     }
+    private boolean loggingAllowsNearby(Context c) {
+        return c.profile().loggingHotbarLease==null && resourceWaiting==null
+            && (!c.profile().loggingRunActive || loggingSuspended && !c.profile().enabled(Feature.LOGGING));
+    }
+    private boolean nearbyOwnershipValid(Context c) {
+        return mode==RunMode.CONTINUOUS && c.session().oneShotFeature==null
+            && c.profile()==nearbyProfile && c.session()==nearbySession && c.world()==nearbyWorld
+            && c.world().tick()>=nearbyStarted && c.profile().enabled(nearbyOrigin.feature())
+            && c.profile().enabled(Feature.STARFRUIT) && loggingAllowsNearby(c);
+    }
+    private void tryNearbyWork(Context c) {
+        if (nearbyOrigin!=null || mode!=RunMode.CONTINUOUS || c.session().oneShotFeature!=null
+            || c.world().tick()<nearbyRetryAt || !c.profile().enabled(Feature.STARFRUIT)
+            || !loggingAllowsNearby(c) || !resourceBoundary(c) || c.actions().pauseReason()!=null
+            || active==null || active.feature()!=Feature.WINE && active.feature()!=Feature.PRESERVES && active.feature()!=Feature.SLEEP
+            || !active.canYieldForNearbyWork(c) || !c.navigation().canYieldTravel(c)) return;
+        AutomationModule fruit=modules.stream().filter(m->m.feature()==Feature.STARFRUIT).findFirst().orElse(null);
+        if (fruit==null || blockedThisSweep.containsKey(fruit)) return;
+        DeferredRetry wait=deferred.get(fruit);
+        if (wait!=null && c.world().tick()<wait.at() || !fruit.hasNearbyWork(c)) return;
+        nearbyOrigin=active;nearbyProfile=c.profile();nearbySession=c.session();nearbyWorld=c.world();nearbyStarted=c.world().tick();
+        active=fruit;c.actions().stopMovement();c.navigation().reset();
+        status="평지 이동을 잠시 멈추고 근처 스타프루트 한 개를 수확·보관";
+    }
+    private void clearNearby() {
+        nearbyOrigin=null;nearbyProfile=null;nearbySession=null;nearbyWorld=null;nearbyStarted=0;
+    }
     private boolean pauseForActions(Context c) {
         String reason=c.actions().pauseReason();
         if (reason==null) return false;
@@ -192,7 +244,8 @@ public final class AutomationEngine {
         }
         switch (result.state()) {
             case BUSY -> { state=State.RUNNING; status="One-shot " + oneShotFeature + ": " + result.message(); }
-            case IDLE -> stop(c,State.COMPLETE,"One-shot " + oneShotFeature + " complete: no eligible work remains"
+            case IDLE -> stop(c,State.COMPLETE,"One-shot " + oneShotFeature
+                + (oneShotFeature==Feature.STARFRUIT ? " complete: nearby fruit/storage pass finished; no whole-tree patrol" : " complete: no eligible work remains")
                 + (result.message()==null || result.message().isBlank() ? "" : " — "+result.message()));
             case BLOCKED -> stop(c,State.PAUSED,"One-shot " + oneShotFeature + " paused: " + result.message());
             case DEFERRED -> { if (defer(c,active,result)) { state=State.WAITING; status=deferred.get(active).message(); } }

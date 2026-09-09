@@ -34,6 +34,7 @@ public final class MachineModule implements AutomationModule {
     private String singleStackFallbackState;
     private String repositionedInputState;
     private boolean pendingReposition;
+    private boolean yieldTravel;
     private int inputMergeAttempts, outputMergeAttempts;
 
     public MachineModule(Feature feature) {
@@ -42,12 +43,16 @@ public final class MachineModule implements AutomationModule {
     }
     @Override public Feature feature() { return feature; }
     @Override public int priority() { return feature == Feature.WINE ? 60 : 70; }
+    @Override public boolean canYieldForNearbyWork(Context c) {
+        return yieldTravel && ticket<0 && pending==null && unresolvedInteraction==null && outputOperationId==null;
+    }
     private String blockId() { return feature == Feature.WINE ? "society:wine_keg" : "society:preserves_jar"; }
     private String outputId() { return feature == Feature.WINE ? ItemData.WINE : ItemData.PRESERVES; }
     private Poi target() { return machines.get(machineIndex); }
     private BlockData machine(Context c) { return c.world().block(target().pos()); }
 
     @Override public WorkResult tick(Context c) {
+        yieldTravel=false;
         if (MachineOutputLedger.hasPending(c) && (outputOperationId==null || !MachineOutputLedger.ownsActive(c,feature)))
             return WorkResult.blocked("Resolve the pending machine output before starting another production run");
         if (unresolvedInteraction != null) return WorkResult.blocked(unresolvedInteraction);
@@ -133,6 +138,7 @@ public final class MachineModule implements AutomationModule {
                     selectedMachineIndex=machineIndex;
                 }
                 Navigation.Result nav = c.navigation().moveTo(target().pos(),4.0,c);
+                yieldTravel=nav==Navigation.Result.MOVING;
                 if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Registered production machine cannot be reached");
                 if (nav != Navigation.Result.ARRIVED) return WorkResult.busy(machineStatus("설비로 이동 중"));
                 BlockData block = machine(c);
@@ -154,6 +160,7 @@ public final class MachineModule implements AutomationModule {
                 }
                 source = sources.get(sourceIndex);
                 Navigation.Result nav = c.navigation().moveTo(source.pos(),2.5,c);
+                yieldTravel=nav==Navigation.Result.MOVING;
                 if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Registered tomato source cannot be reached");
                 if (nav == Navigation.Result.ARRIVED) submit(c,new Action.UseBlock(source.pos(),Action.Use.OPEN_CONTAINER),Pending.OPEN_SCAN);
             }
@@ -219,6 +226,7 @@ public final class MachineModule implements AutomationModule {
             }
             case FETCH_SOURCE -> {
                 Navigation.Result nav = c.navigation().moveTo(source.pos(),2.5,c);
+                yieldTravel=nav==Navigation.Result.MOVING;
                 if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Selected tomato source cannot be reached");
                 if (nav == Navigation.Result.ARRIVED) submit(c,new Action.UseBlock(source.pos(),Action.Use.OPEN_CONTAINER),Pending.OPEN_FETCH);
             }
@@ -261,6 +269,7 @@ public final class MachineModule implements AutomationModule {
             }
             case RETURN -> {
                 Navigation.Result nav = c.navigation().moveTo(target().pos(),4.0,c);
+                yieldTravel=nav==Navigation.Result.MOVING;
                 if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Production machine cannot be reached with ingredients");
                 if (nav == Navigation.Result.ARRIVED) {
                     BlockData block = machine(c);
@@ -642,7 +651,7 @@ public final class MachineModule implements AutomationModule {
         if (uncertainInteraction && !durableOutput) unresolvedInteraction = message;
         return WorkResult.blocked(message);
     }
-    @Override public void reset() { clearRun(); unresolvedInteraction = null; rejectedInputMerge=null; rejectedOutputMerge=null; repositionedInputState=null; }
+    @Override public void reset() { yieldTravel=false; clearRun(); unresolvedInteraction = null; rejectedInputMerge=null; rejectedOutputMerge=null; repositionedInputState=null; }
     private void clearRun() {
         wineObservations.clear(); wineObservationTargets=Set.of(); wineObservationDay=Long.MIN_VALUE; wineObservationRetry=0;
         stage = Stage.START; afterClose = null; pending = null; ticket = -1; verifySince = 0; useSettleAt = -1;

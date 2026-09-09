@@ -21,9 +21,10 @@ Long-running acceptance remains open. See the [runtime checkpoint](RUNTIME-RESUM
   and day interval. `ArtisanJob` binds that recipe to machine positions and input /
   output groups. The current recipes are ancient-fruit seeds and jade crystals.
   Ancient-fruit wine is not implemented.
-- `FruitPatch` registers exact starfruit blocks. `StarfruitModule` starts at a
-  normal scheduler boundary, selects one ripe registered fruit within six blocks,
-  and stores it. It does not interrupt an active operation or patrol every fruit.
+- `FruitPatch` registers exact starfruit blocks. `StarfruitModule` selects one
+  ripe registered fruit within six blocks and stores it. It can run at a normal
+  scheduler boundary or during an explicitly safe production/bed approach in
+  continuous mode, as described below. It does not patrol every fruit.
 
 Default intervals are ancient-fruit harvest 10 days, seeds 1 day, jade 5 days.
 The jade interval comes from the installed recipe, not the tentative three-day
@@ -129,6 +130,34 @@ This is why actual import must remain paused and separately coordinated; an empt
 enable list does not mean the new farm is disabled.
 
 ## Delayed starfruit delivery
+
+### Optional harvest during flat travel
+
+Continuous wine/preserves work and bed approaches may yield only their actual
+MOVING stage, with no submitted/unconsumed action, container, cursor item, output
+operation or borrowed logging slot. The navigator independently verifies a fresh
+same-request route, loaded full-footprint flat support and normal traversal. A
+stair's high tread alone is not full-floor proof. Ascents, descents, doors,
+endpoint settling and search/frontier states cannot be interrupted this way.
+
+After one fruit and its registered deposit, the engine resumes the exact original
+module instance/stage before a new priority scan. A 1,200-tick side-trip cooldown
+ensures progress on the original task. One-shots never run another feature.
+An already approved LOGGING-OFF suspension remains valid without deleting its
+unfinished plots; active logging ownership or a borrowed slot prevents a detour.
+OFF, session/profile changes or ownership changes cancel the suspension normally.
+
+Pre-use unreachable/timeout skips also have a bounded, per-target 1,200-tick RAM
+cooldown, revalidated against day, clock, profile and registration. This prevents
+the normal scheduler repeatedly approaching an unreachable fruit and starving
+sleep. It never releases an uncertain submitted use. If a detour's deposit fails,
+ordinary safe travel can resume, but a suspended sleep approach returns through
+the existing blocked/deferred scheduler rules instead of forcing sleep.
+
+The combined source passed **1,527 tests / 111 suites**, with no failures, errors
+or skips. Native pass-by/resume acceptance remains pending at this checkpoint.
+
+### Late pickup cleanup
 
 The one-second pickup observation remains bounded. After a successfully confirmed
 fruit use and its actual age reset, a later safe boundary may store fruit that is

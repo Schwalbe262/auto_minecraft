@@ -8,6 +8,167 @@ import static org.junit.jupiter.api.Assertions.*;
 class StarfruitModuleTest {
     private static final Pos FRUIT=new Pos(3,1,0),STORE=new Pos(20,0,0);
 
+    @Test void nearbyCandidateQueryDoesNotSelectMoveOrSubmitAndKeepsSameDayEvidence() {
+        Fixture f=new Fixture();for(int i=0;i<10;i++)assertTrue(f.module.hasNearbyWork(f.context));
+        assertTrue(f.submitted.isEmpty());assertTrue(f.travel.isEmpty());assertEquals(0,f.stops);assertEquals(0,f.resets);
+        f.run();f.fruit(FRUIT,7);assertFalse(f.module.hasNearbyWork(f.context));
+        f.day+=24000;assertTrue(f.module.hasNearbyWork(f.context));
+        assertEquals(1,f.clicked().size());assertEquals(1,f.stored);
+    }
+    @Test void nearbyPassStoresOneFruitThenResumesTheExactOriginalInstanceBeforeAnotherPass() {
+        Fixture f=new Fixture();Pos another=new Pos(5,1,0);f.patch(FRUIT,another);f.fruit(another,7);f.travelYield=true;
+        TravelJob original=new TravelJob(Feature.WINE);AutomationEngine engine=f.engine(original);
+        f.engineTick(engine);f.engineTick(engine);assertEquals(2,original.ticks);
+        int resets=original.resets;
+        for(int i=0;i<80 && original.ticks==2;i++)f.engineTick(engine);
+        assertEquals(3,original.ticks);assertEquals(resets,original.resets);assertEquals(1,f.stored);
+        assertEquals(List.of(FRUIT),f.clicked());assertTrue(f.travel.contains(STORE));
+        for(int i=0;i<1100;i++)f.engineTick(engine);
+        assertEquals(1,f.clicked().size());assertTrue(original.ticks>1000);assertTrue(engine.running());
+    }
+    @Test void oneShotAndNonOptedInOrUnconsumedActionStagesCannotBePreempted() {
+        for(int mode=0;mode<4;mode++) {
+            Fixture f=new Fixture();f.travelYield=true;TravelJob original=new TravelJob(mode==1?Feature.HARVEST:Feature.WINE);
+            if(mode==2)original.allowYield=false;if(mode==3)original.unconsumed=true;
+            AutomationEngine engine=f.engine(original);
+            if(mode==0)engine.startOnce(f.context,Feature.WINE);
+            for(int i=0;i<30;i++)f.engineTick(engine);
+            assertEquals(30,original.ticks);assertTrue(f.submitted.isEmpty());
+            assertTrue(f.travel.stream().allMatch(TravelJob.DESTINATION::equals));
+        }
+    }
+    @Test void unsafeNavigationMenuCursorOrNativeActionNeverGrantsANearbyPass() {
+        for(int guard=0;guard<5;guard++) {
+            Fixture f=new Fixture();f.travelYield=guard!=0;TravelJob original=new TravelJob(Feature.WINE);
+            AutomationEngine engine=f.engine(original);
+            if(guard==1)f.externalBusy=true;if(guard==2)f.open=true;
+            if(guard==3)f.cursor=f.product(1);if(guard==4)f.actionFence="uncertain native reply";
+            for(int i=0;i<10;i++){engine.tick(f.context);f.now++;}
+            assertTrue(f.submitted.isEmpty());assertTrue(f.travel.stream().allMatch(TravelJob.DESTINATION::equals));
+        }
+    }
+    @Test void alreadyGrantedDisabledLoggingSuspensionAllowsPassWithoutChangingTheQueue() {
+        Fixture f=new Fixture();f.travelYield=true;f.profile.enabled.put(Feature.LOGGING,false);
+        f.profile.loggingRunActive=true;f.profile.loggingRemainingPlots.add(new Pos(50,0,0));
+        f.profile.loggingReplantingPlots.add(new Pos(50,0,0));
+        TravelJob original=new TravelJob(Feature.WINE);AutomationEngine engine=f.engine(original);
+        for(int i=0;i<100 && f.stored==0;i++)f.engineTick(engine);
+        assertEquals(1,f.stored);assertTrue(f.profile.loggingRunActive);
+        assertEquals(List.of(new Pos(50,0,0)),f.profile.loggingRemainingPlots);
+        assertEquals(f.profile.loggingRemainingPlots,f.profile.loggingReplantingPlots);assertTrue(engine.running());
+    }
+    @Test void stopFeatureDisableIdentityChangeAndLoggingOwnershipChangeClearSuspensionWithoutClicks() {
+        for(int change=0;change<7;change++) {
+            Fixture f=new Fixture();f.travelYield=true;TravelJob original=new TravelJob(Feature.WINE);
+            AutomationEngine engine=f.engine(original);f.engineTick(engine);f.engineTick(engine);
+            assertEquals(2,original.ticks);assertTrue(f.submitted.isEmpty());
+            Context next=f.context;
+            switch(change) {
+                case 0 -> engine.stop(f.context,AutomationEngine.State.PAUSED,"operator stop");
+                case 1 -> f.profile.enabled.put(Feature.WINE,false);
+                case 2 -> f.profile.enabled.put(Feature.STARFRUIT,false);
+                case 3 -> next=new Context(f,f,f,new Profile());
+                case 4 -> next=new Context(f,f,f,f.profile,new SessionState());
+                case 5 -> {f.profile.loggingRunActive=true;f.profile.enabled.put(Feature.LOGGING,true);}
+                case 6 -> f.profile.loggingHotbarLease=new LoggingHotbarLease(9,2,f.food,"test");
+            }
+            engine.tick(next);f.now++;
+            assertEquals(AutomationEngine.State.PAUSED,engine.state(),"change="+change);
+            assertEquals(2,original.ticks);assertTrue(f.submitted.isEmpty());assertTrue(original.resets>=2);
+        }
+    }
+    @Test void failedFruitPassStillResumesTravelButCannotImmediatelyRepeatItsFailure() {
+        Fixture f=new Fixture();f.travelYield=true;TravelJob original=new TravelJob(Feature.WINE);AutomationEngine engine=f.engine(original);
+        f.engineTick(engine);f.engineTick(engine);
+        for(int i=0;i<40 && f.clicked().isEmpty();i++) {
+            engine.tick(f.context);if(f.busy())f.complete(!(f.submitted.get(f.submitted.size()-1) instanceof Action.UseBlock));f.now++;
+        }
+        for(int i=0;i<100;i++)f.engineTick(engine);
+        assertEquals(1,f.clicked().size());assertEquals(0,f.stored);assertTrue(original.ticks>50);assertTrue(engine.running());
+    }
+    @Test void realProductionAndSleepModulesOptInOnlyWhileActuallyTravelling() {
+        Fixture f=new Fixture();f.travelYield=true;f.profile.enabled.put(Feature.PRESERVES,true);
+        f.profile.pois.add(new Poi(TravelJob.DESTINATION,PoiKind.PRESERVES_JAR,"Jar",null));
+        MachineModule machine=new MachineModule(Feature.PRESERVES);assertFalse(machine.canYieldForNearbyWork(f.context));
+        assertEquals(WorkResult.State.BUSY,machine.tick(f.context).state());assertFalse(machine.canYieldForNearbyWork(f.context));
+        assertEquals(WorkResult.State.BUSY,machine.tick(f.context).state());assertTrue(machine.canYieldForNearbyWork(f.context));
+        machine.reset();assertFalse(machine.canYieldForNearbyWork(f.context));
+        f.profile.pois.add(new Poi(TravelJob.DESTINATION,PoiKind.BED,"Bed",null));f.day=13000;
+        SleepModule sleep=new SleepModule();assertFalse(sleep.canYieldForNearbyWork(f.context));
+        assertEquals(WorkResult.State.BUSY,sleep.tick(f.context).state());assertTrue(sleep.canYieldForNearbyWork(f.context));
+        sleep.reset();assertFalse(sleep.canYieldForNearbyWork(f.context));
+    }
+    @Test void normalSchedulerCanSleepAfterBlockedOrTimedOutFruitWithoutRepeatingTheApproach() {
+        for(Navigation.Result nav:List.of(Navigation.Result.BLOCKED,Navigation.Result.MOVING)) {
+            Fixture f=new Fixture();f.day=13000;f.profile.enabled.put(Feature.SLEEP,true);
+            Pos bed=new Pos(40,0,0);f.profile.pois.add(new Poi(bed,PoiKind.BED,"Bed",null));
+            f.blocks.put(bed,new BlockData(bed,"minecraft:red_bed",Map.of()));
+            f.targetNavigation.put(FRUIT,nav);
+            AutomationEngine engine=new AutomationEngine(List.of(f.module,new SleepModule()));engine.start(f.context);
+            for(int i=0;i<180 && f.sleepUses==0;i++)f.engineTick(engine);
+            assertEquals(1,f.sleepUses);assertTrue(f.clicked().isEmpty());
+            assertEquals(nav==Navigation.Result.BLOCKED?1:100,f.travel.stream().filter(FRUIT::equals).count());
+        }
+    }
+    @Test void skippedTargetDoesNotDisableOtherNearbyFruitAndItsCooldownSurvivesReset() {
+        Fixture f=new Fixture();f.targetNavigation.put(FRUIT,Navigation.Result.BLOCKED);
+        assertEquals(WorkResult.State.IDLE,f.step().state());f.targetNavigation.clear();f.module.reset();
+        assertFalse(f.module.hasNearbyWork(f.context));
+        Pos other=new Pos(5,1,0);f.patch(FRUIT,other);f.fruit(other,7);
+        // Changing this same patch is an explicit registration change; first
+        // re-establish the old target's skip under the new registration.
+        f.targetNavigation.put(FRUIT,Navigation.Result.BLOCKED);assertEquals(WorkResult.State.IDLE,f.step().state());f.targetNavigation.clear();
+        assertTrue(f.module.hasNearbyWork(f.context));f.run();
+        assertEquals(List.of(other),f.clicked());assertEquals(1,f.stored);
+    }
+    @Test void preUseSkipIsRevalidatedOnDeadlineDayTickRewindAndProfileChange() {
+        for(int change=0;change<4;change++) {
+            Fixture f=new Fixture();f.now=100;f.targetNavigation.put(FRUIT,Navigation.Result.BLOCKED);
+            assertEquals(WorkResult.State.IDLE,f.step().state());assertFalse(f.module.hasNearbyWork(f.context));
+            Context c=f.context;
+            if(change==0)f.now+=1200;if(change==1)f.day+=24000;if(change==2)f.now=1;
+            if(change==3){Profile p=new Profile();p.enabled.put(Feature.STARFRUIT,true);p.fruitPatches=List.copyOf(f.profile.fruitPatches);p.commodityStores.putAll(f.profile.commodityStores);c=new Context(f,f,f,p);}
+            assertTrue(f.module.hasNearbyWork(c),"change="+change);assertTrue(f.submitted.isEmpty());
+        }
+    }
+    @Test void starfruitOneShotCompletionDoesNotClaimTheWholePatchWasExhausted() {
+        Fixture f=new Fixture();Pos other=new Pos(5,1,0);f.patch(FRUIT,other);f.fruit(other,7);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module));engine.startOnce(f.context,Feature.STARFRUIT);
+        for(int i=0;i<100&&engine.running();i++)f.engineTick(engine);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state());assertEquals(7,f.blocks.get(other).number("age",-1));
+        assertFalse(engine.status().contains("no eligible work remains"));assertTrue(engine.status().contains("nearby fruit/storage pass"));
+    }
+    @Test void failedSideDepositDoesNotForceSleepingOrPauseOtherSafeWork() {
+        Fixture f=new Fixture();f.travelYield=true;f.day=13000;f.profile.enabled.put(Feature.SLEEP,true);
+        f.profile.enabled.put(Feature.DISPOSAL,true);f.fruit(FRUIT,6);
+        Pos bed=TravelJob.DESTINATION;f.profile.pois.add(new Poi(bed,PoiKind.BED,"Bed",null));f.blocks.put(bed,new BlockData(bed,"minecraft:red_bed",Map.of()));
+        int[] safeTicks={0};AutomationModule safe=new AutomationModule(){
+            public Feature feature(){return Feature.DISPOSAL;}public int priority(){return 90;}
+            public WorkResult tick(Context c){safeTicks[0]++;return WorkResult.idle();}public void reset(){}
+        };
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,safe,new SleepModule()));engine.start(f.context);
+        f.engineTick(engine);f.fruit(FRUIT,7);f.engineTick(engine);int before=safeTicks[0];
+        // The original bed becomes reachable while the fruit's owned store rejects
+        // opening. Returning directly to Sleep would now emit the forbidden use.
+        f.targetNavigation.put(bed,Navigation.Result.ARRIVED);
+        for(int i=0;i<100;i++) {
+            engine.tick(f.context);
+            if(f.busy()) {Action action=f.submitted.get(f.submitted.size()-1);f.complete(!(action instanceof Action.UseBlock use&&use.purpose()==Action.Use.OPEN_CONTAINER));}
+            f.now++;
+        }
+        assertEquals(1,f.clicked().size());assertEquals(0,f.sleepUses);assertEquals(0,f.stored);
+        assertTrue(safeTicks[0]>before);assertTrue(engine.running());assertNotEquals(AutomationEngine.State.PAUSED,engine.state());
+    }
+    private static final class TravelJob implements AutomationModule {
+        static final Pos DESTINATION=new Pos(100,0,0);
+        final Feature feature;int ticks,resets;boolean allowYield=true,unconsumed;
+        TravelJob(Feature feature){this.feature=feature;}
+        public Feature feature(){return feature;}public int priority(){return 60;}
+        public WorkResult tick(Context c){ticks++;c.navigation().moveTo(DESTINATION,4,c);return WorkResult.busy("original travel");}
+        public boolean canYieldForNearbyWork(Context c){return allowYield&&!unconsumed;}
+        public void reset(){resets++;}
+    }
+
     @Test void onlyCurrentlyLoadedNearbyRegisteredMatureFruitIsConsidered() {
         Fixture f=new Fixture();Pos far=new Pos(60,1,0),unloaded=new Pos(2,1,0),unregistered=new Pos(1,1,0);
         f.patch(FRUIT,far,unloaded);f.fruit(FRUIT,6);f.fruit(far,7);f.fruit(unloaded,7);f.fruit(unregistered,7);
@@ -261,12 +422,14 @@ class StarfruitModuleTest {
         final Profile profile=new Profile();final StarfruitModule module=new StarfruitModule();
         final Context context=new Context(this,this,this,profile);
         final Map<Pos,BlockData> blocks=new HashMap<>();final Set<Pos> unloaded=new HashSet<>();
+        final Map<Pos,Navigation.Result> targetNavigation=new HashMap<>();
         final List<Pos> blockReads=new ArrayList<>(),travel=new ArrayList<>();
         final List<ItemSlot> inventory=new ArrayList<>();final List<Action> submitted=new ArrayList<>();
         final Map<Long,ActionOutcome> outcomes=new HashMap<>();
         final ItemData tool=new ItemData("minecraft:iron_hoe",1,0,null,true,100),food=new ItemData("farmersdelight:fruit_salad",57,0,null,false,0);
-        long now,day=5000,current;int selected,stored,stops,resets,scans;
-        double x=.5;boolean open,externalBusy,changeAge=true,deliver=true;
+        long now,day=5000,current;int selected,stored,stops,resets,scans,sleepUses;
+        double x=.5;boolean open,externalBusy,changeAge=true,deliver=true,travelYield,sleeping;
+        ItemData cursor=ItemData.EMPTY;String actionFence;
         Navigation.Result navigationResult=Navigation.Result.ARRIVED;
         WorkResult result=WorkResult.busy("initial");
         Fixture() {
@@ -282,6 +445,8 @@ class StarfruitModuleTest {
         void put(int index,ItemData item){inventory.set(index,new ItemSlot(index,index,true,item));}
         List<Pos> clicked(){return submitted.stream().filter(a->a instanceof Action.UseBlock use&&use.purpose()==Action.Use.FRUIT).map(a->((Action.UseBlock)a).pos()).toList();}
         WorkResult step(){result=module.tick(context);now++;return result;}
+        AutomationEngine engine(AutomationModule original){profile.enabled.put(original.feature(),true);AutomationEngine e=new AutomationEngine(List.of(original,module));e.start(context);return e;}
+        void engineTick(AutomationEngine engine){engine.tick(context);if(busy()&&!externalBusy)complete(true);now++;}
         void run(){runUntilTerminal();assertEquals(WorkResult.State.IDLE,result.state(),result.message());}
         void runUntilTerminal(){for(int tick=0;tick<250;tick++){step();if(busy())complete(true);if(result.state()!=WorkResult.State.BUSY)return;}fail("Fruit pass did not terminate");}
         void untilFruit(){untilAction(Action.UseBlock.class);assertEquals(Action.Use.FRUIT,((Action.UseBlock)submitted.get(submitted.size()-1)).purpose());}
@@ -299,6 +464,7 @@ class StarfruitModuleTest {
                 else if(action instanceof Action.UseBlock use) {
                     if(use.purpose()==Action.Use.FRUIT){if(changeAge)fruit(use.pos(),0);if(deliver)put(9,product(inventory.get(9).item().count()+1));}
                     else if(use.purpose()==Action.Use.OPEN_CONTAINER)open=true;
+                    else if(use.purpose()==Action.Use.SLEEP){sleepUses++;sleeping=true;}
                     else fail("Unexpected use "+use);
                 } else if(action instanceof Action.QuickMove move) {
                     int source=move.slot()-27;ItemData item=inventory.get(source).item();assertTrue(item.is(FruitRules.ITEM));
@@ -309,22 +475,24 @@ class StarfruitModuleTest {
             outcomes.put(current,new ActionOutcome(success?ActionOutcome.State.SUCCEEDED:ActionOutcome.State.FAILED,"native ack",moved));
         }
         public long tick(){return now;}public long dayTime(){return day;}
-        public PlayerState player(){return new PlayerState(x,0,.5,0,0,true,false,20,20,selected,true,true);}
+        public PlayerState player(){return new PlayerState(x,0,.5,0,0,true,sleeping,20,20,selected,true,true);}
         public BlockData block(Pos pos){blockReads.add(pos);return blocks.getOrDefault(pos,new BlockData(pos,"minecraft:air",Map.of()));}
         public boolean loaded(Pos pos){return !unloaded.contains(pos);}public boolean canStand(Pos pos){return true;}public boolean canTraverse(Pos from,Pos to){return true;}
         public List<BlockData> scan(Pos pos,int horizontal,int vertical){scans++;throw new AssertionError("Opportunistic fruit must not scan a tree");}
         public List<ItemSlot> inventory(){return inventory;}
         public MenuData menu(){
-            if(!open)return new MenuData(0,0,inventory,ItemData.EMPTY,false);
+            if(!open)return new MenuData(0,0,inventory,cursor,false);
             List<ItemSlot> slots=new ArrayList<>();for(int index=0;index<27;index++)slots.add(new ItemSlot(index,-1,false,index==0&&stored>0?product(stored):ItemData.EMPTY));
             for(ItemSlot slot:inventory)slots.add(new ItemSlot(slot.inventoryIndex()+27,slot.inventoryIndex(),true,slot.item()));
-            return new MenuData(12,1,slots,ItemData.EMPTY,true);
+            return new MenuData(12,1,slots,cursor,true);
         }
         public boolean mayPlace(int slot,ItemData item){return slot>=0&&slot<27;}public boolean canInteract(Pos pos,double reach){return true;}
         public boolean busy(){return externalBusy||current>0&&!outcomes.get(current).done();}
+        public String pauseReason(){return actionFence;}
         public long submit(Action action){assertFalse(busy());assertNull(SafetyPolicy.rejection(action,context));submitted.add(action);outcomes.put(++current,new ActionOutcome(ActionOutcome.State.PENDING,"waiting"));return current;}
         public ActionOutcome outcome(long ticket){return outcomes.get(ticket);}
         public void move(Movement movement){}public void stopMovement(){stops++;}public void cancel(){}
-        public Result moveTo(Pos target,double reach,Context c){travel.add(target);return navigationResult;}public void reset(){resets++;}
+        public boolean canYieldTravel(Context c){return travelYield;}
+        public Result moveTo(Pos target,double reach,Context c){travel.add(target);return targetNavigation.getOrDefault(target,target.equals(TravelJob.DESTINATION)?Result.MOVING:navigationResult);}public void reset(){resets++;}
     }
 }

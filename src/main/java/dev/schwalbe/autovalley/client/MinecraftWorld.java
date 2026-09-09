@@ -163,6 +163,9 @@ public final class MinecraftWorld implements WorldAccess {
         var shape=mc.level.getBlockState(floor).getCollisionShape(mc.level,floor);
         return shape.isEmpty() ? Double.NaN : floor.getY()+shape.max(net.minecraft.core.Direction.Axis.Y);
     }
+    @Override public boolean fullFlatSupport(Pos feet) {
+        return feet!=null && canStand(feet) && uniformFloor(feet);
+    }
     private boolean uniformFloor(Pos feet) {
         BlockPos floor=nativePos(feet).below();
         var boxes=mc.level.getBlockState(floor).getCollisionShape(mc.level,floor).toAabbs();

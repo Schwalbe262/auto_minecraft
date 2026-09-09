@@ -8,9 +8,12 @@ public final class SleepModule implements AutomationModule {
     private long ticket = -1, attemptDay = Long.MIN_VALUE, startedDay, retryAt, sleepingSince;
     private int attempts;
     private boolean trying, observedSleeping, closing;
+    private boolean yieldTravel;
     @Override public Feature feature() { return Feature.SLEEP; }
     @Override public int priority() { return 100; }
+    @Override public boolean canYieldForNearbyWork(Context c) { return yieldTravel && ticket<0 && !trying && !closing; }
     @Override public WorkResult tick(Context c) {
+        yieldTravel=false;
         long time = c.world().dayTime(), day = Math.floorDiv(time,24000);
         if (attemptDay != day && !trying) { attempts = 0; attemptDay = day; }
         if (trying && c.world().player().sleeping()) {
@@ -50,6 +53,7 @@ public final class SleepModule implements AutomationModule {
             return WorkResult.busy("Closing container before sleeping");
         }
         Navigation.Result nav = c.navigation().moveTo(beds.get(0).pos(),2.5,c);
+        yieldTravel=nav==Navigation.Result.MOVING;
         if (nav == Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"Registered bed cannot be reached");
         if (nav == Navigation.Result.ARRIVED) {
             attempts++; attemptDay = day; startedDay = day; trying = true; observedSleeping = false; sleepingSince = c.world().tick();
@@ -57,5 +61,5 @@ public final class SleepModule implements AutomationModule {
         }
         return WorkResult.busy("Going to sleep");
     }
-    @Override public void reset() { ticket = -1; attempts = 0; attemptDay = Long.MIN_VALUE; trying = false; observedSleeping = false; closing = false; retryAt = 0; sleepingSince = 0; }
+    @Override public void reset() { yieldTravel=false; ticket = -1; attempts = 0; attemptDay = Long.MIN_VALUE; trying = false; observedSleeping = false; closing = false; retryAt = 0; sleepingSince = 0; }
 }
