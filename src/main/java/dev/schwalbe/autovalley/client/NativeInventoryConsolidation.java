@@ -158,13 +158,24 @@ final class NativeInventoryConsolidation {
                                                      ServerObservations observations) {
         if (observations==null || observations.generation()!=generation || acknowledgement==null
                 || acknowledgement.seq()<=beforeSequence
-                || observations.fullNativeMenuSnapshotsSince(menuId,beforeSequence).stream()
-                    .noneMatch(packet -> packet==acknowledgement)) return InventoryConsolidation.Confirmation.WAIT;
+                || !NativeRestoreMetadataReceipt.retainedFull(acknowledgement,
+                    observations.fullNativeMenuSnapshotsSince(menuId,beforeSequence))) return InventoryConsolidation.Confirmation.WAIT;
         var ordinary=acknowledge(acknowledgement);
         if (ordinary!=InventoryConsolidation.Confirmation.WAIT) return ordinary;
         if (!transaction.requiresRestoration() || transaction.click().type()!=InventoryConsolidation.Type.SWAP)
             return InventoryConsolidation.Confirmation.WAIT;
         List<InventoryConsolidation.Stack> after=stacks(acknowledgement.items());
+        var movedWine=NativeRestoreMetadataReceipt.verifiedMovedWine(generation,observations.generation(),menuId,
+            beforeSequence,acknowledgement.seq(),menuSlots[plan.sourceIndex()],menuSlots[plan.scratchHotbar()],
+            expectedMenu,after,acknowledgement.carried().isEmpty(),
+            (old,received) -> NativeWineMetadata.passiveChange(old,received,level,wineYear));
+        if (movedWine!=null) {
+            var restored=transaction.acknowledgeRestoreMetadata(inventory(after),movedWine);
+            if (restored!=InventoryConsolidation.Confirmation.WAIT) {
+                expectedMenu=after;acknowledgedSequence=acknowledgement.seq();
+                return restored;
+            }
+        }
         var slots=observations.nativeSlotSnapshotsSince(menuId,beforeSequence).stream()
             .map(slot -> new NativeRestorePickupReceipt.SlotProof(slot.seq(),slot.menuId(),slot.slot(),
                 stacks(List.of(slot.packetItem())).get(0))).toList();

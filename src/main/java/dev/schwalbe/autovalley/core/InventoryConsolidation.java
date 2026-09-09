@@ -208,6 +208,32 @@ public final class InventoryConsolidation {
     }
 
     /**
+     * An already occupied scratch can receive a native metadata refresh while
+     * its final inverse SWAP is in flight. The native caller independently
+     * proves that exact count-preserving refresh on the moved scratch item.
+     * Only the comparison copy is normalized; the borrowed item and every
+     * other slot remain exact, and the actual ACK becomes the final baseline.
+     * This never rebases an in-flight click or acknowledges an outward SWAP.
+     */
+    public Confirmation acknowledgeRestoreMetadata(Snapshot after,Stack verifiedMovedScratch) {
+        if (stage!=Stage.RESTORE || acknowledgedPrimitives!=2 || !requiresRestoration()
+                || after==null || verifiedMovedScratch==null || verifiedMovedScratch.empty()
+                || verifiedMovedScratch.limit()>64) return Confirmation.WAIT;
+        Stack borrowed=initial.items().get(plan.scratchHotbar()),scratch=before.items().get(plan.scratchHotbar());
+        if (borrowed.empty() || !before.items().get(plan.sourceIndex()).equals(borrowed)
+                || scratch.empty() || scratch.count()!=verifiedMovedScratch.count()
+                || scratch.limit()!=verifiedMovedScratch.limit() || scratch.identity().equals(verifiedMovedScratch.identity()))
+            return Confirmation.WAIT;
+        List<Stack> comparison=new ArrayList<>(before.items());
+        comparison.set(plan.scratchHotbar(),verifiedMovedScratch);
+        if (comparison.equals(after.items())) return Confirmation.WAIT; // Metadata alone is not a SWAP.
+        Collections.swap(comparison,plan.sourceIndex(),plan.scratchHotbar());
+        if (!comparison.equals(after.items())) return Confirmation.WAIT;
+        before=after;stage=Stage.DONE;acknowledgedPrimitives++;
+        return Confirmation.COMPLETE;
+    }
+
+    /**
      * Resolves only a cancelled transaction's confirmed borrowed item using an
      * independently observed exact inverse SWAP. This does not prove a merge,
      * retry an operation, or change the failed/cancelled action's outcome.
