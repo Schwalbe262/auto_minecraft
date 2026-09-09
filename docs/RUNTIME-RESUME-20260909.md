@@ -702,3 +702,26 @@ permission/support changes, cancellation and the original timeout. These are
 detached response models, not live performance measurements. Combined artifact
 SHA256: `A220ED0B63B72320439F08E791DB1D863CF991F3EAD9CAB0A5DCDC6282E23D77`.
 Installation and native acceptance of this latest alignment refinement are pending.
+
+The artifact was installed after normal shutdown at 06:01:08 UTC. Quick Play
+showed an unknown-host error; the same client's DNS/TCP check then succeeded and
+an ordinary reconnect completed. No duplicate game or OS input was used.
+Continuous mode was confirmed at **06:05:06.560 UTC** in client PID 8304.
+
+The subsequent two-minute native alignment watch captured 14 distinct launch
+pulses. Each had a preceding quiet grounded source sample followed by another
+unchanged grounded position with quiet count two. Maximum launch-center error
+was 0.059975 blocks. All 14 reached first native ground after nine ticks and
+grounded controller release after 18–23 ticks. No ascent failure was retained.
+Release means the last LAND quiet-one sample was followed by unchanged grounded
+position with the controller absent; it is not an invented missing COMPLETE
+sample.
+
+The reduced inner PREPARE input occurred on 23 distinct ticks. The near-landing
+0.2 input occurred three times, at observed center errors 0.121743, 0.125014 and
+0.139411, each followed by grounded release six ticks later without another
+full-strength input. PREPARE/LAND had no ordinary airborne input. Existing
+authorized FLIGHT input is separate and was not counted as a violation.
+This accepts the observed inner-source and near-landing refinements; no outer
+source-centering case occurred in this trace, and multi-hour stability remains
+pending. Automatic sleep and day-482 work continued on the new artifact.
