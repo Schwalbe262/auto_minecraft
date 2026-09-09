@@ -379,3 +379,17 @@ invented refill acknowledgement. The offline full build passed **1,575 tests /
 Installation and native clean-wait-to-sleep acceptance are pending at this
 checkpoint. Before installation, natural day 468 began and all three registered
 jade machines became mature; their collection has not yet been observed.
+
+Before the same-instance restart, the day-468 continuous run harvested another
+**54 ancient fruit** and entered its registered commodity-storage flow. The
+retained native outcome for transfer ticket 375 is SUCCEEDED with confirmedCount
+54; ticket 374 confirms container synchronization and 376 confirms closure.
+The independent trace identifies that transfer as the ancient-fruit deposit,
+so this is confirmed storage, not an inference from inventory becoming empty.
+The fruit had been actually unripe at the preceding day-467 inspection, which
+correctly scheduled reinspection rather than harvesting early.
+
+The 99D097 artifact was installed through a normal close/restart of the same
+Society instance, with the old JAR and current profile/evidence backed up. The
+previous process exited before its replacement started; no duplicate game was
+launched. Native post-install waiting, jade service and bedtime checks follow.
