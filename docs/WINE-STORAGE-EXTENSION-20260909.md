@@ -1,4 +1,4 @@
-# Additional wine-storage wall: inspection only
+# Additional wine-storage wall: inspection and approved registration
 
 The user added 16 barrels near X=658, Z=1570..1573 and requested a check.
 A bounded read-only native inspection at **2026-09-09 07:47:01 UTC** confirmed
@@ -32,3 +32,25 @@ surplus-sale thresholds. Registering these as additional capacity for cohort 14
 would be a different allocation and would change the current reserve-fullness
 requirement. The check request did not perform either mutation. The existing
 game session and its autonomous work were left untouched.
+
+## Registration applied after explicit approval
+
+After the user approved registration, the mapping above was applied at
+**07:54:47 UTC** through the installed mod's normal validated profile-save path.
+The server, player and overworld profile binding were checked privately. The
+player had returned from another dimension before the save, so the update was
+applied to the active, paused overworld profile; no other dimension was changed.
+All 16 new barrel block identities were rechecked before the mutation.
+
+The existing 712 POIs were preserved in their original order. Exactly 16 wine
+POIs were appended, giving **728 total POIs and 32 wine storage barrels**. A
+separate comparison of the original backup against the persisted file found
+only `pois` changed; all existing schedules, feature settings, farms and storage
+definitions remained unchanged. A normal profile reload matched the expected
+result. Fresh native telemetry at 07:54:57 UTC independently reported 32 wine
+barrels without restarting the client.
+
+The original file has a private recoverable backup. No items were moved, no
+container was opened, and automation's ON/OFF state was not changed. These are
+future production-cohort destinations, not additional capacity for current
+cohort 14. Actual future-year deposits are not claimed to have been exercised.
