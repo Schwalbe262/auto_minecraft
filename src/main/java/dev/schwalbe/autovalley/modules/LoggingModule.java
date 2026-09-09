@@ -10,6 +10,7 @@ public final class LoggingModule implements AutomationModule {
     private static final int VISIBILITY_RETRY_TICKS=1200;
     private static final int MAX_STALE_APPROACH_REPLANS=2;
     private static final int CLEANUP_QUIET_TICKS=20,CLEANUP_QUIET_TIMEOUT=400;
+    private static final int MINING_QUIET_TICKS=2,MINING_QUIET_TIMEOUT=100;
     private enum Stage { START, PLOT, CHOP, LEAF_SEARCH, LEAF_APPROACH, SETTLE, PLANT, WASTE, PARTIAL_CLEANUP, RESTORE, CRAFT_OPEN, CRAFT, CRAFT_CLOSE, WOOD, BERRIES, FINISH }
     private enum Pending { SELECT, SWAP, BORROW, RESTORE, CHOP, LEAF, PLANT, TRASH, OPEN, CRAFT, CLOSE }
     private Stage stage=Stage.START;
@@ -27,6 +28,13 @@ public final class LoggingModule implements AutomationModule {
     private long cleanupWindowStart=-1,cleanupSampleTick=-1;
     private int cleanupQuietTicks;
     private boolean cleanupQuietApproved;
+    private Pos miningQuietTarget,miningQuietBase;
+    private PlayerState miningPose;
+    private WorldAccess miningWorld;
+    private Profile miningProfile;
+    private SessionState miningSession;
+    private long miningSampleTick=-1,miningQuietSince=-1;
+    private int miningQuietTicks;
     private Pos actionPos;
     private LoggingPlot plot;
     private Poi table;
@@ -52,11 +60,14 @@ public final class LoggingModule implements AutomationModule {
     @Override public int priority() { return 80; }
 
     @Override public WorkResult tick(Context c) {
-        if (!LoggingRules.allowed(c)) return WorkResult.idle();
+        if (!LoggingRules.allowed(c)) { clearMiningQuiet(); return WorkResult.idle(); }
         if (failure!=null) return WorkResult.blocked(failure);
         if (!c.world().player().connected()) return fail("벌목 중 연결이 끊겼습니다. 재접속 후 다시 실행하세요.");
         if (lastTick>c.world().tick()) { nextCheckTick=-1; saplingWaitUntil=-1; clearCleanupQuiet(); clearVisibilitySweep(); }
         lastTick=c.world().tick();
+        // Pure pose observation also runs while a native ACK is pending. Movement
+        // revokes quiet approval, but an uninterrupted stationary next stroke need not sleep.
+        sampleMiningPose(c);
         try {
             if (ticket>=0) {
                 ActionOutcome outcome=c.actions().outcome(ticket);
@@ -156,6 +167,7 @@ public final class LoggingModule implements AutomationModule {
                 return busy("벌목 대상과 재식재 의무 저장 완료");
             }
             case PLOT -> {
+                clearMiningQuiet();
                 validateRemaining(c);
                 if (c.profile().loggingRemainingPlots.isEmpty()) { observationWindow.clear(); stage=Stage.WASTE; return busy("전체 재식재 확인"); }
                 Pos corner=nextPlot(c);
@@ -186,9 +198,15 @@ public final class LoggingModule implements AutomationModule {
                 int axe=c.profile().loggingAxeHotbarSlot;
                 if (axe<0 || axe==c.profile().hoeHotbarSlot || !item(c,axe).is(LoggingRules.AXE)
                     || item(c,axe).durability()<=1 || !c.world().loggingAxe(axe)) return fail("등록한 사용 가능한 네더라이트 도끼가 필요합니다.");
-                Pos stump=choppingTarget(c,stumps);
-                if (stump==null) return currentProgress();
-                if (!approach(c,stump,4)) return currentProgress();
+                Pos stump=miningQuietBase==null && stumps.contains(miningQuietTarget)
+                    && miningArrivalMatches(c,miningQuietTarget,null) && c.world().canInteract(miningQuietTarget,4)
+                    ? miningQuietTarget : choppingTarget(c,stumps);
+                if (stump==null) { clearMiningQuiet(); return currentProgress(); }
+                if(!miningArrivalMatches(c,stump,null) || !c.world().canInteract(stump,4)) {
+                    clearMiningQuiet();
+                    if(!approach(c,stump,4))return currentProgress();
+                }
+                WorkResult quiet=awaitMiningQuiet(c,stump,null); if(quiet!=null)return quiet;
                 if (c.world().player().selectedSlot()!=axe) { submit(c,new Action.SelectHotbar(axe),Pending.SELECT); return busy("도끼 선택"); }
                 String rejection=LoggingRules.chopRejection(stump,c);
                 if (rejection!=null) return fail(rejection);
@@ -225,14 +243,19 @@ public final class LoggingModule implements AutomationModule {
                 if (!LoggingLeafRules.LEAVES.equals(c.world().block(leafTarget).id())) {
                     clearVisibilitySweep(); stage=Stage.PLOT; return busy("잎 상태가 바뀌어 실제 밑동 시야 재확인");
                 }
-                if (!approachLeafStance(c)) return currentProgress();
+                if(!miningArrivalMatches(c,leafTarget,leafBase) && !approachLeafStance(c)) {
+                    clearMiningQuiet();return currentProgress();
+                }
+                WorkResult quiet=awaitMiningQuiet(c,leafTarget,leafBase); if(quiet!=null)return quiet;
                 if (!plotRestoreBoundary(c)) return busy("잎 제거 전 정상 착지와 조작 경계 확인");
                 Pos actual=c.world().loggingLeafObstruction(leafBase,4);
                 if (actual==null || !LoggingLeafRules.authorised(c,leafBase,actual) || clearedLeaves.contains(actual)) {
                     // Do not promote a candidate stance into an actual-eye permission.
                     return rejectLeafStance(c,"실제 도착 위치의 잎 조준 장애물이 예상과 다름");
                 }
-                leafTarget=actual;
+                if(!actual.equals(leafTarget)) {
+                    leafTarget=actual;clearMiningQuiet();return busy("바뀐 잎 대상의 이동 잔여속도/정지 확인 대기");
+                }
                 int axe=c.profile().loggingAxeHotbarSlot;
                 if (axe<0 || axe==c.profile().hoeHotbarSlot || !item(c,axe).is(LoggingRules.AXE)
                     || item(c,axe).durability()<=1 || !c.world().loggingAxe(axe)) return fail("잎 제거에는 등록한 사용 가능한 도끼가 필요합니다.");
@@ -421,6 +444,7 @@ public final class LoggingModule implements AutomationModule {
         c.actions().stopMovement(); return true;
     }
     private WorkResult rejectLeafStance(Context c,String reason) {
+        clearMiningQuiet();
         c.actions().stopMovement();
         // No action was submitted for this candidate. Keep the original sweep
         // and native action/landing state: neither an ACK nor a new budget is
@@ -529,6 +553,7 @@ public final class LoggingModule implements AutomationModule {
         return null;
     }
     private void clearVisibilitySweep() {
+        clearMiningQuiet();
         invisiblePlots.clear(); staleApproachReplans.clear(); choppingApproach=null; visibilityRetryAt=-1; visibilityScanTick=Long.MIN_VALUE;
         leafApproach=null; leafTarget=null; leafBase=null;
     }
@@ -744,6 +769,40 @@ public final class LoggingModule implements AutomationModule {
     private static ItemData item(Context c,int index) { return inventory(c).stream().filter(s -> s.inventoryIndex()==index).map(ItemSlot::item).findFirst().orElse(ItemData.EMPTY); }
     private static boolean air(BlockData block) { return block.id().equals("minecraft:air") || block.id().equals("minecraft:cave_air") || block.id().equals("minecraft:void_air"); }
     private static boolean occupied(Context c,Pos p) { return c.world().loaded(p) && (c.world().block(p).id().equals(LoggingRules.SAPLING) || c.world().block(p).id().equals(LoggingRules.LOG)); }
+    private WorkResult awaitMiningQuiet(Context c,Pos target,Pos base) {
+        c.actions().stopMovement();
+        if(!miningArrivalMatches(c,target,base)) {
+            clearMiningQuiet();miningQuietTarget=target;miningQuietBase=base;
+            miningWorld=c.world();miningProfile=c.profile();miningSession=c.session();miningQuietSince=c.world().tick();
+        }
+        sampleMiningPose(c);
+        if(miningQuietTicks>=MINING_QUIET_TICKS)return null;
+        if(c.world().tick()-miningQuietSince>=MINING_QUIET_TIMEOUT)
+            return fail("이동 잔여속도/정지 확인 대기가 100틱을 넘었습니다. 새 벌목을 보내지 않고 미완료 구역을 보존합니다.");
+        return busy("이동 잔여속도/정지 확인 대기 ("+miningQuietTicks+"/2틱)");
+    }
+    private boolean miningArrivalMatches(Context c,Pos target,Pos base) {
+        return target!=null && target.equals(miningQuietTarget) && Objects.equals(base,miningQuietBase)
+            && miningWorld==c.world() && miningProfile==c.profile() && miningSession==c.session();
+    }
+    private void sampleMiningPose(Context c) {
+        if(miningQuietTarget==null)return;
+        if(miningWorld!=c.world() || miningProfile!=c.profile() || miningSession!=c.session()) { clearMiningQuiet();return; }
+        PlayerState now=c.world().player();long tick=c.world().tick();
+        double dx=miningPose==null?Double.NaN:now.x()-miningPose.x();
+        double dy=miningPose==null?Double.NaN:now.y()-miningPose.y();
+        double dz=miningPose==null?Double.NaN:now.z()-miningPose.z();
+        boolean same=now.onGround() && miningPose!=null && miningPose.onGround() && dx*dx+dy*dy+dz*dz<=.002*.002;
+        if(!same || tick!=miningSampleTick && tick-miningSampleTick!=1) {
+            if(miningQuietTicks>=MINING_QUIET_TICKS)miningQuietSince=tick;
+            miningQuietTicks=0;
+        } else if(tick!=miningSampleTick)miningQuietTicks=Math.min(MINING_QUIET_TICKS,miningQuietTicks+1);
+        miningPose=now;miningSampleTick=tick;
+    }
+    private void clearMiningQuiet() {
+        miningQuietTarget=miningQuietBase=null;miningPose=null;miningWorld=null;miningProfile=null;miningSession=null;
+        miningSampleTick=miningQuietSince=-1;miningQuietTicks=0;
+    }
     private WorkResult awaitCleanupQuiet(Context c) {
         long now=c.world().tick();
         if (c.world().menu()==null || !c.world().menu().carried().empty()) return fail("벌목 정리 전 커서의 아이템을 확인하세요.");

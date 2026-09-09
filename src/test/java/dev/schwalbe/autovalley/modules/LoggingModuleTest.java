@@ -9,6 +9,82 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class LoggingModuleTest {
+    @Test void residualThreeDimensionalCoastCannotSelectOrStartMiningUntilTwoQuietTicks() {
+        Fixture f=atMiningArrival(false);int routes=f.loggingMoves;
+        for(double[] pose:List.of(new double[]{.46,64,.5},new double[]{.43,64,.53},new double[]{.42,64.01,.53},new double[]{.419,64.006,.531})) {
+            f.playerX=pose[0];f.playerY=pose[1];f.playerZ=pose[2];f.ticks++;
+            assertTrue(f.step().message().contains("이동 잔여속도/정지 확인 대기"));assertTrue(f.actions.isEmpty());
+        }
+        assertEquals(routes,f.loggingMoves,"Stopping visible coast must not re-arm navigation every tick");
+        f.ticks++;f.step();assertTrue(f.actions.isEmpty());
+        f.ticks++;f.step();assertInstanceOf(Action.SelectHotbar.class,f.pending);
+        f.advance();f.step();assertInstanceOf(Action.ChopTree.class,f.pending);
+    }
+    @Test void stationaryAcknowledgedStrokesDoNotPayTwoNewFixedTicksPerChop() {
+        Fixture f=new Fixture(1);f.strokesPerTree=6;f.until(()->f.pending instanceof Action.ChopTree);
+        for(int i=0;i<4;i++) {
+            int sent=f.actions.size();f.advance();f.step();
+            assertInstanceOf(Action.ChopTree.class,f.pending);assertEquals(sent+1,f.actions.size());
+        }
+        assertEquals(4,f.chops);assertEquals(5,f.actions.stream().filter(a->a instanceof Action.ChopTree).count());
+    }
+    @Test void MotionObservedDuringPendingNativeAckRevokesTheNextStrokeWithoutResendingPending() {
+        Fixture f=new Fixture(1);f.strokesPerTree=6;f.until(()->f.pending instanceof Action.ChopTree);int sent=f.actions.size();
+        f.playerZ+=.04;f.ticks++;f.step();assertEquals(sent,f.actions.size());assertInstanceOf(Action.ChopTree.class,f.pending);
+        f.advance();f.step();assertNull(f.pending);assertEquals(sent,f.actions.size());assertEquals(1,f.chops);
+        f.ticks++;f.step();assertInstanceOf(Action.ChopTree.class,f.pending);assertEquals(sent+1,f.actions.size());
+    }
+    @Test void leafRemovalAlsoWaitsForActualQuietPoseBeforeSelectingOrBreaking() {
+        Fixture f=atMiningArrival(true);int visits=f.leafStanceMoves;
+        for(int i=0;i<5;i++){f.playerX+=.01;f.ticks++;f.step();assertTrue(f.actions.isEmpty());}
+        assertEquals(visits,f.leafStanceMoves,"A stopped arrival is observed, not repeatedly steered");
+        f.ticks++;f.step();assertTrue(f.actions.isEmpty());f.ticks++;f.step();assertInstanceOf(Action.SelectHotbar.class,f.pending);
+        f.advance();f.step();assertInstanceOf(Action.ClearLoggingLeaf.class,f.pending);
+    }
+    @Test void lostActualSightDuringQuietWaitReturnsToNavigationBeforeAnyStart() {
+        Fixture f=atMiningArrival(false);int routes=f.loggingMoves;
+        f.occludedChopping.addAll(f.profile.loggingPlots.get(0).plantingPositions());f.holdChopMovement=true;
+        for(int i=0;i<40 && f.loggingMoves==routes;i++){f.ticks++;f.step();}
+        assertTrue(f.loggingMoves>routes);assertTrue(f.actions.isEmpty());
+        for(int i=0;i<5;i++){f.ticks++;f.step();assertTrue(f.actions.isEmpty());}
+        f.holdChopMovement=false;f.movementExposesChop=true;
+        f.until(()->f.pending instanceof Action.ChopTree);assertEquals(0,f.chops);
+    }
+    @Test void duplicatePollsAndDateChangesCannotSupplyQuietTicksAndTickGapsResetThem() {
+        Fixture f=atMiningArrival(true);f.ticks++;f.step();assertTrue(f.actions.isEmpty());
+        for(int i=0;i<8;i++){f.day++;f.step();assertTrue(f.actions.isEmpty());}
+        f.ticks+=2;f.step();assertTrue(f.actions.isEmpty());f.ticks++;f.step();assertTrue(f.actions.isEmpty());
+        f.ticks++;f.step();assertInstanceOf(Action.SelectHotbar.class,f.pending);
+    }
+    @Test void airborneNonfiniteAndResetCannotRetainPriorQuietApproval() {
+        for(String changed:List.of("airborne","nonfinite","reset","clock")) {
+            Fixture f=atMiningArrival(false);f.selected=2;f.ticks++;f.step();assertTrue(f.actions.isEmpty());
+            switch(changed) {
+                case "airborne" -> f.grounded=false;
+                case "nonfinite" -> f.playerY=Double.NaN;
+                case "reset" -> f.module.reset();
+                case "clock" -> f.ticks-=10;
+            }
+            f.step();assertTrue(f.actions.isEmpty(),changed);f.grounded=true;f.playerY=64;
+            if(f.ticks<0)f.ticks=0;
+            f.until(()->f.pending instanceof Action.ChopTree);assertEquals(0,f.chops,changed);
+        }
+    }
+    @Test void continuouslyMovingAtAnArrivedTargetStopsUnsentAfterOneHundredTicks() {
+        Fixture f=atMiningArrival(false);long start=f.ticks;WorkResult result=null;
+        for(int i=0;i<101;i++){
+            f.playerX+=i%2==0?.01:-.01;f.ticks++;result=f.step();if(result.state()==WorkResult.State.BLOCKED)break;
+            for(int duplicate=0;duplicate<3;duplicate++)assertEquals(WorkResult.State.BUSY,f.step().state());
+        }
+        assertNotNull(result);assertEquals(WorkResult.State.BLOCKED,result.state());assertTrue(result.message().contains("이동 잔여속도/정지 확인 대기"));
+        assertEquals(100,f.ticks-start);assertTrue(f.actions.isEmpty());assertTrue(f.profile.loggingRunActive);
+        assertEquals(1,f.profile.loggingRemainingPlots.size());assertTrue(f.profile.nextEligibleDay.isEmpty());assertNull(f.nativeFence);
+    }
+    private static Fixture atMiningArrival(boolean leaf) {
+        Fixture f=leaf?leafFixture(1):new Fixture(1);f.until(()->f.loggingMoves>0);
+        assertTrue(f.actions.isEmpty());assertNull(f.pending);return f;
+    }
+
     @Test void explicitLeafPermissionClearsOneConfirmedObstructionThenRescansTheSameUnfinishedTree() {
         Fixture f=leafFixture(1); Pos leaf=f.nextLeaf(f.profile.loggingPlots.get(0).corner());
         f.until(() -> f.pending instanceof Action.ClearLoggingLeaf);
@@ -1619,7 +1695,7 @@ class LoggingModuleTest {
         final List<List<Pos>> plantingApproaches=new ArrayList<>();
         final Set<Pos> occludedPlanting=new HashSet<>();
         final Set<Pos> occludedChopping=new HashSet<>();
-        boolean blockAllChopRays,movementExposesChop,alternateChopGoal; int chopRays,actualChopQueries,chopGoalChecks;
+        boolean blockAllChopRays,movementExposesChop,alternateChopGoal,holdChopMovement; int chopRays,actualChopQueries,chopGoalChecks;
         final Set<Pos> chopRayTargets=new HashSet<>();
         Pos chopGoalTarget,chopGoalFeet; String treeRejection;
         final Map<Pos,ArrayDeque<Pos>> leafObstructions=new LinkedHashMap<>();
@@ -1632,7 +1708,7 @@ class LoggingModuleTest {
         final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
         final Map<Pos,Integer> nativeChops=new HashMap<>(); int strokesPerTree=2;
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
-        double playerX=.5;
+        double playerX=.5,playerY=64,playerZ=.5;
         int fingerprintCalls,fingerprintEpoch,omittedInventorySlot=-1;
         boolean fingerprintSupported=true,duplicateInventorySlot,manualCraftBatches,observeLoads,retryableObserve,rejectUnloadedBlockReads;
         final List<Pos> observed=new ArrayList<>();
@@ -1759,7 +1835,7 @@ class LoggingModuleTest {
         }
         public long tick() { return ticks; }
         public long dayTime() { return day*24000+1000; }
-        public PlayerState player() { return new PlayerState(playerX,64,.5,0,0,grounded,false,20,20,selected,true,true); }
+        public PlayerState player() { return new PlayerState(playerX,playerY,playerZ,0,0,grounded,false,20,20,selected,true,true); }
         public BlockData block(Pos pos) {
             if(rejectUnloadedBlockReads) assertTrue(loaded(pos),"An unknown cell must be observed before reading its block");
             return new BlockData(pos,id(pos),Map.of());
@@ -1833,7 +1909,7 @@ class LoggingModuleTest {
         public Result moveToLogging(Pos pos,double reach,Context c) {
             assertTrue(profile.loggingRunActive); assertTrue(session.allows(profile,Feature.LOGGING));
             if (movementExposesChop) occludedChopping.remove(pos);
-            loggingMoves++; loggingTargets.add(pos); return moveTo(pos,reach,c);
+            loggingMoves++; loggingTargets.add(pos); return holdChopMovement?Result.MOVING:moveTo(pos,reach,c);
         }
         public Result moveToLoggingPosition(Pos stance,double tolerance,Context c) {
             assertTrue(profile.loggingRunActive);assertTrue(session.allows(profile,Feature.LOGGING));assertEquals(.1,tolerance);
