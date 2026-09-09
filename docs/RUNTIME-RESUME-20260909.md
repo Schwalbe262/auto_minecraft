@@ -676,3 +676,29 @@ At 05:53 UTC the same continuous run was still ON, with no inventory action
 fence. The wine batch retained 112 pending machines while their actual production
 states were not yet all ready. No deadlines, inventory receipts or production
 states were manually changed to accelerate that wait.
+
+### Reduce source and landing alignment oscillation
+
+The native preserves deferral retained a PREPARE timeout at tick 21034. Its final
+pose was already within the launch radius; this single pose does not establish
+the preceding motion. Source review found that inner arrivals still used full
+walking pulses outside that radius, unlike outer arrivals. Detached regression
+tests also reproduced a strong inherited-motion case that failed the original
+60-tick preparation limit.
+
+All off-center preparations now use consecutive measured motion to choose small
+ordinary input or coast. Near the narrow launch center the input is reduced once
+more. Actual observation gaps reset the quiet streak, and moving inner samples
+are not counted as quiet. LAND uses a small last approach only when already
+grounded, near the center and slow, after the existing coast/brake branches.
+Support and authority proofs, allowed regions, two quiet observations, single
+launch and original deadlines are unchanged.
+
+The first targeted run retained the inherited-motion failure rather than weakening
+its expected result. After reducing the near-source pulse, all **1,651 tests /
+122 suites** passed, zero failures, errors or skips, including 17 new regressions.
+The models cover multiple input responses, offsets, inertia, observation gaps,
+permission/support changes, cancellation and the original timeout. These are
+detached response models, not live performance measurements. Combined artifact
+SHA256: `A220ED0B63B72320439F08E791DB1D863CF991F3EAD9CAB0A5DCDC6282E23D77`.
+Installation and native acceptance of this latest alignment refinement are pending.

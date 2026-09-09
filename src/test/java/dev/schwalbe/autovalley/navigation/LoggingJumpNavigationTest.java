@@ -52,10 +52,14 @@ class LoggingJumpNavigationTest {
     @Test void sourceMustBeQuietGroundedAndCenteredBeforeOneLaunchPulse() {
         Fixture f=new Fixture(); f.pose(.7,0,.5,true);
         assertEquals(Navigation.Result.MOVING,f.tick()); assertEquals(0,f.actions.launches);
+        assertNull(f.actions.lastMove,"The first off-center sample has no measured velocity");
+        f.pose(.7,0,.5,true); assertEquals(Navigation.Result.MOVING,f.tick());
         assertFalse(f.actions.lastMove.jump()); assertFalse(f.actions.lastMove.sprint());
+        assertEquals(.1f,f.actions.lastMove.inputScale());
         f.pose(.55,0,.5,true); f.tick();
         f.pose(.45,0,.5,true); f.tick();
         assertEquals(0,f.actions.launches,"Crossing the center with inertia is not a quiet launch");
+        f.pose(.45,0,.5,true); f.tick(); assertEquals(0,f.actions.launches,"Only one actually quiet observation");
         f.pose(.45,0,.5,true); f.tick(); assertEquals(1,f.actions.launches);
         f.tick(); f.tick();
         assertEquals(1,f.actions.launches); assertEquals(0,f.actions.flightSteers,"Same-tick calls must not clear the launch pulse");
@@ -79,6 +83,8 @@ class LoggingJumpNavigationTest {
         Fixture f=new Fixture(); f.pose(.5,0,.5,true); f.tick();
         f.pose(.505,0,.5,true); f.tick();
         assertEquals(0,f.actions.launches,"Five millimeters per tick is not a settled launch");
+        f.pose(.505,0,.5,true); f.tick();
+        assertEquals(0,f.actions.launches,"The moving sample was not the first quiet observation");
         f.pose(.505,0,.5,true); f.tick();
         assertEquals(1,f.actions.launches);
     }

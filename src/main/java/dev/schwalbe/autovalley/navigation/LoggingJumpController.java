@@ -47,6 +47,7 @@ public class LoggingJumpController {
             return fail(actionLabel()+"의 출발 또는 착지 지면 높이가 바뀌었습니다.");
         PlayerState p=c.world().player();
         boolean measuredMotion=motionSample!=null && now-motionSampleTick==1;
+        boolean observationGap=motionSample!=null && !measuredMotion;
         double vx=measuredMotion ? p.x()-motionSample.x() : 0;
         double vz=measuredMotion ? p.z()-motionSample.z() : 0;
         motionSample=p; motionSampleTick=now;
@@ -62,17 +63,20 @@ public class LoggingJumpController {
             if (outerSourceCentering && (!edge.from().equals(NavigationFeet.resolve(c.world(),p))
                 || !c.world().fullFlatSupport(edge.from())))
                 return fail(actionLabel()+" 출발 칸 안의 평평한 지면을 확인하지 못했습니다.");
-            if (outerSourceCentering && !measuredMotion) {
+            if ((outerSourceCentering || observationGap) && !measuredMotion) {
                 quietSamples=0; preparedSample=null; c.actions().stopMovement(); return Navigation.Result.MOVING;
             }
             if (!LoggingJumpRules.centered(p,edge.from(),LoggingJumpRules.SOURCE_CENTER)) {
                 quietSamples=0; preparedSample=null;
-                if (outerSourceCentering) centerSource(c.actions(),p,vx,vz);
-                else steer(c.actions(),p,edge.from());
+                // Inner arrivals need the same measured small approach as
+                // outer arrivals: a full pulse can oscillate across the much
+                // smaller launch radius until the preparation deadline.
+                if (measuredMotion) centerSource(c.actions(),p,vx,vz);
+                else c.actions().stopMovement();
                 return Navigation.Result.MOVING;
             }
             c.actions().stopMovement();
-            if (outerSourceCentering && Math.hypot(vx,vz)>.002) {
+            if (measuredMotion && Math.hypot(vx,vz)>.002) {
                 quietSamples=0; preparedSample=null; return Navigation.Result.MOVING;
             }
             if (preparedSample!=null && Math.hypot(p.x()-preparedSample.x(),p.z()-preparedSample.z())>.002) quietSamples=0;
@@ -111,7 +115,10 @@ public class LoggingJumpController {
             actions.stopMovement();
         } else {
             float yaw=(float)Math.toDegrees(Math.atan2(-dx,dz));
-            actions.move(new Movement(yaw,0,true,false,false,false,.2f));
+            // The launch radius is narrower than the landing radius; even a
+            // reduced pulse can overshoot it with strong inherited motion.
+            float inputScale=distance<=.20 ? .1f : .2f;
+            actions.move(new Movement(yaw,0,true,false,false,false,inputScale));
         }
     }
 
@@ -147,6 +154,13 @@ public class LoggingJumpController {
             steerVector(c.actions(),-vx,-vz);
         } else if (speed>.002 && (toward<=0 || distance<=1.25*speed+LoggingJumpRules.LANDING_CENTER)) {
             c.actions().stopMovement();
+        } else if (distance<=.20 && speed<=.03) {
+            // Near a quiet landing, a full walking pulse can overshoot the
+            // centre and repeatedly trigger the opposite braking pulse. Use
+            // a small ordinary step only here; landing still needs two real
+            // quiet observations within the unchanged radius and deadline.
+            float yaw=(float)Math.toDegrees(Math.atan2(-dx,dz));
+            c.actions().move(new Movement(yaw,0,true,false,false,false,.2f));
         } else steer(c.actions(),p,edge.to());
         return Navigation.Result.MOVING;
     }

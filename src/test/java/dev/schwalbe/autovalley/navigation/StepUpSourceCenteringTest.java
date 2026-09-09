@@ -98,7 +98,9 @@ class StepUpSourceCenteringTest {
 
     @Test void anAlreadyInnerPreparationDoesNotAcquireANewFlatProofRequirement() {
         Fixture f=new Fixture();f.x=706.8;f.z=1595.5;f.flat=false;
-        assertEquals(Navigation.Result.MOVING,f.controller.tick(f.context));assertNotNull(f.movement);
+        assertEquals(Navigation.Result.MOVING,f.controller.tick(f.context));assertNull(f.movement);
+        f.now++;assertEquals(Navigation.Result.MOVING,f.controller.tick(f.context));assertNotNull(f.movement);
+        assertEquals(.2f,f.movement.inputScale());
         assertEquals(0,f.launches);assertFalse(f.controller.attempted());
     }
 
