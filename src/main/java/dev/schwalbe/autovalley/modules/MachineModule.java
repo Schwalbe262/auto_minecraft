@@ -29,6 +29,8 @@ public final class MachineModule implements AutomationModule {
     private boolean partialWineFeedEligible;
     private Pos partialWineFeedTarget;
     private int confirmedPartialWineInput;
+    private boolean fullWineFeedEligible, confirmedFullWineInput;
+    private Pos fullWineFeedTarget;
     private String unresolvedInteraction;
     private String outputOperationId;
     private Map<Integer,ItemData> inventoryBeforeOutput=Map.of();
@@ -100,11 +102,18 @@ public final class MachineModule implements AutomationModule {
                 case SWAP, SELECT -> stage = Stage.EQUIP;
                 case USE -> {
                     confirmedPartialWineInput=0;
+                    confirmedFullWineInput=false;
                     if(result.proof()==ActionOutcome.Proof.WINE_PARTIAL_FEED) {
                         if(!partialWineFeedEligible || feature!=Feature.WINE || !feeding || collected || cost!=3
                             || !Objects.equals(partialWineFeedTarget,target().pos()) || result.confirmedCount()<1 || result.confirmedCount()>2)
                             return fail("Unexpected partial wine-feed proof; inspect the machine");
                         confirmedPartialWineInput=result.confirmedCount();
+                    }
+                    if(result.proof()==ActionOutcome.Proof.WINE_FULL_FEED) {
+                        if(!fullWineFeedEligible || feature!=Feature.WINE || !feeding || cost!=3
+                            || !Objects.equals(fullWineFeedTarget,target().pos()) || result.confirmedCount()!=3)
+                            return fail("Unexpected full wine-feed proof; inspect the machine");
+                        confirmedFullWineInput=true;
                     }
                     stage = Stage.VERIFY; verifySince = c.world().tick();
                 }
@@ -368,6 +377,11 @@ public final class MachineModule implements AutomationModule {
                     && "false".equals(block.properties().get("working")) && "false".equals(block.properties().get("mature"));
                 partialWineFeedTarget=partialWineFeedEligible ? target().pos() : null;
                 confirmedPartialWineInput=0;
+                fullWineFeedEligible=feature==Feature.WINE && feeding && cost==3
+                    && (partialWineFeedEligible || "true".equals(block.properties().get("mature"))
+                        && ("false".equals(block.properties().get("working")) || "true".equals(block.properties().get("working"))));
+                fullWineFeedTarget=fullWineFeedEligible ? target().pos() : null;
+                confirmedFullWineInput=false;
                 // submit() can dispatch immediately: preserves obligations reach disk first.
                 if (collected) {
                     Map<Integer,ItemData> before=new HashMap<>();
@@ -385,10 +399,12 @@ public final class MachineModule implements AutomationModule {
                 int consumed = inputBefore - ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
                 boolean exactPartial=feature==Feature.WINE && feeding && !collected && partialWineFeedEligible && cost==3
                     && Objects.equals(partialWineFeedTarget,target().pos()) && confirmedPartialWineInput>=1 && confirmedPartialWineInput<=2;
-                boolean inputConfirmed = !feeding || consumed == cost || exactPartial;
+                boolean exactFull=feature==Feature.WINE && feeding && fullWineFeedEligible && cost==3
+                    && Objects.equals(fullWineFeedTarget,target().pos()) && confirmedFullWineInput;
+                boolean inputConfirmed = !feeding || consumed == cost || exactPartial || exactFull;
                 boolean stateConfirmed = blockId().equals(block.id()) && target().pos().equals(block.pos())
                     && !block.flag("mature") && (!feeding || block.flag("working"));
-                if(exactPartial)stateConfirmed &= "false".equals(block.properties().get("mature"))
+                if(exactPartial || exactFull)stateConfirmed &= "false".equals(block.properties().get("mature"))
                     && "true".equals(block.properties().get("working"));
                 if (inputConfirmed && stateConfirmed) {
                     if (feeding) { freshForHaul = false; inputMergeAttempts=0; }
@@ -724,6 +740,7 @@ public final class MachineModule implements AutomationModule {
         stockReady = false; freshForHaul = false; stockDay = 0;
         source = null; containerId = -1; grade = -1; collected = false; feeding = false;
         partialWineFeedEligible=false;partialWineFeedTarget=null;confirmedPartialWineInput=0;
+        fullWineFeedEligible=false;fullWineFeedTarget=null;confirmedFullWineInput=false;
         outputOperationId=null;
         inventoryBeforeOutput=Map.of(); outputWineYear=null; preferredOutputSource=null;
         pendingMergeState=null; singleStackFallbackState=null; inputMergeAttempts=0; outputMergeAttempts=0;

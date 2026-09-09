@@ -32,9 +32,53 @@ class NativeWineFeedReceiptTest {
         assertEquals(3,count(selected(3)),"ordinary idle full feed may be observed without widening partial outcome authority");
     }
     @Test void aPreviouslyMatureCollectionNeverQualifiesForTheIdlePartialException() {
-        for(int consumed:new int[]{1,2,3})assertEquals(0,count(before(true,false),List.of(state(102)),selected(consumed)));
-        for(int consumed:new int[]{1,2,3})assertEquals(0,count(before(true,true),List.of(state(102)),selected(consumed)));
+        for(boolean working:List.of(false,true)) {
+            for(int consumed:new int[]{1,2})assertEquals(0,count(before(true,working),List.of(state(102)),selected(consumed)));
+            assertEquals(3,count(before(true,working),List.of(state(102)),selected(3)));
+        }
         assertEquals(0,count(before(false,true),List.of(state(102)),selected(2)));
+    }
+    @Test void matureFullFeedRequiresExactSelectedNativeLossOrExactThreeItemExhaustion() {
+        for(boolean working:List.of(false,true)) {
+            BlockData mature=before(true,working);
+            assertEquals(3,count(mature,List.of(state(102)),new NativeWineFeedReceipt.SelectedProof(103,2,true,true,
+                ItemData.TOMATO,64,ItemData.TOMATO,61,true)));
+            assertEquals(3,count(mature,List.of(state(102)),new NativeWineFeedReceipt.SelectedProof(103,2,true,true,
+                ItemData.TOMATO,3,"minecraft:air",0,false)));
+            for(int used:new int[]{-1,0,1,2,4})assertEquals(0,count(mature,List.of(state(102)),selected(used)));
+            assertEquals(0,count(mature,List.of(state(102)),new NativeWineFeedReceipt.SelectedProof(103,2,true,true,
+                ItemData.TOMATO,12,ItemData.TOMATO,9,false)),"public count is not native quality/tag/limit proof");
+            assertEquals(0,count(mature,List.of(state(102)),new NativeWineFeedReceipt.SelectedProof(103,2,true,true,
+                ItemData.TOMATO,3,ItemData.WINE,1,false)));
+        }
+    }
+    @Test void matureFullFeedCannotBorrowStaleWrongSlotOrLatestContradictoryBlockEvidence() {
+        BlockData mature=before(true,true);
+        assertEquals(0,count(mature,List.of(),selected(3)));
+        assertEquals(0,count(mature,List.of(state(102)),null));
+        assertEquals(0,NativeWineFeedReceipt.confirmedCount(TARGET,mature,2,100,7,8,List.of(state(102)),selected(3)));
+        for(var slot:List.of(
+            new NativeWineFeedReceipt.SelectedProof(100,2,true,true,ItemData.TOMATO,12,ItemData.TOMATO,9,true),
+            new NativeWineFeedReceipt.SelectedProof(103,3,true,true,ItemData.TOMATO,12,ItemData.TOMATO,9,true),
+            new NativeWineFeedReceipt.SelectedProof(103,2,false,true,ItemData.TOMATO,12,ItemData.TOMATO,9,true),
+            new NativeWineFeedReceipt.SelectedProof(103,2,true,false,ItemData.TOMATO,12,ItemData.TOMATO,9,true)))
+            assertEquals(0,count(mature,List.of(state(102)),slot));
+        for(var latest:List.of(
+            new NativeWineFeedReceipt.StateProof(104,TARGET,"minecraft:air","false","true",EXTRA,true),
+            new NativeWineFeedReceipt.StateProof(104,TARGET,KEG,"false","false",EXTRA,true),
+            new NativeWineFeedReceipt.StateProof(104,TARGET,KEG,"true","true",EXTRA,true),
+            new NativeWineFeedReceipt.StateProof(104,TARGET,KEG,null,"true",EXTRA,true),
+            new NativeWineFeedReceipt.StateProof(104,TARGET,KEG,"false","true",EXTRA,false),
+            new NativeWineFeedReceipt.StateProof(104,TARGET,KEG,"false","true",Map.of("facing","south","upgraded","false"),true)))
+            assertEquals(0,count(mature,List.of(state(102),latest),selected(3)));
+    }
+    @Test void unknownMatureBaselineWorkingStateCannotAuthorizeFullFeeding() {
+        for(String working:List.of("unknown","TRUE","")) {
+            Map<String,String> properties=new LinkedHashMap<>(before(true,true).properties());properties.put("working",working);
+            assertEquals(0,count(new BlockData(TARGET,KEG,properties),List.of(state(102)),selected(3)));
+        }
+        Map<String,String> properties=new LinkedHashMap<>(before(true,true).properties());properties.remove("working");
+        assertEquals(0,count(new BlockData(TARGET,KEG,properties),List.of(state(102)),selected(3)));
     }
     @Test void unchangedIncreasedAndOverconsumedSelectedCountsAreNotAFeedReceipt() {
         for(int consumed:new int[]{0,-1,4,5,12})assertEquals(0,count(selected(consumed)),"consumed="+consumed);
@@ -97,5 +141,14 @@ class NativeWineFeedReceiptTest {
         assertEquals(ActionOutcome.Proof.NONE,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"ordinary count",2).proof());
         assertEquals(ActionOutcome.Proof.WINE_PARTIAL_FEED,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"exact native slot",2,
             ActionOutcome.Proof.WINE_PARTIAL_FEED).proof());
+    }
+    @Test void fullWineProofIsSuccessfulAndExactlyThreeButCannotBeInferredFromOrdinaryCount() {
+        for(ActionOutcome.State state:ActionOutcome.State.values())if(state!=ActionOutcome.State.SUCCEEDED)
+            assertThrows(IllegalArgumentException.class,()->new ActionOutcome(state,"unconfirmed",3,ActionOutcome.Proof.WINE_FULL_FEED));
+        for(int count:List.of(0,1,2,4))assertThrows(IllegalArgumentException.class,()->new ActionOutcome(
+            ActionOutcome.State.SUCCEEDED,"wrong count",count,ActionOutcome.Proof.WINE_FULL_FEED));
+        assertEquals(ActionOutcome.Proof.NONE,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"ordinary count",3).proof());
+        assertEquals(3,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"exact full selected loss",3,
+            ActionOutcome.Proof.WINE_FULL_FEED).confirmedCount());
     }
 }

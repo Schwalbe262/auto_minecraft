@@ -5,7 +5,7 @@ import java.util.*;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.item.ItemStack;
 
-/** Dispatch-local proof for finishing an idle wine keg's possibly partial input.
+/** Dispatch-local proof for idle input or a mature wine keg's exact collect-and-refill.
  * Client BE stage/recipe data are not synchronized and are never used as evidence.
  * No current inventory totals, predicted menu, or another target can confirm a feed. */
 final class NativeWineFeedReceipt {
@@ -39,13 +39,14 @@ final class NativeWineFeedReceipt {
     }
     private NativeWineFeedReceipt() { }
     static boolean eligible(Pos target,BlockData before,ItemStack ingredient,int selected,MenuData menu) {
-        return idle(target,before) && selected>=0 && selected<9 && menu!=null && menu.id()==0 && !menu.container() && menu.carried().empty()
+        return (idle(target,before) || mature(target,before)) && selected>=0 && selected<9 && menu!=null && menu.id()==0 && !menu.container() && menu.carried().empty()
             && ingredient!=null && !ingredient.isEmpty() && ItemData.TOMATO.equals(BuiltInRegistries.ITEM.getKey(ingredient.getItem()).toString())
             && ingredient.getCount()>=3 && ingredient.getCount()<=ingredient.getMaxStackSize();
     }
     static int confirmedCount(Pos target,BlockData before,int selected,long sequence,long generation,long observedGeneration,
                               List<StateProof> blocks,SelectedProof slot) {
-        if(!idle(target,before) || selected<0 || selected>=9 || generation!=observedGeneration || blocks==null || slot==null
+        boolean idle=idle(target,before);
+        if(!(idle || mature(target,before)) || selected<0 || selected>=9 || generation!=observedGeneration || blocks==null || slot==null
             || !slot.raw() || !slot.cursorEmpty() || slot.seq()<=sequence || slot.inventoryIndex()!=selected
             || !ItemData.TOMATO.equals(slot.beforeId()) || slot.beforeCount()<3 || slot.afterCount()<0)return 0;
         StateProof latest=null;
@@ -55,12 +56,21 @@ final class NativeWineFeedReceipt {
             || !extraProperties(before).equals(latest.properties()))return 0;
         long used=(long)slot.beforeCount()-slot.afterCount();
         if(used<1 || used>3)return 0;
+        // Harvest resets the installed keg's input stage before reinsertion.
+        // A mature collect-and-refill therefore requires all three tomatoes;
+        // the idle partial-input exception must never authorize it.
+        if(!idle && used!=3)return 0;
         if(slot.afterCount()==0)return slot.beforeCount()==3 && "minecraft:air".equals(slot.afterId()) ? 3 : 0;
         return ItemData.TOMATO.equals(slot.afterId()) && slot.sameNativeIdentity() ? (int)used : 0;
     }
     private static boolean idle(Pos target,BlockData before) {
         return target!=null && before!=null && target.equals(before.pos()) && KEG.equals(before.id()) && before.properties()!=null
             && "false".equals(before.properties().get("working")) && "false".equals(before.properties().get("mature"));
+    }
+    private static boolean mature(Pos target,BlockData before) {
+        return target!=null && before!=null && target.equals(before.pos()) && KEG.equals(before.id()) && before.properties()!=null
+            && "true".equals(before.properties().get("mature"))
+            && ("false".equals(before.properties().get("working")) || "true".equals(before.properties().get("working")));
     }
     private static Map<String,String> extraProperties(BlockData before) {
         Map<String,String> properties=new LinkedHashMap<>(before.properties());

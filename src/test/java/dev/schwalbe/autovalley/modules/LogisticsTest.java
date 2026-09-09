@@ -2082,6 +2082,75 @@ class LogisticsTest {
         }
     }
 
+    @Test void fullWineFeedProofSurvivesUnrelatedTomatoPickupForIdleAndMatureKegs() {
+        for(boolean mature:List.of(false,true)) for(boolean proven:List.of(false,true)) {
+            Fixture f=new Fixture();f.equipHoe();f.inventory[1]=tomato(2,12);f.profile.interactionTimeoutTicks=5;
+            Pos target=f.machine(PoiKind.WINE_KEG,10,mature,mature,false);
+            f.profile.nextEligibleDay.put("wine:999:64:0",123L);
+            f.machineUseOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"selected-slot full native feed",3,
+                proven?ActionOutcome.Proof.WINE_FULL_FEED:ActionOutcome.Proof.NONE);
+            MachineModule module=new MachineModule(Feature.WINE);
+            for(int tick=0;tick<100 && f.machineClicks()==0;tick++){module.tick(f.context());f.advance();}
+            assertEquals(1,f.machineClicks());assertEquals(3,f.consumed);
+            f.inventory[35]=tomato(2,38);
+            assertEquals(47,ModuleSupport.count(f.context(),i->i.is(ItemData.TOMATO)),"ambient pickup masks the selected three-item consumption");
+            assertEquals(proven?WorkResult.State.IDLE:WorkResult.State.BLOCKED,f.run(module,100).state());
+            assertEquals(1,f.machineClicks());assertEquals(123L,f.profile.nextEligibleDay.get("wine:999:64:0"));
+            if(proven) {
+                assertFalse(f.profile.wineBatchSchedule.active());assertEquals(6L,f.profile.nextEligibleDay.get(WineBatchRules.key(target)));
+                assertEquals(mature?1:0,ModuleSupport.count(f.context(),i->i.is(ItemData.WINE)));assertNull(f.dropped);
+            } else {
+                assertEquals(List.of(target),f.profile.wineBatchSchedule.remaining());assertNull(f.profile.wineBatchSchedule.latestFeedDay());
+                assertFalse(f.profile.nextEligibleDay.containsKey(WineBatchRules.key(target)));
+            }
+        }
+    }
+
+    @Test void fullWineProofDoesNotAuthorizeAnotherFeatureOrAChangedVerificationTarget() {
+        for(int change=0;change<6;change++) {
+            Fixture f=new Fixture();f.equipHoe();f.inventory[1]=tomato(2,12);f.profile.interactionTimeoutTicks=5;
+            Feature feature=change==0?Feature.PRESERVES:Feature.WINE;
+            Pos target=f.machine(change==0?PoiKind.PRESERVES_JAR:PoiKind.WINE_KEG,10,true,true,false);
+            f.machineUseOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"exact full native feed",3,ActionOutcome.Proof.WINE_FULL_FEED);
+            MachineModule module=new MachineModule(feature);
+            for(int tick=0;tick<100 && f.machineClicks()==0;tick++){module.tick(f.context());f.advance();}
+            assertEquals(1,f.machineClicks());BlockData state=f.blocks.get(target);f.inventory[35]=tomato(2,38);
+            if(change==1)f.blocks.put(target,new BlockData(target,"minecraft:air",state.properties()));
+            if(change==2)f.blocks.put(target,new BlockData(target.offset(1,0,0),state.id(),state.properties()));
+            if(change==3)f.blocks.put(target,new BlockData(target,state.id(),Map.of("working","true")));
+            if(change==4)f.blocks.put(target,new BlockData(target,state.id(),Map.of("mature","false")));
+            if(change==5)f.blocks.put(target,new BlockData(target,state.id(),Map.of("mature","FALSE","working","true")));
+            assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state(),"change="+change);
+            assertEquals(1,f.machineClicks());assertTrue(f.profile.nextEligibleDay.isEmpty());
+            if(feature==Feature.WINE)assertEquals(List.of(target),f.profile.wineBatchSchedule.remaining());
+        }
+    }
+
+    @Test void fullWineProofCannotLeakToTheNextUseOrSurviveResetAsNewAuthority() {
+        for(boolean reset:List.of(false,true)) {
+            Fixture f=new Fixture();f.equipHoe();f.inventory[1]=tomato(2,12);f.profile.interactionTimeoutTicks=5;
+            Pos first=f.machine(PoiKind.WINE_KEG,10,true,true,false),second=f.machine(PoiKind.WINE_KEG,11,true,true,false);
+            f.machineUseOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"first exact native feed",3,ActionOutcome.Proof.WINE_FULL_FEED);
+            MachineModule module=new MachineModule(Feature.WINE);
+            for(int tick=0;tick<100 && !f.profile.nextEligibleDay.containsKey(WineBatchRules.key(first));tick++) {
+                assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());f.advance();
+            }
+            assertEquals(1,f.machineClicks());assertEquals(6L,f.profile.nextEligibleDay.get(WineBatchRules.key(first)));
+            if(reset)module.reset();
+            f.machineUseOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"second generic acknowledgement",3);
+            for(int tick=0;tick<100 && f.machineClicks()<2;tick++) {
+                assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());f.advance();
+            }
+            assertEquals(2,f.machineClicks());f.inventory[35]=tomato(2,3);
+            assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state());
+            assertEquals(2,f.machineClicks());assertEquals(6,f.consumed);
+            assertEquals(List.of(second),f.profile.wineBatchSchedule.remaining());
+            assertEquals(6L,f.profile.nextEligibleDay.get(WineBatchRules.key(first)));
+            assertFalse(f.profile.nextEligibleDay.containsKey(WineBatchRules.key(second)));
+            assertTrue(f.profile.pendingMachineOutputs.isEmpty());
+        }
+    }
+
     @Test void priorMatureWineStillRequiresThreeEvenWhenAPartialProofIsPresented() {
         for(int consumed:new int[]{1,2,3}) {
             Fixture f=new Fixture();f.equipHoe();f.inventory[1]=tomato(2,9);f.profile.interactionTimeoutTicks=5;

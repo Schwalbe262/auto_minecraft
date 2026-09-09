@@ -158,8 +158,8 @@ public final class MinecraftActions implements ActionPort {
             }
             if(use.purpose()==Action.Use.MACHINE && NativeWineFeedReceipt.eligible(use.pos(),beforeBlock,
                     mc.player.getMainHandItem(),beforePlayer.selectedSlot(),beforeMenu)) {
-                // An idle keg may already contain one or two inputs. Capture this exact
-                // dispatch; do not guess the unsynchronized block-entity stage.
+                // Idle input may be partial; mature harvest resets it before a full
+                // refill. Capture this dispatch without guessing unsynchronized BE stage.
                 wineFeedAttempt=new NativeWineFeedReceipt.Attempt(use.pos(),beforeBlock,mc.player.getMainHandItem(),
                     beforePlayer.selectedSlot(),beforeMenu.id(),beforeMenu,beforeSequence,observations.generation());
             }
@@ -264,10 +264,10 @@ public final class MinecraftActions implements ActionPort {
                     if(use.purpose()==Action.Use.MACHINE && wineFeedAttempt!=null) {
                         int consumed=wineFeedAttempt.confirmedCount(observations);
                         if(consumed>0) {
-                            var proof=consumed<3 ? ActionOutcome.Proof.WINE_PARTIAL_FEED : ActionOutcome.Proof.NONE;
-                            // Existing full-feed count semantics stay zero. Only the
-                            // explicit partial proof carries the actual input decrease.
-                            finish(ActionOutcome.State.SUCCEEDED,"Server confirmed wine feed and selected slot",consumed<3 ? consumed : 0,proof);return;
+                            var proof=consumed<3 ? ActionOutcome.Proof.WINE_PARTIAL_FEED : ActionOutcome.Proof.WINE_FULL_FEED;
+                            // This is the exact participating-slot loss, independent
+                            // of ambient tomato pickups elsewhere in the inventory.
+                            finish(ActionOutcome.State.SUCCEEDED,"Server confirmed wine feed and selected slot",consumed,proof);return;
                         }
                         // No broad block-or-any-inventory fallback for this opted-in
                         // attempt, including at timeout. A late selected-slot ACK must
