@@ -178,3 +178,29 @@ The gap-and-ceiling physics fixture improved from 112 to 107 ticks, retaining
 ordinary handling of the final solid platform and the existing quiet stop. This
 is a model measurement; this follow-up has not yet been installed or timed in the
 live client at this checkpoint.
+
+## Flat-travel pass-by integration and a disposal race
+
+The uninterrupted continuous run completed a second automatic sleep and reached
+day 462. All 144 preserves jars were then observed working again. Later, after
+another tomato harvest, a TrashSlot acknowledgement fence stopped the engine.
+This ends that uninterrupted run; it is not an hours-long all-feature stability pass.
+
+A read-only projection of retained native replies identified a concrete source
+count race. A single-slot request was made for two rotten tomatoes. Before the
+server's empty-source reply, a separate server reply increased that same source
+to four rotten tomatoes. An unrelated tomato addition also had its own earlier
+raw-slot reply. The strict source-proof validator rejects any pre-deletion count
+change, so it could not accept this sequence even though the source was empty.
+This evidence projects item IDs/counts, not native metadata equality; a future
+fix must still require identical native identity/limit, monotonic growth and
+ordered authoritative evidence. No acknowledgement was forged or request resent.
+
+The stair-flow re-entry and safe flat-travel starfruit detour were combined and
+passed **1,527 tests / 111 suites**, zero failures, errors or skips. Independent
+review also found no critical blocker. The combined artifact SHA-256 is
+`F37864F77BE00FEB29E0E8E78A720255409B7CBBABDB1CBAEE5B163FC73CE911`.
+It was installed through a normal same-instance restart, preserving the previous
+JAR, profile and private failure evidence. The disposal-race correction is not
+in this artifact. Native timing and detour/resume acceptance are still pending
+at this checkpoint.
