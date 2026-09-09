@@ -30,8 +30,8 @@ pending fruit acknowledgements. All **1,695 tests / 127 suites** passed, includi
 54 starfruit-module tests. Artifact SHA256:
 `E2FA3510F8D1FE1F944CC5BD11CEBE5AA6C8E00E16618FCF59700040D217A3D0`.
 
-Live installation and full-patch harvest acceptance are pending. A completed pass
-can still leave an unreachable fruit; completion text does not claim otherwise.
+A completed pass can still leave an unreachable fruit; completion text does not
+claim otherwise.
 
 ## Native acceptance
 

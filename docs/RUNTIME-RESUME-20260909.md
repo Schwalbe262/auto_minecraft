@@ -886,3 +886,41 @@ the native trace observed sleeping on day 485 at 07:17:27 UTC and normal work
 on day 486 afterward, without another start request. The engine began the newly
 due 124-jar preserves cohort. This accepts another real sleep/day transition,
 not multi-hour stability or a claim that every seed maker had enough ingredients.
+
+### Full activated starfruit patch: native one-shot accepted
+
+The latest starfruit revision makes six blocks an activation condition only.
+It freezes the selected registered patch's initially loaded ripe members and
+does not discard its opposite-side fruit as the player moves. Other patches,
+unregistered fruit, later ripening and later-loaded members remain outside that
+pass. Native reach/visibility, safe hand, pickup space and bounded approach/use
+checks remain unchanged. Day changes prevent new uses while an already submitted
+fruit interaction still settles before storage.
+
+All **1,695 tests / 127 suites** passed, including 54 starfruit-module tests.
+Artifact SHA256:
+`E2FA3510F8D1FE1F944CC5BD11CEBE5AA6C8E00E16618FCF59700040D217A3D0`.
+After normal shutdown it was installed at 07:26:44 UTC in client 51508, which
+reconnected in the same Society instance. The reviewed missing eighth fruit
+registration was already saved without changing schedules or storage settings.
+
+Before the **07:30:20.737 UTC** one-shot, six of the eight registered fruit were
+mature and no fruit was held. Native tickets **1–6** confirmed all six fruit
+interactions before the store opened. Transfer **8** confirmed **six fruit**
+deposited, with open 7 and normal close 9. A fresh post-pass observation found
+zero mature and zero held fruit. The added eighth registration participated;
+the other initially unripe members were not forcibly harvested. Details and
+scope qualifications are in [full-patch acceptance](STARFRUIT-FULL-PATCH-20260909.md).
+
+Continuous F8 mode resumed at **07:31:52 UTC**. The native six-fruit result proves
+the full-patch one-shot, not interruption and exact original-job resumption in
+continuous mode. That combined branch remains covered by detached regressions
+but still needs native acceptance. Multi-hour uninterrupted operation also
+remains open; observer elapsed time, paused intervals and supervised recoveries
+must not be counted as uninterrupted automation uptime.
+
+The subsequent trace recorded manual pauses at **07:36:04** and **07:38:06 UTC**,
+with a resume at **07:36:38 UTC** between them. The 07:38:50 review found the
+client manually paused with no native action fence. These short interrupted
+intervals are neither multi-hour acceptance nor evidence of a crash; automation
+was not restarted over the active manual control.
