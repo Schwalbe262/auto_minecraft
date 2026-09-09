@@ -102,3 +102,14 @@ native completion for the remaining hidden tree.
 
 The final combined offline Java 17 test/build passed 1,833 tests across 138 suites
 with zero failures, errors or skips.
+
+## Continuous-mode acceptance
+
+After the final normal restart, the original profile loaded with the one retained
+hidden plot and no replant or borrowed-slot obligation. Continuous mode started
+through the normal control interface. Native observations then showed logging
+yielding to `HARVEST`, ordinary movement to the crop field, a selected hoe, and
+tomatoes increasing from zero to 276 across grades. No native failure fence was
+present in that sample. The retained plot was not deleted or marked complete to
+obtain that progress. This is a short native integration check, not a multi-hour
+stability claim or completion of logging's final crafting/storage/shipment.
