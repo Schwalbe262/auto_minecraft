@@ -63,6 +63,22 @@ class InventoryTrashTest {
         assertEquals(WorkResult.State.IDLE,module.tick(f.context).state());
     }
 
+    @Test void continuousEngineCanServiceAnotherJobWhileUnsentDisposalIsBlocked() {
+        Fixture f=new Fixture();f.put(2,rotten(5));f.trashRejection="Protected recovery item; request not sent";
+        int[] otherTicks={0};
+        AutomationModule other=new AutomationModule() {
+            public Feature feature() {return Feature.SHIPPING;}
+            public int priority() {return 20;}
+            public WorkResult tick(Context c) {otherTicks[0]++;return WorkResult.busy("Other safe work");}
+            public void reset() { }
+        };
+        AutomationEngine engine=new AutomationEngine(List.of(new DisposalModule(),other));
+        engine.start(f.context);engine.tick(f.context);
+        assertEquals(AutomationEngine.State.RUNNING,engine.state());assertEquals("Other safe work",engine.status());
+        assertEquals(1,otherTicks[0]);assertTrue(f.sent.isEmpty());assertEquals(rotten(5),f.items.get(2).item());
+        engine.tick(f.context);assertEquals(2,otherTicks[0]);assertTrue(f.sent.isEmpty());
+    }
+
     @Test void disabledFeatureAndOtherOneShotCannotDeleteButExplicitDisposalCan() {
         Fixture f=new Fixture(); f.put(2,rotten(1)); Action action=new Action.TrashRotten(2,rotten(1));
         f.profile.enabled.put(Feature.DISPOSAL,false); assertNotNull(SafetyPolicy.rejection(action,f.context));

@@ -18,3 +18,5 @@ The pinned TrashSlot 15.1.3 server login handler explicitly sets the recovery it
 Tests cover blocked preflight with no submitted action, unchanged rotten stock, normal resumption after the prerequisite clears, and the protected-item allowlist. Native constructor/send exception branches were additionally reviewed, but are not directly instantiated by those unit tests.
 
 The focused integration run passed 274 tests across nine suites, including the normal-cooldown and storage-view changes. No live deletion was performed for this investigation.
+
+A subsequent full build passed 1,800 tests across 136 suites. An additional regression verifies that continuous scheduling can run another job while the unsent disposal prerequisite remains blocked. At 09:56:40 UTC, a fresh read-only buffer observation still found cobblestone64, although the user had resumed other automation and no rotten tomatoes remained in inventory. No restart or deletion was performed; deployment remains pending that retained item's disposition.
