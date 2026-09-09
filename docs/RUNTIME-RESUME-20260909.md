@@ -393,3 +393,20 @@ The 99D097 artifact was installed through a normal close/restart of the same
 Society instance, with the old JAR and current profile/evidence backed up. The
 previous process exited before its replacement started; no duplicate game was
 launched. Native post-install waiting, jade service and bedtime checks follow.
+
+Review of the final pre-restart trace additionally found the recurring jade
+service at 02:40:51–55 UTC: three machines changed from mature to working,
+inventory rose from zero through one/two to three jade, and the registered jade
+storage routine ran before inventory returned to zero. All three persisted
+deadlines advanced from day 468 to day 473; the ancient-fruit deadline is day
+478. Exact retained transfer outcomes for the jade tickets were not included in
+the pre-restart snapshot, so the trace/deadline evidence is distinguished from
+the exact 54-fruit deposit receipt above.
+
+The replacement client's quick-play initially reported an unknown host. A
+fresh same-JVM DNS/TCP check succeeded and normal in-client reconnect completed;
+no address/hosts override or extra game was used. CONTINUOUS start was acknowledged
+at 02:45:40 UTC. The corrected initial wine wait preserved the 224 pending
+members and allowed the due preserves run to start, reaching 128/144 machines
+without a native action fence. This is partial post-install acceptance; shipping,
+seed service, bedtime and extended stability are still being observed.
