@@ -868,3 +868,12 @@ storage/harvest work. The wine batch remains due on day 489. Shipment is not a
 claim that the later sale or its destination account balance was verified.
 This accepts the live recovery path; a new multi-hour uninterrupted run still
 needs observation.
+
+On that uninterrupted restart, harvest/storage completed and the remaining
+20 preserves machines were serviced around 07:13:55–07:14:13 UTC. All 144 jars
+then reported working with no mature remainder. Native transfer **437 confirmed
+20 preserves**, followed by close 438; the trace binds that transfer interval
+to SHIPPING with inventory 20 before and zero afterward. Thus the interrupted
+pass's **124 recovered + 20 newly produced = 144 preserves** reached the smart
+shipping bin. The engine continued into ancient seed-maker work without another
+start command. This short sequence does not yet establish multi-hour stability.
