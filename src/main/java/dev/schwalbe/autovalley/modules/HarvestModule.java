@@ -23,8 +23,10 @@ public final class HarvestModule implements AutomationModule {
     private int harvestRadius;
     private long useStarted;
     private long ticket = -1;
-    private long cooldownUntil;
-    private long cooldownDay = Long.MIN_VALUE;
+    private record Cooldown(long until,long day) { }
+    private final Map<String,Cooldown> cooldowns=new HashMap<>();
+    private Profile cooldownProfile;
+    private String cropScope;
     private long pickupStarted;
     private long sampleStarted;
     private String unresolvedOutput;
@@ -51,7 +53,7 @@ public final class HarvestModule implements AutomationModule {
 
     public void startCalibration() {
         reset();
-        cooldownUntil = 0;
+        cooldowns.clear();
         calibration = true;
         calibrationProfile = null;
         walking.clear();
@@ -71,16 +73,27 @@ public final class HarvestModule implements AutomationModule {
     @Override public Feature feature() { return Feature.HARVEST; }
     @Override public int priority() { return 50; }
 
-    @Override public WorkResult tick(Context context) {
+    @Override public WorkResult tick(Context context) { return tickCrop(context,null); }
+
+    /** Same native harvest engine, restricted only at field-selection boundaries. Null retains legacy all-crop callers. */
+    WorkResult tickCrop(Context context,String cropId) {
+        if (!Objects.equals(cropScope,cropId)) {
+            if (active || observingFarm!=null || ticket>=0 || !completedFields.isEmpty())
+                return WorkResult.blocked("진행 중인 수확의 작물 범위는 변경할 수 없습니다.");
+            cropScope=cropId;
+        }
         WorldAccess world = context.world();
         ActionPort actions = context.actions();
         Profile profile = context.profile();
+        if (cooldownProfile!=profile) { cooldowns.clear();cooldownProfile=profile; }
+        Cooldown cooldown=cooldowns.get(cropScope);
         if (unresolvedOutput != null) return WorkResult.blocked(unresolvedOutput);
         if (calibration && calibrationProfile != null && calibrationProfile != profile) cancelCalibration();
         if (calibration) calibrationProfile = profile;
         // Dew Drop performs daily growth around day tick 5..14; inspect after that morning update.
         if (!active && observingFarm==null && completedFields.isEmpty() && Math.floorMod(world.dayTime(),24000L) < 20) return WorkResult.idle();
-        if (!active && observingFarm==null && completedFields.isEmpty() && world.tick() < cooldownUntil && gameDay(world) == cooldownDay) return WorkResult.idle();
+        if (!active && observingFarm==null && completedFields.isEmpty() && cooldown!=null
+                && world.tick()<cooldown.until() && gameDay(world)==cooldown.day()) return WorkResult.idle();
         if (profile.farms.isEmpty()) return fail(context, "수확할 밭의 작물과 두 모서리를 먼저 등록하세요.");
         if (world.menu() != null && (world.menu().container() || !world.menu().carried().empty()))
             return fail(context, "수확을 시작하려면 열린 상자와 커서의 아이템을 정리하세요.");
@@ -89,6 +102,7 @@ public final class HarvestModule implements AutomationModule {
             return fail(context,"수확 중 밭 또는 작물 정의가 바뀌었습니다. 등록 내용을 다시 확인하세요.");
         if (!active) {
             if (observingFarm==null) observingFarm=profile.farms.stream()
+                .filter(this::inCropScope)
                 .filter(f -> !completedFields.contains(farmKey(f)) && profile.nextEligibleDay.getOrDefault(farmKey(f),Long.MIN_VALUE)<=gameDay(world))
                 .min(Comparator.comparingDouble(f -> world.player().distance(f.first()))).orElse(null);
             if (observingFarm==null) return finish(context);
@@ -344,7 +358,7 @@ public final class HarvestModule implements AutomationModule {
         observationWindow.clear();
         active=false; target=null; routeOrdered=false; sweep=0; stage=Stage.PREPARE;
         pending.clear(); primaryLanes.clear(); c.actions().stopMovement(); c.navigation().reset();
-        if (c.profile().farms.stream().noneMatch(f -> !completedFields.contains(farmKey(f))
+        if (c.profile().farms.stream().filter(this::inCropScope).noneMatch(f -> !completedFields.contains(farmKey(f))
             && c.profile().nextEligibleDay.getOrDefault(farmKey(f),Long.MIN_VALUE)<=gameDay(c.world()))) return finish(c);
         return WorkResult.busy("확인한 밭을 마치고 다음 작업장 확인");
     }
@@ -407,6 +421,7 @@ public final class HarvestModule implements AutomationModule {
     }
 
     private static String farmKey(Farm farm) { return CropRules.farmKey(farm); }
+    private boolean inCropScope(Farm farm) { return cropScope==null || cropScope.equals(farm.cropId()); }
     private static long gameDay(WorldAccess world) { return Math.floorDiv(world.dayTime(),24000L); }
 
     /** Reserve capacity for a normal quality roll and rotten output before every click. */
@@ -458,8 +473,7 @@ public final class HarvestModule implements AutomationModule {
 
     private WorkResult finish(Context context) {
         resetWork(context);
-        cooldownUntil = context.world().tick() + Math.max(20,context.profile().harvestCheckTicks);
-        cooldownDay = gameDay(context.world());
+        cooldowns.put(cropScope,new Cooldown(context.world().tick()+Math.max(20,context.profile().harvestCheckTicks),gameDay(context.world())));
         return WorkResult.idle();
     }
 
@@ -478,6 +492,7 @@ public final class HarvestModule implements AutomationModule {
     @Override public void reset() {
         unresolvedOutput = null;
         clearWork();
+        cropScope=null;
     }
 
     private void clearWork() {

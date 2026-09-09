@@ -107,6 +107,19 @@ class GenericHarvestModuleTest {
         fixture.put(5,ItemData.EMPTY);assertTrue(HarvestModule.hasHarvestRoom(fixture.inventory,ancient));
     }
 
+    @Test void cropScopedPassesKeepIndependentCooldownsAndCannotReplaceAnUnsettledCropUse() {
+        Fixture f=new Fixture();Pos ancient=ORIGIN.offset(10,0,0);
+        f.farm("tomatoes",ORIGIN,ORIGIN,CropRules.TOMATO);f.crop(ORIGIN,CropRules.TOMATO,3);
+        f.farm("ancient",ancient,ancient,CropRules.ANCIENT_FRUIT);f.crop(ancient,CropRules.ANCIENT_FRUIT,10);
+        assertEquals(WorkResult.State.BUSY,f.module.tickCrop(f.context,CropRules.TOMATO).state());
+        assertTrue(f.busy());assertEquals(WorkResult.State.BLOCKED,f.module.tickCrop(f.context,CropRules.ANCIENT_FRUIT).state());
+        assertTrue(f.busy());assertEquals(List.of(ORIGIN),f.clicked());f.completeUse();f.now++;
+        f.runCrop(CropRules.TOMATO);assertEquals(List.of(ORIGIN),f.clicked());
+        long tomatoFinished=f.now;f.runCrop(CropRules.ANCIENT_FRUIT);
+        assertEquals(List.of(ORIGIN,ancient),f.clicked());assertTrue(f.now-tomatoFinished<f.profile.harvestCheckTicks);
+        assertEquals(Map.of("harvest:tomatoes",1L,"harvest:ancient",10L),f.profile.nextEligibleDay);
+    }
+
     private static final class Fixture implements WorldAccess,ActionPort,Navigation {
         final Profile profile=new Profile();final HarvestModule module=new HarvestModule();
         final Context context=new Context(this,this,this,profile);
@@ -120,6 +133,7 @@ class GenericHarvestModuleTest {
         void put(int slot,ItemData item){ItemSlot value=new ItemSlot(slot,slot,true,item);if(slot==inventory.size())inventory.add(value);else inventory.set(slot,value);}
         List<Pos> clicked(){return submitted.stream().map(action->((Action.UseBlock)action).pos()).toList();}
         void run(){for(int tick=0;tick<500;tick++){result=module.tick(context);assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());if(busy())completeUse();now++;if(result.state()==WorkResult.State.IDLE)return;}fail("Harvest did not finish");}
+        void runCrop(String crop){for(int tick=0;tick<100;tick++){result=module.tickCrop(context,crop);assertNotEquals(WorkResult.State.BLOCKED,result.state(),result.message());if(busy())completeUse();now++;if(result.state()==WorkResult.State.IDLE)return;}fail("Scoped harvest did not finish");}
         void completeUse(){Pos selected=((Action.UseBlock)submitted.get(submitted.size()-1)).pos();for(Pos pos:List.copyOf(blocks.keySet()))if(pos.equals(selected)||applyArea&&HarvestRoutePlanner.withinFootprint(selected,pos,radius)){BlockData block=blocks.get(pos);blocks.put(pos,new BlockData(pos,block.id(),Map.of("age","0")));}outcomes.put(current,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"server state changed"));}
         public long tick(){return now;}public long dayTime(){return day;}
         public PlayerState player(){return new PlayerState(.5,0,.5,0,0,true,false,20,20,0,true,true);}
