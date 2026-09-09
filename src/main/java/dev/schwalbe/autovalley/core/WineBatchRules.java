@@ -19,7 +19,7 @@ public final class WineBatchRules {
         return c.profile().wineBatchSchedule;
     }
 
-    /** Called only after every registered rack member passes the module's read-only preflight. */
+    /** Snapshot the due rack before the module checks and services individual members. */
     public static void open(Context c,List<Pos> targets) {
         WineBatchSchedule schedule=ensure(c);
         if (schedule==null || schedule.active() || day(c)<schedule.nextDueDay() || targets.isEmpty())
@@ -29,13 +29,13 @@ public final class WineBatchRules {
         replace(c,new WineBatchSchedule(schedule.nextDueDay(),true,targets,null));
     }
 
-    /** Only an actual successful native input/state ACK is allowed to remove an unfinished member. */
+    /** Record an actual successful native input/state ACK, never an inferred or skipped refill. */
     public static void confirmFeed(Context c,Pos target) {
         WineBatchSchedule old=c.profile().wineBatchSchedule;
         if (old==null || !old.active() || !old.remaining().contains(target)) throw new IllegalStateException("Wine refill is outside the active batch");
         long fed=day(c), latest=old.latestFeedDay()==null ? fed : Math.max(fed,old.latestFeedDay());
         List<Pos> remaining=new ArrayList<>(old.remaining()); remaining.remove(target);
-        WineBatchSchedule next=new WineBatchSchedule(old.nextDueDay(),true,remaining,latest);
+        WineBatchSchedule next=new WineBatchSchedule(old.nextDueDay(),true,remaining,latest,old.skipped());
         String key=key(target); Long prior=c.profile().nextEligibleDay.put(key,Math.addExact(fed,c.profile().wineCycleDays));
         try { replace(c,next); }
         catch (RuntimeException e) {
@@ -44,17 +44,33 @@ public final class WineBatchRules {
         }
     }
 
-    /** Do not publish the next cycle until all refill ACKs and the module's final cleanup have completed. */
+    /** Defer one unavailable member to the next rack pass without claiming an input ACK. */
+    public static void skip(Context c,Pos target,String reason) {
+        WineBatchSchedule old=c.profile().wineBatchSchedule;
+        if (old==null || !old.active() || !old.remaining().contains(target))
+            throw new IllegalStateException("Wine skip is outside the active batch");
+        List<Pos> remaining=new ArrayList<>(old.remaining()); remaining.remove(target);
+        List<WineBatchSchedule.SkippedMember> skipped=new ArrayList<>(old.skipped());
+        skipped.add(new WineBatchSchedule.SkippedMember(target,reason,day(c)));
+        replace(c,new WineBatchSchedule(old.nextDueDay(),true,remaining,old.latestFeedDay(),skipped));
+    }
+
+    /** Publish the next scheduled boundary only after every member and final cleanup are resolved. */
     public static void finish(Context c) {
         WineBatchSchedule old=c.profile().wineBatchSchedule;
-        if (old==null || !old.active() || !old.remaining().isEmpty() || old.latestFeedDay()==null)
+        if (old==null || !old.active() || !old.remaining().isEmpty())
             throw new IllegalStateException("Unfinished wine batch cannot complete");
-        replace(c,new WineBatchSchedule(Math.addExact(old.latestFeedDay(),c.profile().wineCycleDays),false,List.of(),old.latestFeedDay()));
+        long cycle=c.profile().wineCycleDays;
+        if (cycle<1) throw new IllegalArgumentException("Wine cycle must be positive");
+        long elapsed=Math.max(0,day(c)-old.nextDueDay());
+        long cycles=Math.addExact(Math.floorDiv(elapsed,cycle),1);
+        long nextDue=Math.addExact(old.nextDueDay(),Math.multiplyExact(cycles,cycle));
+        replace(c,new WineBatchSchedule(nextDue,false,List.of(),old.latestFeedDay(),old.skipped()));
     }
 
     public static void validate(Profile profile) {
         WineBatchSchedule schedule=profile.wineBatchSchedule;
-        if (schedule!=null) new WineBatchSchedule(schedule.nextDueDay(),schedule.active(),schedule.remaining(),schedule.latestFeedDay());
+        if (schedule!=null) new WineBatchSchedule(schedule.nextDueDay(),schedule.active(),schedule.remaining(),schedule.latestFeedDay(),schedule.skipped());
     }
     private static void replace(Context c,WineBatchSchedule next) {
         WineBatchSchedule old=c.profile().wineBatchSchedule;

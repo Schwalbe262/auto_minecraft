@@ -25,6 +25,37 @@ class WineBatchProfileStoreTest {
         assertEquals(profile.pois,loaded.pois);assertEquals(profile.nextEligibleDay,loaded.nextEligibleDay);
         assertThrows(UnsupportedOperationException.class,() -> loaded.wineBatchSchedule.remaining().clear());
     }
+    @Test void legacySchedulesWithoutSkippedFieldLoadWithoutLosingTheirRemainingOrFeedAudit() throws Exception {
+        String key=ProfileStore.key("old-wine-schedule");Path file=directory.resolve(key+".json");
+        String pos="{\"x\":2,\"y\":64,\"z\":0}";
+        for(String skipped:List.of("",",\"skipped\":null")) {
+            String json="{\"schemaVersion\":2,\"wineBatchSchedule\":{\"nextDueDay\":332,\"active\":true,\"remaining\":["+pos+"],\"latestFeedDay\":333"+skipped+"}}";
+            Files.writeString(file,json);Profile loaded=new ProfileStore(directory).load(key);
+            assertEquals(new WineBatchSchedule(332,true,List.of(B),333L),loaded.wineBatchSchedule);
+            assertEquals(List.of(),loaded.wineBatchSchedule.skipped());assertEquals(json,Files.readString(file));
+        }
+    }
+    @Test void partialSkippedPassRoundTripsWithoutSyntheticDeadlineOrFeedAudit() throws Exception {
+        Profile profile=profile();profile.wineBatchSchedule=new WineBatchSchedule(332,true,List.of(B),null,
+                List.of(new WineBatchSchedule.SkippedMember(A,"not_ready",333)));
+        profile.nextEligibleDay.put(WineBatchRules.key(A),330L);
+        ProfileStore store=new ProfileStore(directory);String key=ProfileStore.key("skipped-member");store.save(key,profile);
+        Profile loaded=store.load(key);
+        assertEquals(profile.wineBatchSchedule,loaded.wineBatchSchedule);assertEquals(profile.nextEligibleDay,loaded.nextEligibleDay);
+        assertNull(loaded.wineBatchSchedule.latestFeedDay());
+        assertThrows(UnsupportedOperationException.class,() -> loaded.wineBatchSchedule.skipped().clear());
+    }
+    @Test void allSkippedCleanupPendingAndCompletedPassBothRoundTripWithoutInventingAFeed() throws Exception {
+        ProfileStore store=new ProfileStore(directory);String key=ProfileStore.key("all-skipped");
+        List<WineBatchSchedule.SkippedMember> skipped=List.of(new WineBatchSchedule.SkippedMember(A,"missing",332),
+                new WineBatchSchedule.SkippedMember(B,"not_ready",332));
+        for(boolean active:List.of(true,false)) {
+            Profile profile=profile();profile.wineBatchSchedule=new WineBatchSchedule(active?332:338,active,List.of(),null,skipped);
+            store.save(key,profile);Path file=directory.resolve(key+".json");String json=Files.readString(file);
+            Profile loaded=store.load(key);assertEquals(profile.wineBatchSchedule,loaded.wineBatchSchedule);
+            assertNull(loaded.wineBatchSchedule.latestFeedDay());assertTrue(loaded.nextEligibleDay.isEmpty());assertEquals(json,Files.readString(file));
+        }
+    }
     @Test void activeAllFedButCleanupPendingIsNotSilentlyCompletedByLoad() throws Exception {
         Profile profile=profile();profile.wineBatchSchedule=new WineBatchSchedule(332,true,List.of(),334L);
         ProfileStore store=new ProfileStore(directory);String key=ProfileStore.key("cleanup-pending");store.save(key,profile);
@@ -50,6 +81,23 @@ class WineBatchProfileStoreTest {
             String json="{\"schemaVersion\":2,\"wineBatchSchedule\":"+schedule+"}";Files.writeString(file,json);
             assertThrows(IOException.class,() -> new ProfileStore(directory).load(key));assertEquals(json,Files.readString(file));
         }
+    }
+    @Test void malformedDuplicateOrOverlappingSkippedMembersRejectLoadAndPreserveOriginalFile() throws Exception {
+        String key=ProfileStore.key("invalid-skipped-wine-member");Path file=directory.resolve(key+".json");
+        String pos="{\"x\":1,\"y\":64,\"z\":0}",otherPos="{\"x\":2,\"y\":64,\"z\":0}";
+        String skipped="{\"pos\":"+pos+",\"reason\":\"missing\",\"day\":332}";
+        for(String members:List.of(
+                "[null]","["+skipped+","+skipped+"]",
+                "[{\"pos\":null,\"reason\":\"missing\",\"day\":332}]",
+                "[{\"pos\":"+pos+",\"day\":332}]",
+                "[{\"pos\":"+pos+",\"reason\":\" \",\"day\":332}]",
+                "[{\"pos\":"+pos+",\"reason\":\""+"x".repeat(161)+"\",\"day\":332}]",
+                "[{\"pos\":"+pos+",\"reason\":\"missing\",\"day\":-1}]")) {
+            String json="{\"schemaVersion\":2,\"wineBatchSchedule\":{\"nextDueDay\":332,\"active\":true,\"remaining\":["+otherPos+"],\"skipped\":"+members+"}}";
+            Files.writeString(file,json);assertThrows(IOException.class,() -> new ProfileStore(directory).load(key));assertEquals(json,Files.readString(file));
+        }
+        String overlap="{\"schemaVersion\":2,\"wineBatchSchedule\":{\"nextDueDay\":332,\"active\":true,\"remaining\":["+pos+"],\"skipped\":["+skipped+"]}}";
+        Files.writeString(file,overlap);assertThrows(IOException.class,() -> new ProfileStore(directory).load(key));assertEquals(overlap,Files.readString(file));
     }
     private static Profile profile() {
         Profile profile=new Profile();profile.pois.add(new Poi(A,PoiKind.WINE_KEG,"A",null));profile.pois.add(new Poi(B,PoiKind.WINE_KEG,"B",null));return profile;
