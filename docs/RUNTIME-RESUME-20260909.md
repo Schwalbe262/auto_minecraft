@@ -841,3 +841,30 @@ Artifact SHA256:
 `64714008640EBF5812DCA37FCC783A9BBCD812C4B34C1935DDE41E621F12A6DA`.
 This is detached test acceptance; live recovery and renewed continuous operation
 are still pending.
+
+The old client exited normally and this artifact was installed at 07:07:08 UTC
+in client 51892. Quick Play again reported unknown host. The same client's
+DNS/TCP check succeeded, followed by an ordinary in-client reconnect; no second
+Minecraft or OS keyboard input was used. The original 124 preserves and pending
+record survived restart.
+
+Explicit shipment recovery was acknowledged at **07:09:08.169 UTC**. Native
+transfer tickets **2 and 3 confirmed 64 + 60 preserves** into the registered
+smart shipping bin; close action 4 completed and the normal inventory had zero
+preserves. A fresh 07:09:34 read-only operator review independently compared the
+controller's receipt list to retained native outcomes and verified the empty
+remaining lot. The production ledger was still pending at that point.
+
+Only after that actual shipment was reviewed, the existing explicit operator
+resolution API was invoked once at 07:10:01 UTC. The saved profile records
+`RECOVERED_AND_HANDLED`, retains the original `AWAITING_MACHINE_CONFIRMATION`
+phase in history, and has zero pending entries. The old ticket 381 was not
+rewritten, its machine was not clicked again, and no automatic historical
+machine success was invented. This was supervised recovery, not unattended
+self-recovery from an arbitrary persistence failure.
+
+Continuous F8 mode was acknowledged at **07:10:17.720 UTC** and resumed normal
+storage/harvest work. The wine batch remains due on day 489. Shipment is not a
+claim that the later sale or its destination account balance was verified.
+This accepts the live recovery path; a new multi-hour uninterrupted run still
+needs observation.
