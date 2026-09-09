@@ -506,3 +506,17 @@ change the old failed action, its year or its acknowledgement state. The latest
 read-only preflight refused because the game screen was open. **No recovery
 click or restart was sent.** Native deployment and extended acceptance still
 await a user handoff and successful current-state custody checks.
+
+After the user handed over control, the current-state preflight passed. At
+04:41:21 UTC a single independent inverse SWAP was sent; fresh full native
+sequence 10783 matched all 46 current slots with only the two intended partners
+exchanged and an empty cursor. The borrowed 62 torches returned to their hotbar
+slot, all 100 wine remained present, and the old failed outcome/fence was left
+untouched. This is a new custody-transfer confirmation, not a successful old
+merge claim or a retry of its QUICK_MOVE.
+
+The same Society instance then closed normally before its replacement started.
+The tested `42A0F2918314C2712FC9D1E4527ED8611B84A16B48296A3CBEA2D25EF6A222FB`
+artifact is now installed; previous JAR and profile/evidence backups are retained.
+This installs both the receiver fix and nearby fruit cohort revision. Reconnection,
+remaining-rack completion, native cohort acceptance and extended stability follow.
