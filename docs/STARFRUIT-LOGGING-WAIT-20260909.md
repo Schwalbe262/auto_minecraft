@@ -44,5 +44,20 @@ storage phase, followed by return to preserves with no failure fence.
 A separate passive inspection found all eight registered fruits at age 0 with
 eight stored same-day confirmations, no remaining patch members and no fruit
 left in inventory. This confirms the real fruit pass, not merely an ON flag or
-a detached unit test. Item-specific transfer receipt evidence is a separate
-check; this short acceptance does not prove two-hour stability.
+a detached unit test.
+
+A later passive read of retained action outcomes found the surrounding sequence:
+the fruit uses succeeded, ticket 11 opened a synchronized container, ticket 12
+reported a server-confirmed inventory transfer of eight items, and ticket 13
+closed it. All requested tickets 1 through 15 were still present. The native
+QuickMove acknowledgement requires both source removal and a matching-item
+destination increase for a player-origin transfer. Together with the fruit-only
+storage module, registered fruit destination and observed eight-to-zero inventory
+change, this corroborates the eight-fruit deposit. The compact receipt itself
+does not contain an item ID or destination coordinates, and is not presented as
+an independent item-addressed transfer log.
+
+This short acceptance does not prove two-hour stability. The current build's
+continuous observation starts at 2026-09-09 12:30:04 UTC; earlier observations
+belong to a different build. The one leaf-obstructed logging plot remains retained
+and incomplete, although ordinary production and the fruit detour can proceed.
