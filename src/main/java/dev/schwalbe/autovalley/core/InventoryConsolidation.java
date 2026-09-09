@@ -189,6 +189,25 @@ public final class InventoryConsolidation {
     }
 
     /**
+     * An already-sent inverse SWAP may follow a server-proven pickup into its
+     * previously EMPTY scratch. The native caller must prove that packet after
+     * dispatch and before the full SWAP reply, including any exact native cache
+     * refresh. verifiedPickup is the final, fully proven item in the original
+     * source, not permission to infer a pickup from the final inventory alone.
+     * This opt-in never rebases an in-flight primitive or acknowledges a MERGE.
+     */
+    public Confirmation acknowledgeRestorePickup(Snapshot after,Stack verifiedPickup) {
+        if (!allowsRestoreScratchPickup() || after==null || verifiedPickup==null
+                || verifiedPickup.empty() || verifiedPickup.limit()>64) return Confirmation.WAIT;
+        List<Stack> expected=new ArrayList<>(before.items());
+        expected.set(plan.scratchHotbar(),verifiedPickup);
+        Collections.swap(expected,plan.sourceIndex(),plan.scratchHotbar());
+        if (!expected.equals(after.items())) return Confirmation.WAIT;
+        before=after;stage=Stage.DONE;acknowledgedPrimitives++;
+        return Confirmation.COMPLETE;
+    }
+
+    /**
      * Resolves only a cancelled transaction's confirmed borrowed item using an
      * independently observed exact inverse SWAP. This does not prove a merge,
      * retry an operation, or change the failed/cancelled action's outcome.

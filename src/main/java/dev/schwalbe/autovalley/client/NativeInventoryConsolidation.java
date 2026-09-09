@@ -149,6 +149,38 @@ final class NativeInventoryConsolidation {
             return before.empty() || before.limit()==after.limit() && before.identity().equals(after.identity());
         } catch (com.mojang.brigadier.exceptions.CommandSyntaxException failure) { return false; }
     }
+    /**
+     * Production entrypoint: the candidate must still be an actual retained FULL
+     * packet for this menu/connection. A raw scratch pickup is a separate opt-in
+     * for the final inverse SWAP only, never a synthetic whole-menu ACK.
+     */
+    InventoryConsolidation.Confirmation acknowledge(ServerObservations.NativeMenuSnapshot acknowledgement,
+                                                     ServerObservations observations) {
+        if (observations==null || observations.generation()!=generation || acknowledgement==null
+                || acknowledgement.seq()<=beforeSequence
+                || observations.fullNativeMenuSnapshotsSince(menuId,beforeSequence).stream()
+                    .noneMatch(packet -> packet==acknowledgement)) return InventoryConsolidation.Confirmation.WAIT;
+        var ordinary=acknowledge(acknowledgement);
+        if (ordinary!=InventoryConsolidation.Confirmation.WAIT) return ordinary;
+        if (!transaction.requiresRestoration() || transaction.click().type()!=InventoryConsolidation.Type.SWAP)
+            return InventoryConsolidation.Confirmation.WAIT;
+        List<InventoryConsolidation.Stack> after=stacks(acknowledgement.items());
+        var slots=observations.nativeSlotSnapshotsSince(menuId,beforeSequence).stream()
+            .map(slot -> new NativeRestorePickupReceipt.SlotProof(slot.seq(),slot.menuId(),slot.slot(),
+                stacks(List.of(slot.packetItem())).get(0))).toList();
+        var pickup=NativeRestorePickupReceipt.verifiedPickup(generation,observations.generation(),menuId,
+            beforeSequence,acknowledgement.seq(),menuSlots[plan.sourceIndex()],menuSlots[plan.scratchHotbar()],
+            expectedMenu,after,acknowledgement.carried().isEmpty(),slots,
+            (raw,received) -> NativeWineMetadata.passiveChange(raw,received,level,wineYear));
+        if (pickup==null) return InventoryConsolidation.Confirmation.WAIT;
+        var confirmation=transaction.acknowledgeRestorePickup(inventory(after),pickup);
+        if (confirmation!=InventoryConsolidation.Confirmation.WAIT) {
+            expectedMenu=after;acknowledgedSequence=acknowledgement.seq();
+        }
+        return confirmation;
+    }
+
+    /** Legacy comparison has no authority to infer a pickup into a SWAP participant. */
     InventoryConsolidation.Confirmation acknowledge(ServerObservations.NativeMenuSnapshot acknowledgement) {
         if (!acknowledgement.carried().isEmpty()) return InventoryConsolidation.Confirmation.WAIT;
         List<InventoryConsolidation.Stack> after=stacks(acknowledgement.items());

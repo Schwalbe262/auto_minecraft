@@ -380,7 +380,7 @@ public final class MinecraftActions implements ActionPort {
             public Iterable<ServerObservations.NativeMenuSnapshot> acknowledgements() {
                 return observations.fullNativeMenuSnapshotsSince(consolidation.menuId,consolidation.beforeSequence);
             }
-            public InventoryConsolidation.Confirmation acknowledge(ServerObservations.NativeMenuSnapshot acknowledgement) { return consolidation.acknowledge(acknowledgement); }
+            public InventoryConsolidation.Confirmation acknowledge(ServerObservations.NativeMenuSnapshot acknowledgement) { return consolidation.acknowledge(acknowledgement,observations); }
             public void markAcknowledged() { consolidationInFlight=false; }
             public void complete() { finish(ActionOutcome.State.SUCCEEDED,"Server verified inventory consolidation",consolidation.transaction.freedSlots()); }
             // A later pickup needs actual post-ACK slot evidence before rebasing.
@@ -444,7 +444,7 @@ public final class MinecraftActions implements ActionPort {
                 lateInventoryReply=null;lateInventoryReplyInFlight=false;
             } else if (lateInventoryReplyInFlight && lateInventoryReply.generation==observations.generation()) {
                 for (var acknowledgement:observations.fullNativeMenuSnapshotsSince(lateInventoryReply.menuId,lateInventoryReply.beforeSequence)) {
-                    if (lateInventoryReply.acknowledge(acknowledgement)==InventoryConsolidation.Confirmation.WAIT) continue;
+                    if (lateInventoryReply.acknowledge(acknowledgement,observations)==InventoryConsolidation.Confirmation.WAIT) continue;
                     lateInventoryReplyInFlight=false;
                     lateInventoryResolutionAfter=Math.max(lateInventoryResolutionAfter,acknowledgement.seq());
                     if (!lateInventoryReply.transaction.requiresRestoration()) lateInventoryReply=null;

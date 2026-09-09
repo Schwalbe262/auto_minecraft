@@ -725,3 +725,38 @@ authorized FLIGHT input is separate and was not counted as a violation.
 This accepts the observed inner-source and near-landing refinements; no outer
 source-centering case occurred in this trace, and multi-hour stability remains
 pending. Automatic sleep and day-482 work continued on the new artifact.
+
+### Native inverse-swap pickup race found and fixed
+
+The next wine pass reduced the pending batch from 112 to 27 machines, then
+client 8304 stopped at inventory consolidation ticket 435. It retained 84 wine;
+this run is **not** a multi-hour stability acceptance. The failed primitive was
+RESTORE, after two independently acknowledged primitives, not a failed MERGE
+or a missing SLOT-only acknowledgement.
+
+Retained FULL 2464 proved the merged state: borrowed torch 62 in the original
+source and an empty scratch hotbar slot. RAW 2465 then delivered one wine to
+the scratch. FULL 2466 showed torch 62 restored to its original hotbar slot
+and the wine in the original source. The wine's raw identity was not initially
+equal: the installed wine metadata initialization reproduced its final identity
+exactly, at the same count and limit. Independent read-only comparisons proved
+the complete 46-slot pickup-then-inverse permutation, empty cursor, exact borrowed
+item return, and current live inventory equal to FULL 2466. No inverse was sent
+again and the old failed outcome/fence was not overwritten.
+
+The fix adds an explicit RESTORE-only opt-in. It requires the prior two ACKs,
+an empty scratch in the pre-RESTORE baseline, exact borrowed item, a retained
+same-connection FULL reply, and the latest raw scratch packet strictly between
+dispatch and that FULL. The final pickup must match exactly or through the
+existing exact native wine initialization proof. Every other slot and cursor
+remains exact. The active and late-reply paths both use this check. Legacy ACKs,
+MERGE conservation, in-flight rebase prohibition, deadlines and click counts
+are unchanged.
+
+All **1,669 tests / 124 suites** passed with zero failures, errors or skips,
+including 18 new core/receipt regressions. Retained-FULL object provenance is
+checked by the native wrapper and was code-reviewed; the detached helper tests
+do not themselves constitute a native packet-origin integration test. Artifact
+SHA256: `3A0A31C461ABF2732C92B58D661E3881E05F35EFF7391742BCC1A2547845B02D`.
+Fresh exact physical-custody proof is required again before normal restart;
+successful post-install wine completion is still pending.
