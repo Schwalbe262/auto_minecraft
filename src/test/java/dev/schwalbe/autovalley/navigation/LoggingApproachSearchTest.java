@@ -172,6 +172,46 @@ class LoggingApproachSearchTest {
         assertEquals(LoggingApproachSearch.Status.FOUND,finish(search,world));assertEquals(base,search.target());
         assertEquals(0,world.leafQueries);
     }
+    @Test void rejectedLeafStanceContinuesTheSameCursorWithoutRevisitingItsOtherBaseOrRefuelingThisTick() {
+        World world=new World();Pos first=new Pos(3,63,0),second=new Pos(4,63,0),base=world.plot.corner(),leaf=base.offset(2,1,0);
+        world.leaf(first,base,leaf);world.leaf(first,base.offset(1,0,0),leaf);world.leaf(second,base,leaf);
+        LoggingApproachSearch search=world.leafSearch();
+        assertEquals(LoggingApproachSearch.Status.FOUND,search.advance(world,64,16,Long.MAX_VALUE));
+        assertEquals(first,search.stance());int queries=search.checkedQueries(),stances=search.checkedStances();
+        assertTrue(search.rejectLeafStance());assertFalse(search.rejectLeafStance());
+        assertNull(search.target());assertNull(search.stance());assertNull(search.chosenBase());
+        for(int i=0;i<100;i++)search.advance(world,64,16,Long.MAX_VALUE);
+        assertEquals(queries,search.checkedQueries());assertEquals(stances,search.checkedStances());
+        world.tick++;
+        assertEquals(LoggingApproachSearch.Status.FOUND,finish(search,world));assertEquals(second,search.stance());
+        assertTrue(search.checkedQueries()>queries);assertTrue(search.checkedStances()>stances);
+        assertTrue(search.rejectLeafStance());world.tick++;
+        assertEquals(LoggingApproachSearch.Status.NO_VISIBLE_STANCE,finish(search,world));
+        assertEquals(search.candidateCount(),search.checkedStances());assertFalse(search.rejectLeafStance());
+    }
+    @Test void rejectedLeafSearchStillHonorsUnknownGeometryAndChangedWorldInsteadOfClaimingExhaustion() {
+        for(String changed:List.of("unloaded","plot","world","rewind")) {
+            World world=new World();world.tick=10;Pos first=new Pos(3,63,0),second=new Pos(4,63,0),base=world.plot.corner();
+            world.leaf(first,base,base.offset(2,1,0));world.standing.add(second);
+            LoggingApproachSearch search=world.leafSearch();assertEquals(LoggingApproachSearch.Status.FOUND,finish(search,world));
+            assertTrue(search.rejectLeafStance());
+            switch(changed) {
+                case "unloaded" -> world.unloaded.add(second);
+                case "plot" -> world.blocks.put(base,new BlockData(base,LoggingRules.CHOPPED_LOG,Map.of()));
+                case "world" -> { assertEquals(LoggingApproachSearch.Status.CHANGED,search.advance(new World()));continue; }
+                case "rewind" -> { world.tick=9;assertEquals(LoggingApproachSearch.Status.CHANGED,search.advance(world));continue; }
+                default -> throw new AssertionError(changed);
+            }
+            assertEquals(changed.equals("unloaded")?LoggingApproachSearch.Status.UNLOADED:LoggingApproachSearch.Status.CHANGED,finish(search,world));
+            assertNull(search.target());
+        }
+    }
+    @Test void plainChoppingFoundStateCannotBeAdvancedThroughTheLeafRejectionApi() {
+        World world=new World();Pos feet=new Pos(3,63,0),base=world.plot.corner();world.standing.add(feet);world.visible.put(feet,Set.of(base));
+        LoggingApproachSearch search=world.search();finish(search,world);
+        assertFalse(search.rejectLeafStance());assertEquals(LoggingApproachSearch.Status.FOUND,search.status());
+        assertEquals(feet,search.stance());assertEquals(base,search.target());
+    }
     private static LoggingApproachSearch.Status finish(LoggingApproachSearch search,World world) {
         for(int i=0;i<2000 && search.status()==LoggingApproachSearch.Status.SEARCHING;i++,world.tick++)
             search.advance(world,64,16,Long.MAX_VALUE);

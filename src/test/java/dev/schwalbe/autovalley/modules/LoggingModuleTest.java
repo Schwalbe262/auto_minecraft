@@ -61,6 +61,63 @@ class LoggingModuleTest {
         assertTrue(f.profile.loggingRunActive);assertEquals(1,f.profile.loggingRemainingPlots.size());
     }
 
+    @Test void actualEyeMismatchAtTheFirstLeafStanceTriesTheNextCandidateBeforeAnyResourceWait() {
+        Fixture f=leafFixture(1);Pos first=new Pos(0,64,0),second=new Pos(1,64,0);
+        f.leafProofStances.addAll(List.of(first,second));f.rejectedActualLeafStances.add(first);
+        List<String> messages=untilLeafActionWithoutWait(f);
+        assertTrue(messages.stream().anyMatch(s -> s.contains("실제 도착 위치")));
+        assertEquals(List.of(first,second),f.leafStanceVisits.stream().distinct().toList());
+        assertEquals(second,f.lastLeafStance);assertEquals(1,f.actions.stream().filter(a -> a instanceof Action.SelectHotbar).count());
+        assertEquals(0,f.leavesCleared);assertEquals(0,f.chops);assertEquals(0,f.plants);
+        assertEquals(1,f.profile.loggingRemainingPlots.size());assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void changedPredictedLeafEndpointAdvancesItsCursorInsteadOfAbandoningAllOtherCandidates() {
+        Fixture f=leafFixture(1);Pos first=new Pos(0,64,0),second=new Pos(1,64,0);
+        f.leafProofStances.addAll(List.of(first,second));f.holdLeafStanceMovement=true;
+        f.until(() -> f.leafStanceMoves>0);assertEquals(first,f.lastLeafStance);assertTrue(f.actions.isEmpty());
+        f.rejectedPredictedLeafStances.add(first);f.holdLeafStanceMovement=false;
+        List<String> messages=untilLeafActionWithoutWait(f);
+        assertTrue(messages.stream().anyMatch(s -> s.contains("예상 잎 접근 위치의 지형·시야")));
+        assertEquals(List.of(first,second),f.leafStanceVisits.stream().distinct().toList());
+        assertEquals(second,f.lastLeafStance);assertEquals(0,f.leavesCleared);assertEquals(0,f.chops);
+    }
+
+    @Test void protectedFirstLeafCandidateCannotHideAnotherAuthorizedLeafStance() {
+        Fixture f=leafFixture(2);Pos first=new Pos(0,64,0),second=new Pos(1,64,0),base=f.profile.loggingPlots.get(0).corner();
+        List<Pos> leaves=List.copyOf(f.leafObstructions.get(base));
+        f.leafProofStances.addAll(List.of(first,second));f.leafAtStance.put(first,leaves.get(0));f.leafAtStance.put(second,leaves.get(1));
+        f.profile.pois.add(new Poi(leaves.get(0),PoiKind.STORAGE_CANDIDATE,"protected",null));
+        List<String> messages=untilLeafActionWithoutWait(f);
+        assertTrue(messages.stream().anyMatch(s -> s.contains("제거 권한이 바뀜")));
+        assertEquals(List.of(second),f.leafStanceVisits.stream().distinct().toList());
+        assertEquals(leaves.get(1),((Action.ClearLoggingLeaf)f.pending).pos());
+        assertTrue(f.actions.stream().noneMatch(a -> a instanceof Action.ClearLoggingLeaf leaf && leaf.pos().equals(leaves.get(0))));
+        assertEquals(0,f.leavesCleared);assertEquals(1,f.profile.loggingRemainingPlots.size());
+    }
+
+    @Test void allRejectedLeafStancesExhaustOnceThenKeepTheOrdinaryBoundedVisibilityWait() {
+        Fixture f=leafFixture(1);Pos first=new Pos(0,64,0),second=new Pos(1,64,0);
+        f.leafProofStances.addAll(List.of(first,second));f.rejectedActualLeafStances.addAll(List.of(first,second));
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        assertEquals(List.of(first,second),f.leafStanceVisits);assertTrue(f.actions.isEmpty());
+        int rays=f.leafRays;
+        for(int n=0;n<100;n++){f.advance();assertEquals(WorkResult.State.RESOURCE_WAIT,f.step().state());}
+        assertEquals(rays,f.leafRays,"A failed finite sweep cannot restart its first stance every tick");
+        assertEquals(0,f.leavesCleared);assertEquals(0,f.chops);assertEquals(0,f.plants);
+        assertEquals(1,f.profile.loggingRemainingPlots.size());assertTrue(f.profile.loggingReplantingPlots.isEmpty());
+        assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    private static List<String> untilLeafActionWithoutWait(Fixture f) {
+        List<String> messages=new ArrayList<>();
+        for(int n=0;n<4000 && !(f.pending instanceof Action.ClearLoggingLeaf);n++) {
+            WorkResult result=f.step();messages.add(result.message());assertEquals(WorkResult.State.BUSY,result.state(),result.message());
+            if(!(f.pending instanceof Action.ClearLoggingLeaf))f.advance();
+        }
+        assertInstanceOf(Action.ClearLoggingLeaf.class,f.pending);return messages;
+    }
+
     @Test void defaultOffNeverSearchesOrClearsLeavesAndPreservesItsVisibilityWait() {
         Fixture f=leafFixture(1); f.profile.loggingClearObstructingLeaves=false;
         assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
@@ -1569,6 +1626,8 @@ class LoggingModuleTest {
         boolean actualLeafObstructionAvailable=true; int leafRays,leavesCleared;
         boolean requireLeafStance,holdLeafStanceMovement,blockLeafStanceMovement,leafStanceArrived;
         Pos leafProofStance,lastLeafStance;int leafStanceMoves;double leafStanceTolerance;
+        final Set<Pos> leafProofStances=new HashSet<>(),rejectedActualLeafStances=new HashSet<>(),rejectedPredictedLeafStances=new HashSet<>();
+        final Map<Pos,Pos> leafAtStance=new HashMap<>();final List<Pos> leafStanceVisits=new ArrayList<>();
         boolean grounded=true,forcedNativeBusy; String nativeFence; ItemData cursor=ItemData.EMPTY;
         final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
         final Map<Pos,Integer> nativeChops=new HashMap<>(); int strokesPerTree=2;
@@ -1725,10 +1784,13 @@ class LoggingModuleTest {
         public String loggingTreeRejection(Pos pos,List<LoggingPlot> plots) { return treeRejection; }
         Pos nextLeaf(Pos base) { ArrayDeque<Pos> leaves=leafObstructions.get(base);return leaves==null ? null : leaves.peekFirst(); }
         public Pos loggingLeafObstruction(Pos base,double reach) {
-            return actualLeafObstructionAvailable && (!requireLeafStance || leafStanceArrived) ? nextLeaf(base) : null;
+            return actualLeafObstructionAvailable && (!requireLeafStance || leafStanceArrived) && !rejectedActualLeafStances.contains(lastLeafStance)
+                ? leafAtStance.getOrDefault(lastLeafStance,nextLeaf(base)) : null;
         }
         public Pos loggingLeafObstructionFrom(Pos feet,Pos base,double reach) {
-            leafRays++;return leafProofStance==null || leafProofStance.equals(feet) ? nextLeaf(base) : null;
+            leafRays++;
+            if(rejectedPredictedLeafStances.contains(feet) || !leafProofStances.isEmpty() && !leafProofStances.contains(feet))return null;
+            return leafProofStance==null || leafProofStance.equals(feet) ? leafAtStance.getOrDefault(feet,nextLeaf(base)) : null;
         }
         public boolean canPlantLoggingSapling(Pos pos) { return id(pos).equals("minecraft:air") && loaded(pos); }
         public boolean canPlantLoggingSapling(Pos pos,double reach) {
@@ -1776,6 +1838,7 @@ class LoggingModuleTest {
         public Result moveToLoggingPosition(Pos stance,double tolerance,Context c) {
             assertTrue(profile.loggingRunActive);assertTrue(session.allows(profile,Feature.LOGGING));assertEquals(.1,tolerance);
             leafStanceMoves++;loggingMoves++;moves++;lastLeafStance=stance;leafStanceTolerance=tolerance;
+            leafStanceVisits.add(stance);
             if(blockLeafStanceMovement)return Result.BLOCKED;
             if(holdLeafStanceMovement)return Result.MOVING;
             leafStanceArrived=true;if(requireLeafStance)playerX=stance.x()+.5;

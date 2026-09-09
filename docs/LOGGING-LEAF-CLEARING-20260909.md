@@ -57,3 +57,28 @@ the arrival tolerance/residual motion. The operator subsequently resumed manual
 play in a different dimension, so the target's current block geometry is not
 available for the next direct comparison. Retained cut/replant obligations were
 not erased; the multi-hour acceptance goal remains unfulfilled.
+
+## Later native run and bounded retry correction
+
+On returning to the farm, the operator started the installed `3443616` build
+again. This approach succeeded: stored native outcomes confirmed two individual
+obstructing leaves removed, 22 remaining chop strokes and four saplings planted.
+The run then stopped at waste cleanup because TrashSlot retained one icicle.
+After the operator handled that buffer and resumed, native outcomes confirmed
+nine fire logs crafted, 11 fire logs and three remaining spruce logs stored, and
+three mossberries transferred to shipping. The retained logging run, replant
+queue and hotbar loan completed normally; the scheduler continued to preserves.
+These observations prove that particular run, not uninterrupted multi-hour
+stability or that every approach works.
+
+The earlier failure also exposed a code-level liveness defect: rejecting one
+predicted leaf stance retained a `FOUND` search and prevented inspection of other
+stances until the 1,200-tick retry. The correction resumes the same finite search
+after the rejected stance, preserving its cursor, query budget and unknown-cell
+evidence. Changed endpoint geometry, changed actual-eye obstruction and forbidden
+leaf candidates have distinct diagnostic messages. Exhausting all candidates
+still waits; no reach, actual-ray, axe, leaf-boundary or server-ACK check is waived.
+
+The user subsequently clarified that *all items already placed in TrashSlot*
+are intended for disposal. That separate correction removes the retained-buffer
+item gate, not the allowlist for selecting new inventory items to discard.

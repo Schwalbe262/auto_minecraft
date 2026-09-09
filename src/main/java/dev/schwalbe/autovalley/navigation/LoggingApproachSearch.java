@@ -66,6 +66,18 @@ public final class LoggingApproachSearch {
     public int candidateCount() { return stances.size(); }
     public int checkedStances() { return checkedStances; }
     public int checkedQueries() { return checkedQueries; }
+    /**
+     * A center-ray candidate can fail at the real arrival position. Continue the
+     * same finite sweep after that entire stance, not a fresh search from its
+     * first candidate. This retains the tick budget, counters and unknown cells.
+     */
+    public boolean rejectLeafStance() {
+        if (!leaves || status!=Status.FOUND) return false;
+        current=null; pendingLeaf=null; pendingBase=null;
+        chosenTarget=null; chosenBase=null; chosenStance=null;
+        status=Status.SEARCHING;
+        return true;
+    }
     public boolean matches(WorldAccess world,List<Pos> currentTargets) {
         return source==world && targets.equals(currentTargets)
             && plotCells.stream().allMatch(world::loaded)

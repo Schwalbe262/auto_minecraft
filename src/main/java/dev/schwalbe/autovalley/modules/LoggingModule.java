@@ -212,11 +212,11 @@ public final class LoggingModule implements AutomationModule {
                 stage=Stage.CHOP; return busy("제거할 수 있는 잎이 없어 원래 시야 대기로 복귀");
             }
             case LEAF_APPROACH -> {
-                if (!leafSearchAllowed(c) || !LoggingLeafRules.authorised(c,leafBase,leafTarget)) {
-                    // Retain this rejected candidate until the bounded visibility retry.
-                    // Otherwise a newly protected leaf would be rediscovered every tick.
+                if (!leafSearchAllowed(c)) {
                     stage=Stage.CHOP; return busy("잎 제거 권한이 바뀌어 원래 벌목 상태로 복귀");
                 }
+                if (!LoggingLeafRules.authorised(c,leafBase,leafTarget))
+                    return rejectLeafStance(c,"잎 접근 후보의 제거 권한이 바뀜");
                 if (plot.plantingPositions().stream().anyMatch(p -> c.world().loaded(p)
                     && LoggingRules.stump(c.world().block(p)) && c.world().canInteract(p,4))) {
                     clearVisibilitySweep(); stage=Stage.PLOT; return busy("밑동이 보여 잎 제거 없이 원래 벌목 재개");
@@ -230,7 +230,7 @@ public final class LoggingModule implements AutomationModule {
                 Pos actual=c.world().loggingLeafObstruction(leafBase,4);
                 if (actual==null || !LoggingLeafRules.authorised(c,leafBase,actual) || clearedLeaves.contains(actual)) {
                     // Do not promote a candidate stance into an actual-eye permission.
-                    stage=Stage.CHOP; return busy("현재 위치의 조준 장애물이 달라 잎 제거를 생략");
+                    return rejectLeafStance(c,"실제 도착 위치의 잎 조준 장애물이 예상과 다름");
                 }
                 leafTarget=actual;
                 int axe=c.profile().loggingAxeHotbarSlot;
@@ -239,7 +239,7 @@ public final class LoggingModule implements AutomationModule {
                 if (c.world().player().selectedSlot()!=axe) { submit(c,new Action.SelectHotbar(axe),Pending.SELECT); return busy("잎 제거용 도끼 선택"); }
                 Action.ClearLoggingLeaf action=new Action.ClearLoggingLeaf(leafTarget,leafBase);
                 String rejection=LoggingLeafRules.rejection(action,c);
-                if (rejection!=null) { stage=Stage.CHOP; return busy("잎 제거 조건이 바뀌어 밑동 시야를 다시 확인: "+rejection); }
+                if (rejection!=null) return rejectLeafStance(c,"현재 잎 제거 조건 불충족: "+rejection);
                 clearedLeafCounts.merge(plot.corner(),1,Integer::sum);
                 submit(c,action,Pending.LEAF); return busy("밑동을 가리는 가문비나무 잎 한 개 제거");
             }
@@ -409,8 +409,7 @@ public final class LoggingModule implements AutomationModule {
             fail("잎 제거 접근 중 메뉴나 커서가 바뀌었습니다."); return false;
         }
         if (leafApproach==null || !leafApproach.endpointValid(c.world())) {
-            c.actions().stopMovement(); stage=Stage.CHOP;
-            approachResult=busy("잎 제거 접근 지형이 바뀌어 원래 시야 대기로 복귀"); return false;
+            approachResult=rejectLeafStance(c,"예상 잎 접근 위치의 지형·시야가 바뀜"); return false;
         }
         // Reaching the near leaf at four blocks can leave its stump out of reach.
         // Go to the verified standing surface instead, then recheck actual-eye rays.
@@ -420,6 +419,16 @@ public final class LoggingModule implements AutomationModule {
         }
         if (result!=Navigation.Result.ARRIVED) return false;
         c.actions().stopMovement(); return true;
+    }
+    private WorkResult rejectLeafStance(Context c,String reason) {
+        c.actions().stopMovement();
+        // No action was submitted for this candidate. Keep the original sweep
+        // and native action/landing state: neither an ACK nor a new budget is
+        // manufactured here. Exhaustion still enters the ordinary resource wait.
+        boolean resumed=leafApproach!=null && leafApproach.rejectLeafStance();
+        leafTarget=null; leafBase=null;
+        stage=resumed ? Stage.LEAF_SEARCH : Stage.CHOP;
+        return busy(reason+(resumed ? " — 다음 유한 접근 후보 확인" : " — 원래 시야 대기로 복귀"));
     }
     private Pos choppingTarget(Context c,List<Pos> stumps) {
         approachResult=null;
