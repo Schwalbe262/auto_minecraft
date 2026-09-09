@@ -15,6 +15,7 @@ public final class SessionState {
     public PendingShipmentRecovery pendingShipmentRecovery;
     public boolean allows(Profile profile,Feature feature) { return oneShotFeature==null ? profile.enabled(feature) : oneShotFeature==feature; }
     public final Map<Integer,WineSalePermit> wineSalePermits=new HashMap<>();
+    public TomatoSalePermit tomatoSalePermit;
     /** Local inspection evidence, not permission to transfer; retained after a one-shot finishes. */
     public final Map<Pos,StorageSurveyObservation> storageSurveyObservations=new java.util.LinkedHashMap<>();
     public int storageSurveyTotal;

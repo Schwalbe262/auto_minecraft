@@ -134,6 +134,7 @@ public final class MinecraftActions implements ActionPort {
             case WOOD_CHEST -> LoggingRules.allowed(context) && source.player() && LoggingRules.wood(item);
             case SHIPPING_BIN -> source.player() && (item.standardShippingProduct() && context.session().allows(context.profile(),Feature.SHIPPING)
                 || item.is(ItemData.WINE) && WineSaleRules.permitted(item,context)
+                || item.is(ItemData.TOMATO) && TomatoSaleRules.permitted(item,context)
                 || LoggingRules.allowed(context) && LoggingRules.byproduct(item));
             default -> false;
         };
@@ -301,6 +302,8 @@ public final class MinecraftActions implements ActionPort {
                     Poi destination=ownedContainer==null ? null : context.profile().pois.stream().filter(p -> p.pos().equals(ownedContainer)).findFirst().orElse(null);
                     if (confirmed && destination!=null && destination.kind()==PoiKind.SHIPPING_BIN && source.item().is(ItemData.WINE))
                         WineSaleRules.consume(source.item(),quantity,context);
+                    if (confirmed && destination!=null && destination.kind()==PoiKind.SHIPPING_BIN && source.item().is(ItemData.TOMATO))
+                        TomatoSaleRules.consume(quantity,context);
                 } else if (pending instanceof Action.ThrowRotten drop) {
                     quantity=InventoryAcknowledgements.removed(beforeMenu,acknowledgement.items(),drop.slot());
                     confirmed=quantity>0;
