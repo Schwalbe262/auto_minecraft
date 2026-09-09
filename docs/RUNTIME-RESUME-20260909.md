@@ -136,6 +136,13 @@ in inventory. The engine then reached its normal crops/machines/bedtime WAITING
 state instead of reselecting the zero-target artisan pass. The three crystalariums
 remained working with unchanged day-462 deadlines.
 
+Without another start request, CONTINUOUS mode subsequently reached the bed and
+was observed sleeping on day 460. Day 461 then began with automation still ON.
+The four seed makers were serviced again, their eligibility advanced to day 462,
+and all held ancient fruit/seeds were stored before normal WAITING resumed.
+This is a real continuous work/wait/sleep/next-day recurrence check, not only an
+isolated sleep one-shot. It is still not a multi-hour soak pass of every module.
+
 ## Native descent measurements
 
 Two supervised runs down the same six-edge cellar route completed in approximately
