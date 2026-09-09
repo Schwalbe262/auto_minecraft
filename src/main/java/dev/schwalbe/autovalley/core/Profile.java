@@ -24,6 +24,9 @@ public final class Profile {
     public Map<Feature, Boolean> enabled = new EnumMap<>(Feature.class);
     public boolean allowBackground = true;
     public boolean continueHarvestWhenFull = true;
+    /** Keep this share of tomato storage capacity; ship only surplus through registered shipping. */
+    public int tomatoStorageLimitPercent = 90;
+    public boolean tomatoSurplusShippingEnabled = true;
     public int hoeHotbarSlot = 0;
     public int loggingAxeHotbarSlot = -1;
     public int loggingSaplingReserve = 0;

@@ -77,6 +77,12 @@ public final class RegistrationRules {
 
     /** Keep the main module controls within the same three rows as features grow. */
     public static int moduleColumns(int count) { return Math.max(3,(count+2)/3); }
+    public static int tomatoStorageLimitPercent(String value) {
+        if (value==null || !value.trim().matches("[0-9]{1,3}")) throw new IllegalArgumentException("Enter an integer percentage");
+        int percent=Integer.parseInt(value.trim());
+        if (percent<1 || percent>100) throw new IllegalArgumentException("Tomato storage percentage must be 1 to 100");
+        return percent;
+    }
 
     /** Only an explicitly aimed spruce planting/trunk block can seed a plot draft. */
     public static boolean loggingCorner(BlockData block) {

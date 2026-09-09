@@ -21,7 +21,7 @@ import java.util.*;
 /** All registration is local and explicit. Opening settings never starts game actions. */
 public final class ValleyScreen extends Screen {
     private enum Tab { MODULES, REGISTER, FARMS, SAVED }
-    private enum ToolPage { MENU, RECORD_NAME, RUN_ONCE, PENDING_LIST, PENDING_DETAIL, PENDING_CONFIRM, PENDING_SHIP_CONFIRM }
+    private enum ToolPage { MENU, RECORD_NAME, RUN_ONCE, PENDING_LIST, PENDING_DETAIL, PENDING_CONFIRM, PENDING_SHIP_CONFIRM, TOMATO_STORAGE }
     private enum MachineGroupPage { DETAIL, MEMBERS, REMOVE_CONFIRM }
     private enum LoggingPage { LIST, EDIT, SETTINGS, REMOVE }
     private static Tab rememberedTab = Tab.MODULES;
@@ -75,6 +75,8 @@ public final class ValleyScreen extends Screen {
     private boolean toolsEditor;
     private ToolPage toolPage = ToolPage.MENU;
     private String recordingNameDraft = "";
+    private boolean tomatoSurplusDraft;
+    private String tomatoStorageLimitDraft = "";
     private PendingMachineOutput selectedPendingOutput;
     private MachineOutputLedger.Resolution pendingResolution;
     private EditBox nameInput, classifierInput;
@@ -155,8 +157,14 @@ public final class ValleyScreen extends Screen {
         text(y + 25, tr("hoe.status", runtime.profile().hoeHotbarSlot + 1,
                 tr(runtime.profile().sprintCalibrated && runtime.profile().sprintHarvest ? "sprint" : "walk")));
         int settingsY = y + 41;
-        button(left, settingsY, half, tr("schedule.open"), () -> { scheduleEditor = true; rebuild(); });
-        button(left + half + 6, settingsY, half, tr("background.toggle", tr(runtime.profile().allowBackground ? "on" : "off")), () -> {
+        int third = (panelWidth - 12) / 3;
+        button(left, settingsY, third, tr("schedule.open"), () -> { scheduleEditor = true; rebuild(); });
+        button(left + third + 6, settingsY, third, tr("tomato_storage.settings.open"), () -> {
+            tomatoSurplusDraft = runtime.profile().tomatoSurplusShippingEnabled;
+            tomatoStorageLimitDraft = Integer.toString(runtime.profile().tomatoStorageLimitPercent);
+            toolsEditor = true; toolPage = ToolPage.TOMATO_STORAGE; rebuild();
+        }).setTooltip(Tooltip.create(tr("tomato_storage.settings.hint")));
+        button(left + (third + 6) * 2, settingsY, third, tr("background.toggle", tr(runtime.profile().allowBackground ? "on" : "off")), () -> {
             runtime.pause(tr("settings.paused").getString());
             boolean before = runtime.profile().allowBackground;
             runtime.profile().allowBackground = !before;
@@ -183,7 +191,35 @@ public final class ValleyScreen extends Screen {
             case PENDING_DETAIL -> pendingOutputDetail();
             case PENDING_CONFIRM -> pendingOutputConfirmation();
             case PENDING_SHIP_CONFIRM -> pendingShipmentConfirmation();
+            case TOMATO_STORAGE -> tomatoStorageSettings();
         }
+    }
+
+    private void tomatoStorageSettings() {
+        int half = (panelWidth - 6) / 2;
+        text(55, tr("tomato_storage.settings.open"));
+        button(left, 74, panelWidth, tr("tomato_storage.settings.enabled", tr(tomatoSurplusDraft ? "on" : "off")), () -> {
+            tomatoSurplusDraft = !tomatoSurplusDraft; rebuild();
+        }).setTooltip(Tooltip.create(tr("tomato_storage.settings.hint")));
+        text(105, tr("tomato_storage.settings.limit"));
+        EditBox limit = input(left, 118, half, tr("tomato_storage.settings.limit"), 3);
+        limit.setValue(tomatoStorageLimitDraft); limit.setResponder(value -> tomatoStorageLimitDraft = value);
+        int presetWidth = (panelWidth - half - 12) / 2;
+        button(left + half + 6, 118, presetWidth, Component.literal("80%"), () -> { tomatoStorageLimitDraft = "80"; rebuild(); });
+        button(left + half + presetWidth + 12, 118, presetWidth, Component.literal("90%"), () -> { tomatoStorageLimitDraft = "90"; rebuild(); });
+        text(151, tr("tomato_storage.settings.hint"));
+        button(left, 179, half, tr("back"), () -> { toolsEditor = false; rebuild(); });
+        button(left + half + 6, 179, half, tr("confirm"), () -> {
+            int percent;
+            try { percent = RegistrationRules.tomatoStorageLimitPercent(tomatoStorageLimitDraft); }
+            catch (IllegalArgumentException invalid) { error("tomato_storage.settings.error"); return; }
+            Profile profile = runtime.profile();
+            int oldPercent = profile.tomatoStorageLimitPercent; boolean oldEnabled = profile.tomatoSurplusShippingEnabled;
+            profile.tomatoStorageLimitPercent = percent; profile.tomatoSurplusShippingEnabled = tomatoSurplusDraft;
+            if (persist(() -> { profile.tomatoStorageLimitPercent = oldPercent; profile.tomatoSurplusShippingEnabled = oldEnabled; })) {
+                toolsEditor = false; rebuild();
+            }
+        });
     }
 
     private void recordingTools() {
