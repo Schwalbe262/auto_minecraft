@@ -579,3 +579,28 @@ The pure receipt tests cover the projected selected proof, not direct native
 slot-versus-full-menu arbitration; that wrapper was code reviewed. Native partial
 refill acceptance is pending. No existing production stage was manufactured to
 force such a test, and this artifact is not yet installed.
+
+### Center the verified source cell before an ascent
+
+A coordinate-only test stopped before launching a step-up because the player
+was about 0.496 blocks from the source center, outside the controller's 0.45
+entry gate but still grounded in the correct source cell. The existing inner
+centering branch was therefore unreachable. An ordinary coordinate move to that
+same cell's center, followed by the original destination, succeeded without any
+teleport or inventory action.
+
+Preparation now permits reduced, observed-motion inward walking only in that
+same native-verified full flat source cell. It still requires the original 0.06
+launch center and two distinct quiet observations. Unknown motion, a tick gap,
+source/support/authority loss, air, cell exit, cancellation or the original
+60-tick timeout cannot launch. Flight, landing and single-pulse limits are unchanged.
+Full verification passed **1,634 tests / 120 suites**, zero failures, errors or
+skips, including eight new source-centering regressions. The combined artifact
+SHA256 is `68B621FF5BF9E63A0EB19548F5C82D45732F8CC2814529A37C1B3353161DC620`.
+Native source-centering acceptance is pending installation.
+
+A separate nearby-fruit one-shot confirmed one fruit use (ticket 377), one
+registered-store transfer of one fruit (379), and normal open/close (378/380).
+This verifies a single-fruit pass, not yet multi-fruit cohort acceptance. Two
+other ripe targets were not used; their ephemeral skip/confirmation state is
+being inspected before restarting rather than inferred from one-second samples.

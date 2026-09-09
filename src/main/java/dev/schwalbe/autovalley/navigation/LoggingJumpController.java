@@ -17,6 +17,7 @@ public class LoggingJumpController {
     private PlayerState preparedSample;
     private PlayerState motionSample;
     private long motionSampleTick=Long.MIN_VALUE;
+    private boolean outerSourceCentering;
 
     public LoggingJumpController(LoggingJumpEdge edge) { this(edge,true); }
     protected LoggingJumpController(LoggingJumpEdge edge,boolean loggingAuthority) { this.edge=edge;this.loggingAuthority=loggingAuthority; }
@@ -51,12 +52,29 @@ public class LoggingJumpController {
         motionSample=p; motionSampleTick=now;
         if (phase==Phase.PREPARE) {
             if (now-startedTick>60) return fail(actionLabel()+" 출발점에 안전하게 정렬하지 못했습니다.");
-            if (!p.onGround() || Math.abs(p.y()-fromHeight)>LoggingJumpRules.HEIGHT_TOLERANCE
-                || !LoggingJumpRules.centered(p,edge.from(),.45)) return fail(actionLabel()+"는 확인된 출발 지면에서만 시작합니다.");
+            if (!p.onGround() || !Double.isFinite(p.x()) || !Double.isFinite(p.y()) || !Double.isFinite(p.z())
+                || Math.abs(p.y()-fromHeight)>LoggingJumpRules.HEIGHT_TOLERANCE)
+                return fail(actionLabel()+"는 확인된 출발 지면에서만 시작합니다.");
+            // Arriving at an edge does not necessarily leave the player near
+            // its centre. Only the SAME native-verified full support may admit
+            // ordinary inward walking here; launch/flight bounds stay unchanged.
+            if (!LoggingJumpRules.centered(p,edge.from(),.45)) outerSourceCentering=true;
+            if (outerSourceCentering && (!edge.from().equals(NavigationFeet.resolve(c.world(),p))
+                || !c.world().fullFlatSupport(edge.from())))
+                return fail(actionLabel()+" 출발 칸 안의 평평한 지면을 확인하지 못했습니다.");
+            if (outerSourceCentering && !measuredMotion) {
+                quietSamples=0; preparedSample=null; c.actions().stopMovement(); return Navigation.Result.MOVING;
+            }
             if (!LoggingJumpRules.centered(p,edge.from(),LoggingJumpRules.SOURCE_CENTER)) {
-                quietSamples=0; preparedSample=null; steer(c.actions(),p,edge.from()); return Navigation.Result.MOVING;
+                quietSamples=0; preparedSample=null;
+                if (outerSourceCentering) centerSource(c.actions(),p,vx,vz);
+                else steer(c.actions(),p,edge.from());
+                return Navigation.Result.MOVING;
             }
             c.actions().stopMovement();
+            if (outerSourceCentering && Math.hypot(vx,vz)>.002) {
+                quietSamples=0; preparedSample=null; return Navigation.Result.MOVING;
+            }
             if (preparedSample!=null && Math.hypot(p.x()-preparedSample.x(),p.z()-preparedSample.z())>.002) quietSamples=0;
             preparedSample=p;
             if (++quietSamples<2) return Navigation.Result.MOVING;
@@ -81,6 +99,20 @@ public class LoggingJumpController {
         if (!(loggingAuthority ? c.actions().moveLoggingJump(edge,false) : c.actions().moveStepUp(edge,false)))
             return fail("한 칸 오르기의 안전한 공중 이동이 거절되었습니다.");
         return Navigation.Result.MOVING;
+    }
+
+    private void centerSource(ActionPort actions,PlayerState player,double vx,double vz) {
+        double dx=edge.from().x()+.5-player.x(),dz=edge.from().z()+.5-player.z();
+        double distance=Math.hypot(dx,dz),speed=Math.hypot(vx,vz),toward=dx*vx+dz*vz;
+        // As with landing, measured normal-surface coast only decides input;
+        // success still requires two actually quiet samples inside SOURCE_CENTER.
+        if (Math.hypot(dx-1.25*vx,dz-1.25*vz)<=.035
+            || (speed>.002 && (toward<=0 || distance<=1.25*speed+LoggingJumpRules.SOURCE_CENTER))) {
+            actions.stopMovement();
+        } else {
+            float yaw=(float)Math.toDegrees(Math.atan2(-dx,dz));
+            actions.move(new Movement(yaw,0,true,false,false,false,.2f));
+        }
     }
 
     private Navigation.Result land(Context c,PlayerState p,boolean measuredMotion,double vx,double vz) {
