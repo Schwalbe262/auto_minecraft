@@ -155,7 +155,11 @@ ordinary safe travel can resume, but a suspended sleep approach returns through
 the existing blocked/deferred scheduler rules instead of forcing sleep.
 
 The combined source passed **1,527 tests / 111 suites**, with no failures, errors
-or skips. Native pass-by/resume acceptance remains pending at this checkpoint.
+or skips. A later native sleep-approach detour confirmed a fruit use, one-item
+deposit, resumption of the original sleep task and the following day's work.
+See the [runtime checkpoint](RUNTIME-RESUME-20260909.md). Native production-travel
+detours still need a separate live exercise; the engine/module regressions cover
+those permitted stages.
 
 ### Late pickup cleanup
 

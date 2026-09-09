@@ -251,3 +251,33 @@ with the same navigation changes, was subsequently installed through another
 normal same-instance restart. Backups were retained and the server reconnected.
 A new continuous start was acknowledged. This installation does not by itself
 prove the newly corrected pickup race has recurred and passed in the live game.
+
+## Native starfruit detour, deposit and sleep resumption
+
+After the latest installation, CONTINUOUS mode began approaching the registered
+bed on day 463. During actual flat travel it suspended that SleepModule for a
+nearby registered starfruit. The observer directly retained SLEEP as nearbyOrigin,
+followed by restoration to SLEEP and continued bed travel. There was no new start
+request between the detour, actual sleeping and day-464 seed-maker work.
+
+A separate read-only snapshot of retained action results confirmed all five
+operations: fruit interaction succeeded; the registered container synchronized;
+the inventory transfer succeeded with **one item**; the container closed; and
+the bed interaction succeeded. Native target updates retained the fruit's reset
+age 0, then age 1 after the next day. The remembered target/patch still matched
+the registration and no starfruit remained in the sampled inventory. This closes
+the one-second observer's short pickup/deposit gap without inferring a deposit
+solely from an empty inventory or a status string.
+
+The disabled logging queue remained preserved and did not block this permitted
+detour. No raw input replay or schedule manipulation was used. This acceptance
+covers a sleep-approach detour; production-machine detours are unit-tested but
+have not yet been separately exercised in the live client.
+
+On day 464 the seed job refilled one machine with remaining material, stored
+the unused fruit/seeds, and allowed ordinary work to continue when insufficient
+fruit remained for the other three machines. A further tomato harvest/disposal/
+storage pass completed without a global action fence in the corrected build.
+That is not proof that the exact 2-to-4 pickup race happened a second time.
+The continuous run remains under observation; a multi-hour all-feature stability
+pass is still outstanding.
