@@ -410,3 +410,26 @@ at 02:45:40 UTC. The corrected initial wine wait preserved the 224 pending
 members and allowed the due preserves run to start, reaching 128/144 machines
 without a native action fence. This is partial post-install acceptance; shipping,
 seed service, bedtime and extended stability are still being observed.
+
+### Post-install shipping, seed refill and actual sleep
+
+The same uninterrupted CONTINUOUS start completed all 144 preserves machines.
+The shipping trace maps native transfer tickets 267/268/269 to the registered
+smart-bin visit; their retained SUCCEEDED outcomes confirm **64 + 64 + 16**
+items transferred, followed by confirmed container closure. This proves 144
+preserves were deposited, not that a particular HUD account was already paid.
+
+The seed job then withdrew 55 ancient fruit (the new 54 plus one existing fruit),
+serviced all four machines with native state/participating-slot confirmations
+309–312, consumed 12 fruit and observed four seeds. Native transfer 314 confirms
+four seeds stored; transfer 317 confirms the unused 43 fruit returned, with both
+containers confirmed closed. All four next-eligible dates became day 469.
+
+Without another start command, the engine approached bed. Ticket 319 succeeded
+with Entered bed, the read-only trace observed sleeping at 02:50:17 UTC, and
+natural day 469 began at 02:50:23 UTC. Running stayed ON. The unconfirmed wine
+batch remained active with 224 members and the original day-465 feed/due fields
+through these operations; no working member was removed or assigned an invented
+refill. This closes native acceptance of clean wine wait → preserves/shipping →
+seed service/storage → real sleep/day advance. Extended uninterrupted stability
+and later remaining-rack resumption are still pending, not implied by this pass.
