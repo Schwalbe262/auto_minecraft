@@ -877,3 +877,12 @@ to SHIPPING with inventory 20 before and zero afterward. Thus the interrupted
 pass's **124 recovered + 20 newly produced = 144 preserves** reached the smart
 shipping bin. The engine continued into ancient seed-maker work without another
 start command. This short sequence does not yet establish multi-hour stability.
+
+The same continuous run also serviced the three jade crystalariums. Native
+artisan tickets 557–560 succeeded, transfer **562 confirmed three jade** stored,
+and close 563 completed. Their next due day is **490**, consistent with the
+installed five-day recipe. Sleep ticket **564** then reported `Entered bed`;
+the native trace observed sleeping on day 485 at 07:17:27 UTC and normal work
+on day 486 afterward, without another start request. The engine began the newly
+due 124-jar preserves cohort. This accepts another real sleep/day transition,
+not multi-hour stability or a claim that every seed maker had enough ingredients.
