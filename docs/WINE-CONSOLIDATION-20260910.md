@@ -95,3 +95,23 @@ specific fix is supported by the retained failing native packet, exact detached
 mod prediction, and regression tests. Continuous mode remains on, with the
 already attached bounded passive diagnostic recorder; this is not a guarantee
 of multi-hour unattended stability or a separate automatic repair service.
+
+## Two-hour goal audit (still incomplete)
+
+The later trace audit through 15:28:13 UTC measured two observed ON spans totaling
+568.309 seconds (approximately 9 minutes 28 seconds). It excludes the brief manual
+pause and a subsequent manual pause beginning at 15:24:46.887 UTC. Sample-boundary
+uncertainty is approximately one second; wall time spent paused is not credited
+as automated operation. No failure fence, disconnect or missing sample was found
+in that bounded audit. The game process and passive recorder remained live.
+
+The current operator is playing outside the registered farm context with
+automation OFF. Missing current-context registrations are not evidence of deleted
+farm settings or completion of the outstanding wine batch. No forced profile
+switch, teleport or restart of manual play was attempted.
+
+At least approximately 110 minutes 32 seconds of additional observed automatic
+operation is still needed for the requested two-hour duration. Duration alone is
+not sufficient: the same installed fix, productive work and expected cooldown/day
+transitions must be verified, with any new failure investigated. The goal remains
+open; manual OFF intervals cannot be used to claim two-hour stability.
