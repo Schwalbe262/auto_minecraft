@@ -99,8 +99,10 @@ final class NativeLoggingActions {
         if (mc.player.containerMenu!=mc.player.inventoryMenu || !mc.player.inventoryMenu.getCarried().isEmpty())
             return "벌목 중 도구·손 또는 인벤토리가 바뀌었습니다.";
         if (planting) return null;
-        boolean axeMatches=stopped ? axeAfterStop(NativeLoggingRecipe.stack(held),NativeLoggingRecipe.stack(mc.player.getMainHandItem()))
-            : ItemStack.matches(held,mc.player.getMainHandItem());
+        // The previous confirmed chop's inventory wear can arrive after this
+        // stroke's START. Damage-only monotonic wear does not prove this stroke
+        // succeeded and cannot bypass its current ray or pre-STOP checks.
+        boolean axeMatches=axeWearCompatible(NativeLoggingRecipe.stack(held),NativeLoggingRecipe.stack(mc.player.getMainHandItem()));
         boolean authorised=leafAction==null ? LoggingRules.allowed(context) && LoggingRules.base(context.profile(),target)
             : LoggingLeafRules.authorised(context,leafAction.stump(),leafAction.pos());
         // AIR may already be applied before its raw reply is observed. After STOP,
@@ -109,10 +111,10 @@ final class NativeLoggingActions {
         boolean inReach=leafAction!=null && stopped
             ? mc.player.getEyePosition().distanceTo(miningHit)<=Math.min(4,mc.gameMode.getPickRange())
             : world.canInteract(target,4);
-        if (!miningContinuationAllowed(authorised,
-                mc.player.onGround(),mc.player.isShiftKeyDown(),inReach,
-                mc.player.getInventory().selected==heldIndex && world.loggingAxe(heldIndex) && axeMatches))
-            return "벌목 거리·자세 또는 대상 블록이 변경되었습니다.";
+        String boundary=miningContinuationRejection(authorised,
+            mc.player.onGround(),mc.player.isShiftKeyDown(),inReach,
+            mc.player.getInventory().selected==heldIndex,world.loggingAxe(heldIndex),axeMatches);
+        if (boundary!=null) return boundary;
         // STOP is never replayed. Keep checking the operating boundary while its
         // raw server confirmation is pending; failure takes the normal one-ABORT path.
         if (stopped) return null;
@@ -135,8 +137,25 @@ final class NativeLoggingActions {
     static boolean miningContinuationAllowed(boolean authorised,boolean grounded,boolean crouching,boolean inReach,boolean selectedAxe) {
         return authorised && grounded && !crouching && inReach && selectedAxe;
     }
-    /** A server may update axe wear before its chop packet. Only that positive wear is tolerated after STOP. */
+    static String miningContinuationRejection(boolean authorised,boolean grounded,boolean crouching,boolean inReach,
+            boolean sameSlot,boolean registeredAxe,boolean compatibleAxe) {
+        String reason;
+        if (!authorised) reason="벌목 대상의 등록·실행 권한이 변경되었습니다 (AUTHORITY).";
+        else if (!grounded) reason="벌목 중 지면 착지가 확인되지 않습니다 (GROUND).";
+        else if (crouching) reason="벌목 중 웅크린 자세로 바뀌었습니다 (CROUCH).";
+        else if (!inReach) reason="벌목 대상의 실제 시야·도달 거리가 확인되지 않습니다 (REACH).";
+        else if (!sameSlot) reason="벌목 중 선택한 단축바 슬롯이 변경되었습니다 (SLOT).";
+        else if (!registeredAxe) reason="등록한 사용 가능한 벌목 도끼가 확인되지 않습니다 (AXE).";
+        else if (!compatibleAxe) reason="벌목 도끼의 마모 외 항목·메타데이터가 바뀌거나 마모가 감소했습니다 (AXE_METADATA).";
+        else return null;
+        return reason+" 재전송하지 않고 멈춥니다.";
+    }
+    /** Compatibility alias retained for the original post-STOP regression contract. */
     static boolean axeAfterStop(InventoryConsolidation.Stack before,InventoryConsolidation.Stack after) {
+        return axeWearCompatible(before,after);
+    }
+    /** Unchanged axe or positive Damage-only wear, independent of packet arrival order. Never a completion proof. */
+    static boolean axeWearCompatible(InventoryConsolidation.Stack before,InventoryConsolidation.Stack after) {
         if (before==null || after==null || before.empty() || after.empty() || before.count()!=1 || after.count()!=1
             || before.limit()!=after.limit()) return false;
         try {

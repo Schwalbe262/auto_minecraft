@@ -54,6 +54,41 @@ class NativeLoggingSafetyTest {
         assertFalse(NativeLoggingActions.axeAfterStop(axe("{Damage:12}"),new Stack(axe("{Damage:13}").identity(),2,64)));
         assertFalse(NativeLoggingActions.axeAfterStop(axe("{Damage:12,Enchantments:[{id:\"minecraft:efficiency\",lvl:5s}]}"),axe("{Damage:13}")));
     }
+    @Test void priorChopWearMayArriveAfterTheNextStartWithoutInvalidatingTheOtherwiseExactAxe() {
+        Stack admitted=axe("{Damage:1645,Enchantments:[{id:\"minecraft:efficiency\",lvl:5s}],RepairCost:2}");
+        Stack delayedWear=axe("{Damage:1646,Enchantments:[{id:\"minecraft:efficiency\",lvl:5s}],RepairCost:2}");
+        assertTrue(NativeLoggingActions.axeWearCompatible(admitted,delayedWear));
+        assertNull(NativeLoggingActions.miningContinuationRejection(true,true,false,true,true,true,
+            NativeLoggingActions.axeWearCompatible(admitted,delayedWear)));
+        // The comparator changes only the waiting boundary. A current ray failure
+        // remains a failure before STOP even when the axe wear is legitimate.
+        assertTrue(NativeLoggingActions.miningContinuationRejection(true,true,false,false,true,true,true).contains("REACH"));
+        assertTrue(NativeLoggingActions.axeWearCompatible(admitted,admitted));
+    }
+    @Test void preStopWearCompatibilityDoesNotAcceptRepairReplacementOrAnyOtherNativeTagChange() {
+        Stack before=axe("{Damage:1645,RepairCost:2,custom:{marker:7}}");
+        for(Stack changed:List.of(axe("{Damage:1644,RepairCost:2,custom:{marker:7}}"),
+            axe("{Damage:1646,RepairCost:3,custom:{marker:7}}"),axe("{Damage:1646,RepairCost:2,custom:{marker:8}}"),
+            axe("{Damage:1646,RepairCost:2}"),axe("{Damage:1646s,RepairCost:2,custom:{marker:7}}"),
+            item("minecraft:diamond_axe",1),Stack.EMPTY,new Stack(before.identity(),2,64),new Stack(before.identity(),1,64))) {
+            assertFalse(NativeLoggingActions.axeWearCompatible(before,changed),changed.toString());
+            assertTrue(NativeLoggingActions.miningContinuationRejection(true,true,false,true,true,true,
+                NativeLoggingActions.axeWearCompatible(before,changed)).contains("AXE_METADATA"));
+        }
+    }
+    @Test void nativeStrokeContinuationReportsEachGuardWithoutWeakeningAnotherGuard() {
+        assertNull(NativeLoggingActions.miningContinuationRejection(true,true,false,true,true,true,true));
+        assertTrue(NativeLoggingActions.miningContinuationRejection(false,true,false,true,true,true,true).contains("AUTHORITY"));
+        assertTrue(NativeLoggingActions.miningContinuationRejection(true,false,false,true,true,true,true).contains("GROUND"));
+        assertTrue(NativeLoggingActions.miningContinuationRejection(true,true,true,true,true,true,true).contains("CROUCH"));
+        assertTrue(NativeLoggingActions.miningContinuationRejection(true,true,false,false,true,true,true).contains("REACH"));
+        assertTrue(NativeLoggingActions.miningContinuationRejection(true,true,false,true,false,true,true).contains("SLOT"));
+        assertTrue(NativeLoggingActions.miningContinuationRejection(true,true,false,true,true,false,true).contains("(AXE)"));
+        assertTrue(NativeLoggingActions.miningContinuationRejection(true,true,false,true,true,true,false).contains("AXE_METADATA"));
+        // Multiple problems remain fail-closed; diagnostics use stable precedence.
+        String failed=NativeLoggingActions.miningContinuationRejection(false,false,true,false,false,false,false);
+        assertTrue(failed.contains("AUTHORITY"));assertTrue(failed.contains("재전송하지 않고"));
+    }
     @Test void adjacentUnregisteredBuildingLogAndOtherSpeciesAreRejected() {
         var cells=tree(); cells.put(BASE.offset(2,0,0),LOG); assertFalse(inspect(cells).safe());
         cells=tree(); cells.put(BASE,new NativeLoggingTree.Cell(true,true,false,false,0)); assertFalse(inspect(cells).safe());
