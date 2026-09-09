@@ -760,3 +760,20 @@ do not themselves constitute a native packet-origin integration test. Artifact
 SHA256: `3A0A31C461ABF2732C92B58D661E3881E05F35EFF7391742BCC1A2547845B02D`.
 Fresh exact physical-custody proof is required again before normal restart;
 successful post-install wine completion is still pending.
+
+The fresh 06:28:12 UTC proof again matched live inventory exactly to FULL 2466.
+The old client then exited normally without any inverse, synthetic ACK or fence
+write. Its failed ticket remained failed. The `3A0A31...` artifact was installed
+at 06:28:44 UTC, client 45692 connected normally and continuous start was
+confirmed at **06:31:00.581 UTC**.
+
+The retained 84 wine were stored first: native transfers 16–18 confirmed
+**1 + 64 + 19**, followed by close 19. All 27 pending wine machines then completed.
+The global batch became inactive with zero remaining, latest feed day 483 and
+next due day **489**, preserving the six-day whole-rack schedule. Native transfers
+160 and 161 stored the final **1 + 26 wine**, followed by close 162. Thus **111
+wine** were deposited across recovery and completion, without claiming any sale
+or unverified money increase. The engine continued into preserves service.
+This accepts the recovered production/storage sequence on the new artifact;
+the observed successful consolidations alone do not prove which internal receipt
+branch each used. Multi-hour uninterrupted stability is still pending.
