@@ -146,6 +146,75 @@ class EngineLoggingSuspensionTest {
         }
     }
 
+    @Test void turningOffAResourceWaitingJobBeforeWineCooldownDoesNotInspectItsChangedPlot() {
+        Fixture f=resourceWaitWithWineBusy();
+        int readinessBefore=f.readinessCalls;
+        f.profile.enabled.put(Feature.LOGGING,false);
+        f.readiness=AutomationModule.ResourceReadiness.UNSAFE;
+        f.wineResult=WorkResult.cooldown("observed whole-rack production wait");
+        f.step();
+        assertEquals(AutomationEngine.State.WAITING,f.engine.state(),f.engine.status());
+        assertEquals(readinessBefore,f.readinessCalls,"OFF grants no logging work, including at a normal production boundary");
+        assertEquals(1,f.loggingTicks); assertEquals(2,f.wineTicks); assertEquals(1,f.sleepTicks);
+        f.assertPreserved();
+        // The fixed production cooldown must not become an error retry or restart wine immediately.
+        f.ticks+=20; f.step();
+        assertEquals(2,f.wineTicks); assertTrue(f.engine.running(),f.engine.status());
+        f.assertPreserved();
+    }
+
+    @Test void resourceWaitToOffWineCooldownCannotWaiveNativeOrCustodyBoundaries() {
+        for (String unsafe:List.of("lease","busy","container","cursor","airborne","native fence","output","sleep unsafe")) {
+            Fixture f=resourceWaitWithWineBusy();
+            f.profile.enabled.put(Feature.LOGGING,false);
+            f.readiness=AutomationModule.ResourceReadiness.UNSAFE;
+            f.wineResult=WorkResult.cooldown("observed whole-rack production wait");
+            switch (unsafe) {
+                case "lease" -> f.addLease();
+                case "busy" -> f.busy=true;
+                case "container" -> f.container=true;
+                case "cursor" -> f.cursor=item(ItemData.TOMATO,1);
+                case "airborne" -> f.grounded=false;
+                case "native fence" -> f.pauseFence="exact native reply missing";
+                case "output" -> f.addOutput();
+                case "sleep unsafe" -> f.wineSleepSafe=false;
+                default -> throw new AssertionError(unsafe);
+            }
+            f.step();
+            assertEquals(AutomationEngine.State.PAUSED,f.engine.state(),unsafe);
+            assertEquals(0,f.sleepTicks,unsafe); assertEquals(1,f.loggingTicks,unsafe);
+            f.assertPreserved();
+            if (unsafe.equals("lease")) assertNotNull(f.profile.loggingHotbarLease);
+            if (unsafe.equals("native fence")) assertEquals("exact native reply missing",f.pauseFence);
+            if (unsafe.equals("output")) assertEquals(1,f.profile.pendingMachineOutputs.size());
+        }
+    }
+
+    @Test void enabledLoggingStillRevalidatesItsResourceGrantAtWineCooldown() {
+        Fixture f=resourceWaitWithWineBusy();
+        int readinessBefore=f.readinessCalls;
+        f.readiness=AutomationModule.ResourceReadiness.UNSAFE;
+        f.wineResult=WorkResult.cooldown("observed whole-rack production wait");
+        f.step();
+        assertEquals(AutomationEngine.State.PAUSED,f.engine.state());
+        assertTrue(f.readinessCalls>readinessBefore); assertEquals(0,f.sleepTicks);
+        assertTrue(f.profile.enabled(Feature.LOGGING)); f.assertPreservedExceptToggle();
+    }
+
+    private static Fixture resourceWaitWithWineBusy() {
+        Fixture f=new Fixture();
+        f.profile.enabled.put(Feature.HARVEST,false); f.profile.enabled.put(Feature.WINE,true);
+        f.profile.enabled.put(Feature.LOGGING,true);
+        f.engine=new AutomationEngine(List.of(f.wine,f.logging,f.sleep));
+        f.loggingResult=WorkResult.resourceWait("two of four saplings; preserve the planting obligation");
+        f.readiness=AutomationModule.ResourceReadiness.WAITING;
+        f.wineResult=WorkResult.busy("wine owns its production observation");
+        f.engine.start(f.context); f.step();
+        assertTrue(f.engine.running(),f.engine.status());
+        assertEquals(1,f.loggingTicks); assertEquals(1,f.wineTicks); assertEquals(0,f.sleepTicks);
+        return f;
+    }
+
     private static Fixture resourceWaitWithOtherBusy() {
         Fixture f=new Fixture(); f.profile.enabled.put(Feature.LOGGING,true);
         f.loggingResult=WorkResult.resourceWait("two of four saplings; preserve the planting obligation");
@@ -171,9 +240,11 @@ class EngineLoggingSuspensionTest {
         final List<Pos> remaining=List.of(new Pos(2,64,0),new Pos(8,64,0));
         final List<Pos> replants=List.of(remaining.get(0));
         WorkResult harvestResult=WorkResult.idle();
+        WorkResult wineResult=WorkResult.idle();
+        boolean wineSleepSafe=true;
         WorkResult loggingResult=WorkResult.busy("resume logging");
         AutomationModule.ResourceReadiness readiness=AutomationModule.ResourceReadiness.UNSAFE;
-        long ticks; int loggingTicks,harvestTicks,sleepTicks,readinessCalls;
+        long ticks; int loggingTicks,harvestTicks,wineTicks,sleepTicks,readinessCalls;
         final Context context=new Context(this,this,this,profile,session,() -> { throw new AssertionError("Engine suspension must not save or change the batch"); });
         final AutomationModule logging=new AutomationModule() {
             public Feature feature() { return Feature.LOGGING; }
@@ -183,6 +254,13 @@ class EngineLoggingSuspensionTest {
             public void reset() { }
         };
         final AutomationModule harvest=module(Feature.HARVEST,10,c -> { harvestTicks++; return harvestResult; });
+        final AutomationModule wine=new AutomationModule() {
+            public Feature feature() { return Feature.WINE; }
+            public int priority() { return 30; }
+            public WorkResult tick(Context c) { wineTicks++; return wineResult; }
+            public boolean sleepSafeDeferred(Context c) { return wineSleepSafe; }
+            public void reset() { }
+        };
         final AutomationModule sleep=module(Feature.SLEEP,100,c -> { sleepTicks++; return WorkResult.idle(); });
         AutomationEngine engine=new AutomationEngine(List.of(harvest,logging,sleep));
         boolean busy,container,grounded=true; ItemData cursor=ItemData.EMPTY; String startFence,pauseFence;

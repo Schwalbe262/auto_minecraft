@@ -340,15 +340,20 @@ public final class AutomationEngine {
             && c.profile().loggingHotbarLease==null && !MachineOutputLedger.hasPending(c);
     }
     private void clearResourceWait() { resourceWaiting=null; resourceWaitMessage=null; resourceCheckAt=0; }
-    private boolean defer(Context c,AutomationModule module,WorkResult result) {
-        productionCooldowns.remove(module);
+    private void suspendDisabledLoggingAtYield(Context c,AutomationModule module) {
         // OFF may arrive while an ordinary module owns work after a resource
-        // wait. Its DEFERRED result is now the safe yield boundary: do not ask
-        // disabled logging's changed terrain to authorize this unrelated retry.
+        // wait. Both an actual deferral and a normal production cooldown can
+        // reach this same clean boundary. Disabled terrain must not authorize
+        // either unrelated wait; durable obligations and native fences remain.
         if (c.profile().loggingRunActive && !c.profile().enabled(Feature.LOGGING)
-            && resourceWaiting!=null && resourceWaiting!=module && resourceBoundary(c)) {
+            && resourceWaiting!=null && resourceWaiting!=module && resourceBoundary(c)
+            && c.actions().pauseReason()==null) {
             clearResourceWait(); loggingSuspended=true;
         }
+    }
+    private boolean defer(Context c,AutomationModule module,WorkResult result) {
+        productionCooldowns.remove(module);
+        suspendDisabledLoggingAtYield(c,module);
         boolean loggingAllowsOtherRetry=loggingSuspended && module.feature()!=Feature.LOGGING
             || resourceWaiting!=null && resourceWaiting!=module
                 && resourceWaiting.resourceReadiness(c)!=AutomationModule.ResourceReadiness.UNSAFE;
@@ -369,6 +374,7 @@ public final class AutomationEngine {
     private boolean cooldown(Context c,AutomationModule module,WorkResult result) {
         // Currently only the explicitly observed whole-rack WINE wait opts in.
         // This is not an escape hatch for sent actions, borrowed inventory or unknown output.
+        suspendDisabledLoggingAtYield(c,module);
         boolean loggingAllowsOtherWork=!c.profile().loggingRunActive || loggingSuspended
             || resourceWaiting!=null && resourceWaiting!=module
                 && resourceWaiting.resourceReadiness(c)!=AutomationModule.ResourceReadiness.UNSAFE;
