@@ -11,6 +11,7 @@ public final class AutomationEngine {
     private record ProductionCooldown(long at,long day,String message,boolean sleepSafe) { }
     private final Map<AutomationModule,ProductionCooldown> productionCooldowns=new LinkedHashMap<>();
     private AutomationModule resourceWaiting;
+    private Object resourceWaitGrant;
     private String resourceWaitMessage;
     private long resourceCheckAt;
     private boolean loggingSuspended;
@@ -20,6 +21,9 @@ public final class AutomationEngine {
     private Profile nearbyProfile;
     private SessionState nearbySession;
     private WorldAccess nearbyWorld;
+    private record NearbyLoggingWait(AutomationModule owner,Object grant,List<LoggingPlot> plots,
+                                     List<Pos> remaining,List<Pos> replanting,Long due) { }
+    private NearbyLoggingWait nearbyLoggingWait;
     private long nearbyStarted,nearbyRetryAt;
     private State state=State.OFF;
     private RunMode mode=RunMode.CONTINUOUS;
@@ -146,7 +150,8 @@ public final class AutomationEngine {
                     blockedThisSweep.put(active,result.message());
                 }
                 if (nearbyOrigin!=null) {
-                    if (!nearbyOwnershipValid(c) || !resourceBoundary(c)) {
+                    if (!nearbyOwnershipValid(c) || !resourceBoundary(c)
+                        || nearbyLoggingWait!=null && nearbyLoggingWait.owner().resourceReadiness(c)==AutomationModule.ResourceReadiness.UNSAFE) {
                         stop(c,State.PAUSED,"주변 수확 뒤 원작업을 재개하기 전에 조작·메뉴를 확인하세요.");return;
                     }
                     AutomationModule origin=nearbyOrigin;clearNearby();nearbyRetryAt=c.world().tick()+1200;
@@ -212,31 +217,51 @@ public final class AutomationEngine {
         }
     }
     private boolean loggingAllowsNearby(Context c) {
-        return c.profile().loggingHotbarLease==null && resourceWaiting==null
+        if (c.profile().loggingHotbarLease!=null) return false;
+        if (resourceWaiting!=null) return resourceWaitGrant!=null && resourceWaiting.feature()==Feature.LOGGING
+            && active!=resourceWaiting && c.profile().loggingRunActive && c.profile().enabled(Feature.LOGGING)
+            && resourceWaiting.resourceReadiness(c)==AutomationModule.ResourceReadiness.WAITING;
+        return !c.profile().loggingRunActive || loggingSuspended && !c.profile().enabled(Feature.LOGGING);
+    }
+    private boolean nearbyLoggingOwnershipValid(Context c) {
+        if (c.profile().loggingHotbarLease!=null) return false;
+        if (nearbyLoggingWait==null) return resourceWaiting==null
             && (!c.profile().loggingRunActive || loggingSuspended && !c.profile().enabled(Feature.LOGGING));
+        // Preserve this exact existing grant while fruit owns a native action/menu.
+        // Calling readiness here would mistake that action's busy state for an
+        // unsafe logging boundary. Revalidate geometry only at the clean return.
+        return resourceWaiting==nearbyLoggingWait.owner() && resourceWaitGrant==nearbyLoggingWait.grant()
+            && c.profile().loggingRunActive && c.profile().enabled(Feature.LOGGING)
+            && Objects.equals(c.profile().loggingPlots,nearbyLoggingWait.plots())
+            && Objects.equals(c.profile().loggingRemainingPlots,nearbyLoggingWait.remaining())
+            && Objects.equals(c.profile().loggingReplantingPlots,nearbyLoggingWait.replanting())
+            && Objects.equals(c.profile().nextEligibleDay.get(LoggingRules.DUE_KEY),nearbyLoggingWait.due());
     }
     private boolean nearbyOwnershipValid(Context c) {
         return mode==RunMode.CONTINUOUS && c.session().oneShotFeature==null
             && c.profile()==nearbyProfile && c.session()==nearbySession && c.world()==nearbyWorld
             && c.world().tick()>=nearbyStarted && c.profile().enabled(nearbyOrigin.feature())
-            && c.profile().enabled(Feature.STARFRUIT) && loggingAllowsNearby(c);
+            && c.profile().enabled(Feature.STARFRUIT) && nearbyLoggingOwnershipValid(c);
     }
     private void tryNearbyWork(Context c) {
         if (nearbyOrigin!=null || mode!=RunMode.CONTINUOUS || c.session().oneShotFeature!=null
             || c.world().tick()<nearbyRetryAt || !c.profile().enabled(Feature.STARFRUIT)
-            || !loggingAllowsNearby(c) || !resourceBoundary(c) || c.actions().pauseReason()!=null
+            || !resourceBoundary(c) || c.actions().pauseReason()!=null
             || active==null || active.feature()!=Feature.WINE && active.feature()!=Feature.PRESERVES && active.feature()!=Feature.SLEEP
-            || !active.canYieldForNearbyWork(c) || !c.navigation().canYieldTravel(c)) return;
+            || !active.canYieldForNearbyWork(c) || !c.navigation().canYieldTravel(c) || !loggingAllowsNearby(c)) return;
         AutomationModule fruit=modules.stream().filter(m->m.feature()==Feature.STARFRUIT).findFirst().orElse(null);
         if (fruit==null || blockedThisSweep.containsKey(fruit)) return;
         DeferredRetry wait=deferred.get(fruit);
         if (wait!=null && c.world().tick()<wait.at() || !fruit.hasNearbyWork(c)) return;
+        nearbyLoggingWait=resourceWaiting==null ? null : new NearbyLoggingWait(resourceWaiting,resourceWaitGrant,
+            List.copyOf(c.profile().loggingPlots),List.copyOf(c.profile().loggingRemainingPlots),
+            List.copyOf(c.profile().loggingReplantingPlots),c.profile().nextEligibleDay.get(LoggingRules.DUE_KEY));
         nearbyOrigin=active;nearbyProfile=c.profile();nearbySession=c.session();nearbyWorld=c.world();nearbyStarted=c.world().tick();
         active=fruit;c.actions().stopMovement();c.navigation().reset();
         status="평지 이동을 잠시 멈추고 근처 익은 스타프루트를 모아 수확·보관";
     }
     private void clearNearby() {
-        nearbyOrigin=null;nearbyProfile=null;nearbySession=null;nearbyWorld=null;nearbyStarted=0;
+        nearbyOrigin=null;nearbyProfile=null;nearbySession=null;nearbyWorld=null;nearbyLoggingWait=null;nearbyStarted=0;
     }
     private boolean pauseForActions(Context c) {
         String reason=c.actions().pauseReason();
@@ -275,7 +300,7 @@ public final class AutomationEngine {
             || module.resourceReadiness(c)!=AutomationModule.ResourceReadiness.WAITING) {
             stop(c,State.PAUSED,"벌목 대기 조건이 불확실해 미완료 작업을 보존했습니다: "+result.message()); return false;
         }
-        resourceWaiting=module; resourceWaitMessage=result.message(); resourceCheckAt=c.world().tick()+1200;
+        resourceWaiting=module; resourceWaitGrant=new Object(); resourceWaitMessage=result.message(); resourceCheckAt=c.world().tick()+1200;
         c.actions().stopMovement(); c.navigation().reset();
         // Keep the module's confirmed PLANT/visibility-wait phase, never an action ticket or outcome.
         return true;
@@ -339,7 +364,7 @@ public final class AutomationEngine {
             && !c.world().menu().container() && c.world().menu().carried().empty()
             && c.profile().loggingHotbarLease==null && !MachineOutputLedger.hasPending(c);
     }
-    private void clearResourceWait() { resourceWaiting=null; resourceWaitMessage=null; resourceCheckAt=0; }
+    private void clearResourceWait() { resourceWaiting=null; resourceWaitGrant=null; resourceWaitMessage=null; resourceCheckAt=0; }
     private void suspendDisabledLoggingAtYield(Context c,AutomationModule module) {
         // OFF may arrive while an ordinary module owns work after a resource
         // wait. Both an actual deferral and a normal production cooldown can

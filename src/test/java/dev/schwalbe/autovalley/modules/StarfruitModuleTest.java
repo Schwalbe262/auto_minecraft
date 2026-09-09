@@ -65,6 +65,118 @@ class StarfruitModuleTest {
         assertEquals(List.of(new Pos(50,0,0)),f.profile.loggingRemainingPlots);
         assertEquals(f.profile.loggingRemainingPlots,f.profile.loggingReplantingPlots);assertTrue(engine.running());
     }
+    @Test void grantedLoggingWaitAllowsFruitStorageAndReturnsToTheExactWinePreservesOrSleepInstance() {
+        for(Feature feature:List.of(Feature.WINE,Feature.PRESERVES,Feature.SLEEP)) {
+            Fixture f=new Fixture();f.travelYield=true;TravelJob original=new TravelJob(feature);LoggingWaitJob logging=new LoggingWaitJob();
+            AutomationEngine engine=resourceWaitEngine(f,original,logging);
+            Object grant=engineField(engine,"resourceWaitGrant");Object deadline=engineField(engine,"resourceCheckAt");
+            List<Pos> remaining=List.copyOf(f.profile.loggingRemainingPlots);int resets=original.resets;
+            f.engineTick(engine);assertSame(original,engineField(engine,"nearbyOrigin"));assertSame(f.module,engineField(engine,"active"));
+            for(int i=0;i<150 && engineField(engine,"nearbyOrigin")!=null;i++)f.engineTick(engine);
+            assertTrue(engine.running(),engine.status());assertEquals(1,f.stored);assertEquals(List.of(FRUIT),f.clicked());
+            assertSame(original,engineField(engine,"active"));assertEquals(2,original.ticks);assertEquals(resets,original.resets);
+            assertSame(logging,engineField(engine,"resourceWaiting"));assertSame(grant,engineField(engine,"resourceWaitGrant"));
+            assertEquals(deadline,engineField(engine,"resourceCheckAt"));assertEquals(1,logging.ticks);
+            assertEquals(remaining,f.profile.loggingRemainingPlots);assertTrue(f.profile.loggingReplantingPlots.isEmpty());
+            assertEquals(99L,f.profile.nextEligibleDay.get(LoggingRules.DUE_KEY));assertTrue(f.profile.loggingRunActive);
+            assertFalse(f.open);assertTrue(f.cursor.empty());f.engineTick(engine);assertEquals(3,original.ticks);
+        }
+    }
+    @Test void aFruitNativePendingReplyDoesNotRecheckOrPreemptItsGrantedLoggingWait() {
+        Fixture f=new Fixture();f.travelYield=true;TravelJob original=new TravelJob(Feature.WINE);LoggingWaitJob logging=new LoggingWaitJob();
+        AutomationEngine engine=resourceWaitEngine(f,original,logging);f.engineTick(engine);
+        for(int i=0;i<30&&!f.busy();i++){engine.tick(f.context);f.now++;}
+        assertTrue(f.busy());int checks=logging.checks,sent=f.submitted.size();
+        f.now+=1300; // Even an expired resource-wait timer cannot interrupt an owned reply.
+        for(int i=0;i<20;i++){engine.tick(f.context);f.now++;}
+        assertTrue(engine.running(),engine.status());assertEquals(checks,logging.checks);assertEquals(sent,f.submitted.size());
+        assertEquals(1,logging.ticks);assertEquals(2,original.ticks);assertSame(logging,engineField(engine,"resourceWaiting"));
+        f.complete(true);
+        for(int i=0;i<150&&engineField(engine,"nearbyOrigin")!=null;i++)f.engineTick(engine);
+        assertSame(original,engineField(engine,"active"));assertEquals(1,f.stored);assertTrue(logging.checks>checks);
+    }
+    @Test void anUnsafeTravelBoundaryOrAnUngrantableLoggingWaitCannotStartTheDetour() {
+        for(String unsafe:List.of("busy","fence","lease","cursor","container","ready","unsafe","navigation")) {
+            Fixture f=new Fixture();f.travelYield=true;TravelJob original=new TravelJob(Feature.WINE);LoggingWaitJob logging=new LoggingWaitJob();
+            AutomationEngine engine=resourceWaitEngine(f,original,logging);
+            switch(unsafe) {
+                case "busy" -> f.externalBusy=true;
+                case "fence" -> f.actionFence="unconfirmed native action";
+                case "lease" -> f.profile.loggingHotbarLease=new LoggingHotbarLease(9,2,f.food,"a".repeat(64),LoggingHotbarLease.Stage.PARKED);
+                case "cursor" -> f.cursor=f.product(1);
+                case "container" -> f.open=true;
+                case "ready" -> logging.readiness=AutomationModule.ResourceReadiness.READY;
+                case "unsafe" -> logging.readiness=AutomationModule.ResourceReadiness.UNSAFE;
+                case "navigation" -> f.travelYield=false;
+                default -> throw new AssertionError(unsafe);
+            }
+            engine.tick(f.context);f.now++;
+            assertNull(engineField(engine,"nearbyOrigin"),unsafe);assertTrue(f.submitted.isEmpty(),unsafe);
+            assertTrue(f.profile.loggingRunActive);assertEquals(1,f.profile.loggingRemainingPlots.size());
+        }
+    }
+    @Test void changedLoggingGrantOrDurableOwnershipStopsBeforeAnyNewFruitAction() throws Exception {
+        for(String changed:List.of("grant","owner","off","inactive","remaining","replant","registration","due","lease")) {
+            Fixture f=new Fixture();f.travelYield=true;TravelJob original=new TravelJob(Feature.WINE);LoggingWaitJob logging=new LoggingWaitJob();
+            AutomationEngine engine=resourceWaitEngine(f,original,logging);f.engineTick(engine);
+            switch(changed) {
+                case "grant" -> setEngineField(engine,"resourceWaitGrant",new Object());
+                case "owner" -> setEngineField(engine,"resourceWaiting",new LoggingWaitJob());
+                case "off" -> f.profile.enabled.put(Feature.LOGGING,false);
+                case "inactive" -> f.profile.loggingRunActive=false;
+                case "remaining" -> f.profile.loggingRemainingPlots.clear();
+                case "replant" -> f.profile.loggingReplantingPlots.add(new Pos(50,0,0));
+                case "registration" -> f.profile.loggingPlots.clear();
+                case "due" -> f.profile.nextEligibleDay.put(LoggingRules.DUE_KEY,100L);
+                case "lease" -> f.profile.loggingHotbarLease=new LoggingHotbarLease(9,2,f.food,"a".repeat(64),LoggingHotbarLease.Stage.PARKED);
+                default -> throw new AssertionError(changed);
+            }
+            engine.tick(f.context);
+            assertEquals(AutomationEngine.State.PAUSED,engine.state(),changed);assertTrue(f.submitted.isEmpty(),changed);
+            assertEquals(2,original.ticks);assertEquals(1,logging.ticks);
+        }
+    }
+    @Test void loggingWaitGeometryIsRevalidatedOnlyAfterTheFruitPassReturnsToACleanBoundary() {
+        Fixture f=new Fixture();f.travelYield=true;TravelJob original=new TravelJob(Feature.WINE);LoggingWaitJob logging=new LoggingWaitJob();
+        AutomationEngine engine=resourceWaitEngine(f,original,logging);f.engineTick(engine);int checks=logging.checks;
+        logging.readiness=AutomationModule.ResourceReadiness.UNSAFE;
+        for(int i=0;i<150&&engine.running();i++)f.engineTick(engine);
+        assertEquals(1,f.stored);assertEquals(AutomationEngine.State.PAUSED,engine.state());
+        assertTrue(logging.checks>checks);assertEquals(2,original.ticks);assertEquals(1,logging.ticks);
+        assertTrue(f.profile.loggingRunActive);assertEquals(1,f.profile.loggingRemainingPlots.size());
+    }
+    @Test void activeLoggingAndLoggingOneShotStillCannotGrantNearbyPreemption() {
+        for(boolean once:List.of(false,true)) {
+            Fixture f=new Fixture();f.travelYield=true;TravelJob original=new TravelJob(Feature.WINE);LoggingWaitJob logging=new LoggingWaitJob();
+            AutomationEngine engine=resourceWaitEngine(f,original,logging);
+            if(once)engine.startOnce(f.context,Feature.LOGGING);
+            else {logging.waiting=false;engine.start(f.context);}
+            for(int i=0;i<30;i++)f.engineTick(engine);
+            assertTrue(engine.running(),engine.status());assertTrue(f.submitted.isEmpty());
+            assertNull(engineField(engine,"nearbyOrigin"));assertEquals(1,original.ticks);
+        }
+    }
+    private static AutomationEngine resourceWaitEngine(Fixture f,TravelJob original,LoggingWaitJob logging) {
+        f.profile.enabled.put(Feature.LOGGING,true);f.profile.enabled.put(original.feature(),true);f.profile.loggingRunActive=true;
+        Pos corner=new Pos(50,0,0);f.profile.loggingPlots.add(new LoggingPlot("waiting",corner));
+        f.profile.loggingRemainingPlots.add(corner);f.profile.nextEligibleDay.put(LoggingRules.DUE_KEY,99L);
+        AutomationEngine engine=new AutomationEngine(List.of(original,logging,f.module));engine.start(f.context);f.engineTick(engine);
+        assertEquals(1,logging.ticks);assertEquals(1,original.ticks);assertSame(logging,engineField(engine,"resourceWaiting"));return engine;
+    }
+    private static final class LoggingWaitJob implements AutomationModule {
+        int ticks,checks;boolean waiting=true;ResourceReadiness readiness=ResourceReadiness.WAITING;
+        public Feature feature(){return Feature.LOGGING;}public int priority(){return 80;}
+        public WorkResult tick(Context c){ticks++;return waiting?WorkResult.resourceWait("verified hidden registered tree"):WorkResult.busy("active logging");}
+        public ResourceReadiness resourceReadiness(Context c){checks++;assertFalse(c.actions().busy(),"Never query logging readiness during another job's native pending action");return readiness;}
+        public void reset(){}
+    }
+    private static Object engineField(AutomationEngine engine,String name) {
+        try{var field=AutomationEngine.class.getDeclaredField(name);field.setAccessible(true);return field.get(engine);}
+        catch(ReflectiveOperationException failure){throw new AssertionError(failure);}
+    }
+    private static void setEngineField(AutomationEngine engine,String name,Object value) throws Exception {
+        var field=AutomationEngine.class.getDeclaredField(name);field.setAccessible(true);field.set(engine,value);
+    }
     @Test void stopFeatureDisableIdentityChangeAndLoggingOwnershipChangeClearSuspensionWithoutClicks() {
         for(int change=0;change<7;change++) {
             Fixture f=new Fixture();f.travelYield=true;TravelJob original=new TravelJob(Feature.WINE);
