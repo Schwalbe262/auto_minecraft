@@ -72,13 +72,119 @@ class TomatoOverflowStorageTest {
         Fixture f=new Fixture();for(int i=0;i<32;i++)f.store(1728);for(int i=9;i<35;i++)f.inv[i]=tomato(i%4,64);
         assertEquals(WorkResult.State.IDLE,f.run().state());assertEquals(1664,f.count(f.bin));assertEquals(33,f.opens.size());assertEquals(0,f.held());
     }
+    @Test void secondHaulReusesAll32ConfirmedBarrelsWithoutAnotherWarehouseVisit() {
+        Fixture f=new Fixture();for(int i=0;i<32;i++)f.store(1728);f.inv[9]=tomato(0,64);
+        assertEquals(WorkResult.State.IDLE,f.run().state());
+        TomatoStockCache.View first=f.session.tomatoStockCache.reusable(f.c).orElseThrow();
+        f.module.reset();f.opens.clear();f.dayTime+=24000;f.inv[9]=tomato(2,64);
+        assertEquals(WorkResult.State.IDLE,f.run().state());assertEquals(List.of(f.bin),f.opens);
+        assertEquals(128,f.count(f.bin));assertEquals(first.fullSurveyTick(),f.session.tomatoStockCache.reusable(f.c).orElseThrow().fullSurveyTick());
+    }
+    @Test void expiredCacheDoesNoIdleTravelAndRefreshesInsideTheNextActualHaul() {
+        Fixture f=new Fixture();Pos a=f.store(1728),b=f.store(1728);f.inv[9]=tomato(0,64);f.run();
+        f.module.reset();f.opens.clear();f.routes.clear();f.dayTime+=3*24000;
+        assertEquals(WorkResult.State.IDLE,f.run().state());assertTrue(f.opens.isEmpty());assertTrue(f.routes.isEmpty());
+        f.inv[9]=tomato(1,64);
+        assertEquals(WorkResult.State.IDLE,f.run().state());assertEquals(1,Collections.frequency(f.opens,a));
+        assertEquals(1,Collections.frequency(f.opens,b));assertEquals(1,Collections.frequency(f.opens,f.bin));
+        assertEquals(3,f.session.tomatoStockCache.reusable(f.c).orElseThrow().fullSurveyDay());
+    }
+    @Test void nativeDepositReplacesCachedSlotsWithoutRenewingWholeWarehouseDate() {
+        Fixture f=new Fixture();Pos a=f.store(100);f.inv[9]=tomato(1,64);f.run();
+        TomatoStockCache.View first=f.session.tomatoStockCache.reusable(f.c).orElseThrow();
+        assertEquals(164,first.total());f.module.reset();f.opens.clear();f.dayTime+=24000;f.inv[9]=tomato(2,32);
+        assertEquals(WorkResult.State.IDLE,f.run().state());assertEquals(List.of(a),f.opens);
+        TomatoStockCache.View after=f.session.tomatoStockCache.reusable(f.c).orElseThrow();
+        assertEquals(196,after.total());assertEquals(first.fullSurveyTick(),after.fullSurveyTick());assertEquals(first.fullSurveyDay(),after.fullSurveyDay());
+        assertArrayEquals(new int[]{100,64,32,0},after.qualityCounts());
+    }
+    @Test void dirtyBarrelRequiresANewFullSurveyRatherThanReusingRemainingCleanBarrels() {
+        Fixture f=new Fixture();Pos a=f.store(1728),b=f.store(1728);f.inv[9]=tomato(0,64);f.run();
+        f.module.reset();f.opens.clear();f.session.tomatoStockCache.invalidate(a);f.inv[9]=tomato(2,64);
+        assertEquals(WorkResult.State.IDLE,f.run().state());assertEquals(1,Collections.frequency(f.opens,a));
+        assertEquals(1,Collections.frequency(f.opens,b));assertEquals(3,f.opens.size());
+    }
+    @Test void fiftyRemainingPermitCanShipAnActualSixtyFourStackWithoutWarehouseReturn() {
+        Fixture f=new Fixture();Pos a=f.store(1728);for(int i=9;i<23;i++)f.inv[i]=tomato(0,64); // Original batch: 896.
+        f.afterTransfer=()->{if(f.sales.size()==13){f.inv[22]=tomato(0,14);f.inv[23]=tomato(0,64);}};
+        assertEquals(WorkResult.State.IDLE,f.run().state());assertEquals(910,f.count(f.bin));assertEquals(0,f.held());
+        assertEquals(List.of(a,f.bin),f.opens);assertEquals(15,f.sales.size());
+        TomatoSalePermit first=f.sales.get(0),last=f.sales.get(14);
+        assertEquals(896,first.inventoryLimit());assertEquals(64,last.inventoryLimit());
+        assertEquals(first.verifiedTick(),last.verifiedTick());assertEquals(first.gameDay(),last.gameDay());
+        assertEquals(first.cacheEpoch(),last.cacheEpoch());assertEquals(first.storages(),last.storages());
+    }
+    @Test void completelyConsumedPermitMayCoverNewActualPickupButNeverMovesAnInventedQuantity() {
+        Fixture f=new Fixture();Pos a=f.store(1728);f.inv[9]=tomato(0,64);
+        f.afterTransfer=()->{if(f.sales.size()==1)f.inv[9]=tomato(3,12);};
+        assertEquals(WorkResult.State.IDLE,f.run().state());assertEquals(76,f.count(f.bin));assertEquals(List.of(a,f.bin),f.opens);
+        assertEquals(12,f.sales.get(1).inventoryLimit());assertEquals(f.sales.get(0).verifiedTick(),f.sales.get(1).verifiedTick());
+    }
+    @Test void repeatedGroundPickupsHaveAnExplicitFinitePermitRenewalBudget() {
+        Fixture f=new Fixture();f.store(1728);f.inv[9]=tomato(0,1);f.afterTransfer=()->f.inv[9]=tomato(0,1);
+        assertEquals(WorkResult.State.BLOCKED,f.run().state());assertEquals(1+TomatoOverflowStorageModule.MAX_PERMIT_RENEWALS,f.sales.size());
+        assertEquals(1,f.held());assertEquals(2,f.opens.size());assertNull(f.session.tomatoSalePermit);assertNull(f.open);
+    }
+    @Test void renewedPermitCannotResetHardDeadlineDayEpochPercentOrRegistration() {
+        for(String change:List.of("deadline","day","epoch","percent","registration","reserve","permit")) {
+            Fixture f=new Fixture();Pos a=f.store(1728);f.inv[9]=tomato(0,64);
+            f.afterTransfer=()->{
+                f.inv[9]=tomato(1,64);
+                switch(change) {
+                    case "deadline" -> f.tick=f.sales.get(0).verifiedTick()+1200;
+                    case "day" -> f.dayTime+=24000;
+                    case "epoch" -> f.session.tomatoStockCache.invalidate(a);
+                    case "percent" -> f.profile.tomatoStorageLimitPercent=80;
+                    case "registration" -> f.store(1728);
+                    case "permit" -> f.permit(); // A different/legacy permission is not this original batch.
+                    case "reserve" -> {Arrays.fill(f.contents.get(a),ItemData.EMPTY);assertTrue(f.session.tomatoStockCache.observeVerified(f.c,a,List.of(f.contents.get(a))));}
+                }
+            };
+            assertEquals(WorkResult.State.BLOCKED,f.run().state(),change);assertEquals(1,f.sales.size(),change);
+            assertEquals(64,f.held(),change);assertEquals(2,f.opens.size(),change);assertNull(f.session.tomatoSalePermit,change);
+        }
+    }
+    @Test void freshCacheIsOnlyATravelHintUntilAllStoresLoadBeforeShippingOpen() {
+        for(boolean loadOnArrival:List.of(true,false)) {
+            Fixture f=new Fixture();Pos a=f.store(1728);f.inv[9]=tomato(0,64);f.run();
+            f.module.reset();f.opens.clear();f.routes.clear();f.inv[9]=tomato(2,64);f.unloaded=a;
+            f.onRoute=()->{if(loadOnArrival)f.unloaded=null;};
+            assertEquals(loadOnArrival?WorkResult.State.IDLE:WorkResult.State.BLOCKED,f.run().state());
+            assertEquals(List.of(f.bin),f.routes);assertEquals(loadOnArrival?List.of(f.bin):List.of(),f.opens);
+            assertEquals(loadOnArrival?0:64,f.held());
+        }
+    }
+    @Test void failedOrCancelledDepositCannotLeavePreviouslyReusableStockProof() {
+        for(boolean reset:List.of(true,false)) {
+            Fixture f=new Fixture();f.store(100);f.inv[9]=tomato(0,64);f.run();f.module.reset();f.inv[9]=tomato(1,64);
+            f.afterTransfer=()->f.outcome=new ActionOutcome(ActionOutcome.State.PENDING,"");
+            for(int i=0;i<20 && !f.busy();i++){f.tick++;f.module.tick(f.c);}assertTrue(f.busy());
+            if(reset)f.module.reset();
+            else {f.outcome=new ActionOutcome(ActionOutcome.State.FAILED,"unconfirmed");assertEquals(WorkResult.State.BLOCKED,f.run().state());}
+            assertTrue(f.session.tomatoStockCache.reusable(f.c).isEmpty());assertEquals(0,f.count(f.bin));
+        }
+    }
+    @Test void invalidatedCompleteSurveyCannotFallBackToALegacySalePermit() {
+        Fixture f=new Fixture();Pos a=f.store(1728);f.store(1728);f.inv[9]=tomato(1,64);
+        for(int i=0;i<30 && (f.opens.size()!=2 || f.open!=null);i++){f.tick++;assertEquals(WorkResult.State.BUSY,f.module.tick(f.c).state());}
+        assertEquals(2,f.opens.size());assertNull(f.open);f.session.tomatoStockCache.invalidate(a);
+        assertEquals(WorkResult.State.BLOCKED,f.run().state());assertEquals(64,f.held());assertEquals(0,f.sales.size());
+        assertNull(f.session.tomatoSalePermit);assertTrue(f.session.tomatoStockCache.reusable(f.c).isEmpty());
+    }
+    @Test void nominalTransferSuccessWithoutPositiveNativeCountInvalidatesTheCache() {
+        Fixture f=new Fixture();Pos a=f.store(100);f.inv[9]=tomato(0,64);f.run();f.module.reset();f.inv[9]=tomato(1,64);
+        f.afterTransfer=()->f.outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"no quantity proof");
+        assertEquals(WorkResult.State.BLOCKED,f.run().state());assertTrue(f.session.tomatoStockCache.reusable(f.c).isEmpty());
+        assertEquals(228,f.count(a),"fixture applied real contents, but the module must not infer the missing ACK");assertTrue(f.sales.isEmpty());
+    }
 
     static final class Fixture implements WorldAccess,ActionPort,Navigation {
         final Profile profile=new Profile();final SessionState session=new SessionState();
         final ItemData[] inv=new ItemData[36];final Map<Pos,ItemData[]> contents=new LinkedHashMap<>();
-        final List<Pos> opens=new ArrayList<>();final Pos bin=new Pos(0,64,5);Pos open,unloaded;
+        final List<Pos> opens=new ArrayList<>(),routes=new ArrayList<>();final List<TomatoSalePermit> sales=new ArrayList<>();
+        final Pos bin=new Pos(0,64,5);Pos open,unloaded;Runnable afterTransfer=()->{},onRoute=()->{};
         final Context c=new Context(this,this,this,profile,session,()->{});final TomatoStorageModule module=new TomatoStorageModule();
-        long tick,id;boolean holdOpen;ActionOutcome outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
+        long tick,id,dayTime=5000;boolean holdOpen;ActionOutcome outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"");
         Fixture(){Arrays.fill(inv,ItemData.EMPTY);contents.put(bin,empty());profile.pois.add(new Poi(bin,PoiKind.SHIPPING_BIN,"sell",null));}
         ItemData[] empty(){ItemData[] items=new ItemData[27];Arrays.fill(items,ItemData.EMPTY);return items;}
         Pos store(int count){Pos p=new Pos(contents.size(),64,0);ItemData[] items=empty();for(int n=0;count>0;n++){int moved=Math.min(count,64);items[n]=tomato(0,moved);count-=moved;}
@@ -87,7 +193,7 @@ class TomatoOverflowStorageTest {
         int held(){return Arrays.stream(inv).filter(i->i.is(ItemData.TOMATO)).mapToInt(ItemData::count).sum();}
         void permit(){session.tomatoSalePermit=new TomatoSalePermit(64,0,0,90,1728,1728,Set.of(profile.pois(PoiKind.TOMATO_CHEST).get(0).pos()));}
         WorkResult run(){for(int i=0;i<1100;i++){tick++;WorkResult r=module.tick(c);if(r.state()!=WorkResult.State.BUSY)return r;}throw new AssertionError("did not finish");}
-        public long tick(){return tick;}public long dayTime(){return 5000;}public boolean loaded(Pos p){return !p.equals(unloaded);}
+        public long tick(){return tick;}public long dayTime(){return dayTime;}public boolean loaded(Pos p){return !p.equals(unloaded);}
         public PlayerState player(){return new PlayerState(.5,64,.5,0,0,true,false,20,20,0,true,true);}
         public BlockData block(Pos p){return new BlockData(p,p.equals(bin)?"society:smart_shipping_bin":"minecraft:barrel",Map.of());}
         public boolean canStand(Pos p){return true;}public boolean canTraverse(Pos a,Pos b){return true;}
@@ -100,14 +206,14 @@ class TomatoOverflowStorageTest {
             if(action instanceof Action.UseBlock use){open=use.pos();opens.add(open);if(holdOpen)outcome=new ActionOutcome(ActionOutcome.State.PENDING,"");}
             else if(action instanceof Action.CloseContainer)open=null;
             else if(action instanceof Action.QuickMove move){ItemSlot source=menu().slot(move.slot());assertTrue(source.player(),"never withdraw reserves");assertTrue(source.item().is(ItemData.TOMATO));
-                if(open.equals(bin))assertTrue(TomatoSaleRules.permitted(source.item(),c));
+                if(open.equals(bin)){assertTrue(TomatoSaleRules.permitted(source.item(),c));sales.add(session.tomatoSalePermit);}
                 ItemData item=source.item();int left=item.count();ItemData[] dest=contents.get(open);
                 for(int pass=0;pass<2;pass++)for(int i=0;i<27 && left>0;i++){ItemData old=dest[i];if(pass==0 && (old.empty() || !ModuleSupport.same(old,item)) || pass==1 && !old.empty())continue;
                     int before=old.empty()?0:old.count(),moved=Math.min(left,64-before);if(moved>0){dest[i]=tomato(item.quality(),before+moved);left-=moved;}}
                 int moved=item.count()-left;assertTrue(moved>0);inv[source.inventoryIndex()]=left==0?ItemData.EMPTY:tomato(item.quality(),left);
-                if(open.equals(bin))TomatoSaleRules.consume(moved,c);outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"native acknowledged transfer",moved);
+                if(open.equals(bin))TomatoSaleRules.consume(moved,c);outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"native acknowledged transfer",moved);afterTransfer.run();
             }else throw new AssertionError(action);return ++id;}
         public ActionOutcome outcome(long ticket){return outcome;}public void move(Movement m){throw new AssertionError();}public void stopMovement(){}public void cancel(){}
-        public Navigation.Result moveTo(Pos p,double reach,Context c){return Navigation.Result.ARRIVED;}public void reset(){}
+        public Navigation.Result moveTo(Pos p,double reach,Context c){routes.add(p);onRoute.run();return Navigation.Result.ARRIVED;}public void reset(){}
     }
 }

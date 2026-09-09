@@ -21,6 +21,7 @@ public final class ClientRuntime {
     private final MinecraftWorld world=new MinecraftWorld();
     private final ClientRecorder recorder=new ClientRecorder(world,this::notifyUser);
     private final ServerObservations observations=new ServerObservations();
+    private final ManualTomatoStockTracker manualTomatoStock=new ManualTomatoStockTracker();
     private final MinecraftActions actions=new MinecraftActions(world,observations);
     private final LocalNavigator navigator=new LocalNavigator();
     private final HarvestModule harvest=new HarvestModule();
@@ -230,6 +231,19 @@ public final class ClientRuntime {
     }
     /** Called before manual item interactions, including while OFF; a later count is no longer causal evidence. */
     public void manualOutputInteraction() { MachineOutputLedger.invalidateLiveEvidence(context); }
+    /** Vanilla block-use target, not keyboard interception or an automation-generated click. */
+    public void manualStockContainerUse() {
+        if(mc.player==null || mc.screen!=null)return;
+        Pos target=null;
+        if(mc.hitResult instanceof net.minecraft.world.phys.BlockHitResult hit) {
+            var pos=hit.getBlockPos();target=new Pos(pos.getX(),pos.getY(),pos.getZ());
+        }
+        manualTomatoStock.use(context,target);
+    }
+    /** A manual slot/key event can take over an automation-owned menu while OFF. */
+    public void manualStockContainerInteraction() {
+        if(mc.player!=null)manualTomatoStock.interaction(context,world.menu(),actions.ownedContainerPosition());
+    }
     public void openSettings() { pause("설정 중"); mc.setScreen(new ValleyScreen()); }
     public void toggleFeature(Feature feature) { pause("기능 설정 변경"); profile.enabled.put(feature,!profile.enabled(feature)); saveProfile(); }
     private LoggingLeafSettings.Boundary loggingLeafSettingBoundary() {
@@ -343,6 +357,9 @@ public final class ClientRuntime {
         // A manual menu may move an unrelated bottle before the next observation. Its
         // opening permanently invalidates live count evidence; closing it cannot restore it.
         boolean managedContainer=actions.ownsContainer() || actions.openingContainer();
+        // F8/OFF alone cannot mutate a still-owned menu. Explicit manual slot/key
+        // input uses interaction() above and invalidates even while this poll is owned.
+        manualTomatoStock.menu(context,world.menu(),managedContainer,actions.ownedContainerPosition());
         boolean manualScreen=mc.screen!=null && !(mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen)
             && !(mc.screen instanceof ValleyScreen) && !mc.player.isSleeping() && !managedContainer;
         if (manualScreen || world.menu().container() && !managedContainer) manualOutputInteraction();

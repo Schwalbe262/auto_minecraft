@@ -11,6 +11,162 @@ class LogisticsTest {
     private static ItemData preserves(int count) { return new ItemData(ItemData.PRESERVES,count,0,null,false,99); }
     private static ItemData wine(int year,int count,int grade) { return new ItemData(ItemData.WINE,count,grade,year,false,999); }
 
+    @Test void rememberedTomatoSurveyChoosesLargestGradeAndOnlyOpensTheActualWithdrawalSource() {
+        for (Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) {
+            Fixture f=new Fixture();f.equipHoe();
+            stockBarrel(f,0,tomato(0,12));stockBarrel(f,1,tomato(1,15));
+            Pos largest=stockBarrel(f,2,tomato(2,30));stockBarrel(f,3,tomato(3,9));
+            rememberStock(f);
+            f.machine(feature==Feature.WINE?PoiKind.WINE_KEG:PoiKind.PRESERVES_JAR,20,false,false,true);
+            assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(feature),120).state());
+            assertEquals(Map.of(largest,1),f.opens,"a fresh survey is advisory; the chosen barrel is still opened");
+            assertEquals(List.of(largest),f.tomatoWithdrawalSources);assertEquals(List.of(2),f.usedGrades);
+            assertEquals(3,f.consumed);assertNull(f.open);
+            TomatoStockCache.View view=f.session.tomatoStockCache.reusable(f.context()).orElseThrow();
+            assertEquals(0,view.qualityCounts()[2],"withdrawal ACK replaces the snapshot, never guesses a decrement");
+            assertEquals(0,view.fullSurveyDay());
+        }
+    }
+
+    @Test void sharedTomatoSurveySurvivesMachineResetAndIsReusedByPreservesOnTheNextDay() {
+        Fixture f=new Fixture();f.equipHoe();Pos wineSource=stockBarrel(f,0,tomato(2,6));
+        Pos preserveSource=stockBarrel(f,1,tomato(1,3));rememberStock(f);
+        f.machine(PoiKind.WINE_KEG,20,false,false,false);f.machine(PoiKind.WINE_KEG,21,false,false,false);
+        f.machine(PoiKind.PRESERVES_JAR,22,false,false,true);
+        MachineModule wine=new MachineModule(Feature.WINE);
+        assertEquals(WorkResult.State.IDLE,f.run(wine,150).state());wine.reset();
+        f.dayTime+=24000;
+        assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.PRESERVES),120).state());
+        assertEquals(Map.of(wineSource,1,preserveSource,1),f.opens);
+        assertEquals(List.of(2,2,1),f.usedGrades);assertEquals(9,f.consumed);
+        assertEquals(0,f.session.tomatoStockCache.reusable(f.context()).orElseThrow().fullSurveyDay(),
+            "touching the source tomorrow must not postpone the periodic whole survey");
+    }
+
+    @Test void expiredTomatoSurveyWaitsForHeldIngredientsToRunOutThenCountsEverySourceOnce() {
+        Fixture f=new Fixture();f.equipHoe();
+        Pos a=stockBarrel(f,0,tomato(1,3)),b=stockBarrel(f,1,tomato(2,6)),empty=stockBarrel(f,2);
+        rememberStock(f);f.dayTime+=3*24000;f.inventory[9]=tomato(0,3);
+        f.machine(PoiKind.WINE_KEG,20,false,false,false);f.machine(PoiKind.WINE_KEG,21,false,false,false);
+        MachineModule module=new MachineModule(Feature.WINE);
+        for (int n=0;n<80 && f.machineClicks()==0;n++) {
+            assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());f.advance();
+            assertTrue(f.opens.isEmpty(),"expiry alone must not divert a funded production batch");
+        }
+        assertEquals(1,f.machineClicks());
+        assertEquals(WorkResult.State.IDLE,f.run(module,180).state());
+        assertEquals(List.of(0,2),f.usedGrades);assertEquals(Map.of(a,1,b,2,empty,1),f.opens);
+        assertEquals(3,f.session.tomatoStockCache.reusable(f.context()).orElseThrow().fullSurveyDay());
+    }
+
+    @Test void tomatoSurveyIsNotFreshUntilAllRegisteredBarrelsAndTheLastCloseAreAcknowledged() {
+        Fixture f=new Fixture();f.equipHoe();
+        for (int i=0;i<32;i++) stockBarrel(f,i,i==0?new ItemData[]{tomato(2,6)}:new ItemData[0]);
+        f.machine(PoiKind.WINE_KEG,60,false,false,false);
+        MachineModule module=new MachineModule(Feature.WINE);boolean finalClose=false;
+        for (int n=0;n<300;n++) {
+            assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+            assertTrue(f.session.tomatoStockCache.reusable(f.context()).isEmpty());
+            if (f.opens.size()==32 && f.action instanceof Action.CloseContainer) { finalClose=true;break; }
+            f.advance();
+        }
+        assertTrue(finalClose);assertEquals(0,f.tomatoWithdrawals);
+        f.advance();assertTrue(f.session.tomatoStockCache.reusable(f.context()).isEmpty());
+        assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+        assertEquals(32,f.session.tomatoStockCache.reusable(f.context()).orElseThrow().contents().size());
+        f.advance();assertEquals(WorkResult.State.IDLE,f.run(module,100).state());
+        assertEquals(33,f.opens.values().stream().mapToInt(Integer::intValue).sum());
+    }
+
+    @Test void interruptedTomatoSurveyDoesNotPublishPartialFreshnessAndRestartCountsAllSources() {
+        Fixture f=new Fixture();f.equipHoe();Pos a=stockBarrel(f,0,tomato(2,6)),b=stockBarrel(f,1);
+        f.machine(PoiKind.WINE_KEG,20,false,false,false);MachineModule module=new MachineModule(Feature.WINE);
+        for (int n=0;n<80;n++) {
+            assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+            if (f.action instanceof Action.CloseContainer) break;
+            f.advance();
+        }
+        assertTrue(f.action instanceof Action.CloseContainer);f.advance();module.reset();
+        assertTrue(f.session.tomatoStockCache.reusable(f.context()).isEmpty());
+        assertEquals(WorkResult.State.IDLE,f.run(module,150).state());
+        assertEquals(Map.of(a,3,b,1),f.opens,"restart repeats the incomplete survey and then opens the actual source");
+        assertTrue(f.session.tomatoStockCache.reusable(f.context()).isPresent());
+    }
+
+    @Test void rememberedSourceNeverAuthorizesTakingAReplacedNonTomatoStack() {
+        Fixture f=new Fixture();f.equipHoe();Pos source=stockBarrel(f,0,tomato(2,12));rememberStock(f);
+        f.chests.get(source)[0]=new ItemData("minecraft:cobblestone",12,0,null,false,99);
+        f.machine(PoiKind.WINE_KEG,20,false,false,false);
+        WorkResult result=f.run(new MachineModule(Feature.WINE),80);
+        assertEquals(WorkResult.State.BLOCKED,result.state());assertTrue(result.message().contains("non-tomato"));
+        assertEquals(Map.of(source,1),f.opens);assertEquals(0,f.tomatoWithdrawals);assertEquals(0,f.machineClicks());
+        assertTrue(f.history.stream().noneMatch(a -> a instanceof Action.QuickMove));
+        assertTrue(f.session.tomatoStockCache.reusable(f.context()).isEmpty());
+    }
+
+    @Test void freshlyOpenedEmptyRememberedSourceIsCorrectedBeforeTryingTheNextVerifiedSource() {
+        Fixture f=new Fixture();f.equipHoe();Pos empty=stockBarrel(f,0,tomato(2,64)),next=stockBarrel(f,1,tomato(2,6));
+        rememberStock(f);Arrays.fill(f.chests.get(empty),ItemData.EMPTY);
+        f.machine(PoiKind.WINE_KEG,20,false,false,false);
+        assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),150).state());
+        assertEquals(Map.of(empty,1,next,1),f.opens);assertEquals(List.of(next),f.tomatoWithdrawalSources);
+        assertEquals(0,f.session.tomatoStockCache.reusable(f.context()).orElseThrow().total());
+        assertEquals(3,f.consumed);
+    }
+
+    @Test void invalidatedTomatoMemoryIsResurveyedOnlyAtTheNextUnfundedHaul() {
+        Fixture f=new Fixture();f.equipHoe();Pos a=stockBarrel(f,0,tomato(1,3)),b=stockBarrel(f,1,tomato(2,6));
+        rememberStock(f);f.session.tomatoStockCache.invalidate(a);f.inventory[9]=tomato(0,3);
+        f.machine(PoiKind.WINE_KEG,20,false,false,false);f.machine(PoiKind.WINE_KEG,21,false,false,false);
+        MachineModule module=new MachineModule(Feature.WINE);
+        for (int n=0;n<80 && f.machineClicks()==0;n++) {
+            assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());f.advance();assertTrue(f.opens.isEmpty());
+        }
+        assertEquals(WorkResult.State.IDLE,f.run(module,150).state());
+        assertEquals(Map.of(a,1,b,2),f.opens);assertEquals(List.of(0,2),f.usedGrades);
+        assertTrue(f.session.tomatoStockCache.reusable(f.context()).isPresent());
+    }
+
+    @Test void legacySourceMenuShapesRemainLocallyUsableButNeverBecomeACompleteWarehouseSurvey() {
+        for (int size:List.of(2,54)) {
+            Fixture f=new Fixture();f.equipHoe();Pos source=stockBarrel(f,0);
+            ItemData[] slots=new ItemData[size];Arrays.fill(slots,ItemData.EMPTY);slots[0]=tomato(2,3);f.chests.put(source,slots);
+            f.machine(PoiKind.WINE_KEG,20,false,false,false);
+            assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),100).state());
+            assertEquals(Map.of(source,2),f.opens);assertEquals(3,f.consumed);
+            assertTrue(f.session.tomatoStockCache.reusable(f.context()).isEmpty());
+        }
+    }
+
+    @Test void failedWithdrawalFromRememberedSourceInvalidatesMemoryWithoutRetryOrAssumedConsumption() {
+        Fixture f=new Fixture();f.equipHoe();Pos source=stockBarrel(f,0,tomato(2,12));rememberStock(f);
+        f.machine(PoiKind.WINE_KEG,20,false,false,false);MachineModule module=new MachineModule(Feature.WINE);
+        for (int n=0;n<80;n++) {
+            assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+            if (f.action instanceof Action.QuickMove) break;
+            f.advance();
+        }
+        assertTrue(f.action instanceof Action.QuickMove);f.action=null;
+        f.outcome=new ActionOutcome(ActionOutcome.State.FAILED,"exact native withdrawal reply was not confirmed");
+        assertEquals(WorkResult.State.BLOCKED,module.tick(f.context()).state());
+        assertEquals(1,f.history.stream().filter(a -> a instanceof Action.QuickMove).count());
+        assertEquals(12,f.chests.get(source)[0].count());assertEquals(0,f.consumed);assertEquals(0,f.machineClicks());
+        assertTrue(f.session.tomatoStockCache.reusable(f.context()).isEmpty());
+    }
+
+    private static Pos stockBarrel(Fixture f,int x,ItemData... items) {
+        Pos pos=f.chest(PoiKind.TOMATO_CHEST,x,null,ItemData.EMPTY);
+        ItemData[] slots=new ItemData[27];Arrays.fill(slots,ItemData.EMPTY);System.arraycopy(items,0,slots,0,items.length);
+        f.chests.put(pos,slots);f.blocks.put(pos,new BlockData(pos,"minecraft:barrel",Map.of("container","true")));
+        return pos;
+    }
+    private static void rememberStock(Fixture f) {
+        TomatoStockCache.SurveyToken token=f.session.tomatoStockCache.beginSurvey(f.context());
+        Map<Pos,List<ItemData>> snapshots=new LinkedHashMap<>();
+        f.profile.pois(PoiKind.TOMATO_CHEST).forEach(p -> snapshots.put(p.pos(),List.copyOf(Arrays.asList(f.chests.get(p.pos())))));
+        assertTrue(f.session.tomatoStockCache.completeSurvey(f.context(),token,snapshots));
+    }
+
     @Test void actualProductionReturnsFromFruitCohortWithItsAllocatedWarehouseStockAndTargetIntact() {
         for(Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) productionFruitDetour(feature,"RETURN");
     }

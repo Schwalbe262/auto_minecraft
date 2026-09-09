@@ -171,7 +171,8 @@ public final class ProfileStore {
             || profile.wineCycleDays<1 || profile.wineCycleDays>28 || profile.preservesCycleDays<1 || profile.preservesCycleDays>28
             || profile.corridorRadius<1 || profile.corridorRadius>8 || profile.interactionTimeoutTicks<20 || profile.interactionTimeoutTicks>600
             || profile.sleepAtTick<12000 || profile.sleepAtTick>23000
-            || profile.tomatoStorageLimitPercent<1 || profile.tomatoStorageLimitPercent>100) throw new IllegalArgumentException("Profile settings outside supported range");
+            || profile.tomatoStorageLimitPercent<1 || profile.tomatoStorageLimitPercent>100
+            || profile.tomatoStockRefreshDays<1 || profile.tomatoStockRefreshDays>28) throw new IllegalArgumentException("Profile settings outside supported range");
         for (var entry:profile.nextEligibleDay.entrySet()) if (entry.getKey()==null || entry.getValue()==null || entry.getValue()<0) throw new IllegalArgumentException("Invalid scheduled date");
         for (Look look:profile.disposalDirections.values()) if (look==null || !Float.isFinite(look.yaw()) || !Float.isFinite(look.pitch()) || Math.abs(look.pitch())>90) throw new IllegalArgumentException("Invalid disposal direction");
         // Obsolete desired-grade layouts are inert compatibility data, not a

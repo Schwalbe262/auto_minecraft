@@ -35,9 +35,17 @@ public final class ClientEvents {
     @SubscribeEvent(priority=EventPriority.HIGHEST,receiveCanceled=true)
     public void screenKey(ScreenEvent.KeyPressed.Pre event) {
         var input=InputConstants.getKey(event.getKeyCode(),event.getScanCode());
-        if (!ClientKeys.STOP.isActiveAndMatches(input)) return;
+        if (!ClientKeys.STOP.isActiveAndMatches(input)) {
+            if(!ClientKeys.TOGGLE.isActiveAndMatches(input) && !ClientKeys.SETTINGS.isActiveAndMatches(input)
+                && !ClientKeys.WAYPOINT.isActiveAndMatches(input) && event.getKeyCode()!=GLFW.GLFW_KEY_ESCAPE)
+                runtime().manualStockContainerInteraction();
+            return;
+        }
         emergencyInput(Minecraft.getInstance().options.keyAttack.isActiveAndMatches(input));
         event.setCanceled(true);
+    }
+    @SubscribeEvent public void screenMouse(ScreenEvent.MouseButtonPressed.Pre event) {
+        runtime().manualStockContainerInteraction();
     }
     private void emergencyInput(boolean attack) {
         emergencyKeys.requestStop();
@@ -89,6 +97,7 @@ public final class ClientEvents {
     }
     @SubscribeEvent public void interaction(InputEvent.InteractionKeyMappingTriggered event) {
         // This event belongs to vanilla key/mouse use, not direct gameMode.useItemOn calls.
+        if(event.isUseItem())runtime().manualStockContainerUse();
         runtime().manualOutputInteraction();
         if (runtime().running()) runtime().manualInput(event.isAttack());
         if (event.isAttack() && runtime().blockAttacks()) { event.setCanceled(true); event.setSwingHand(false); }

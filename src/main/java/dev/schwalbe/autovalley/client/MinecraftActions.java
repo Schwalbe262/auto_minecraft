@@ -90,6 +90,8 @@ public final class MinecraftActions implements ActionPort {
                 || pending instanceof Action.CraftFireLogs && loggingRecipe!=null && loggingRecipe.ownsManualMenu(mc))
             && ownedShape.equals(containerShape(ownedContainer)) && ownedShape.matches(menu);
     }
+    /** Exact still-owned open container only; never a guessed closed-storage target. */
+    public Pos ownedContainerPosition() { return ownsContainer() ? ownedContainer : null; }
     public boolean openingContainer() { return pending instanceof Action.UseBlock use && (use.purpose()==Action.Use.OPEN_CONTAINER || use.purpose()==Action.Use.OPEN_CRAFTING); }
     public boolean expectingSleep() { return pending instanceof Action.UseBlock use && use.purpose()==Action.Use.SLEEP; }
     public long submit(Action action) {
@@ -263,6 +265,8 @@ public final class MinecraftActions implements ActionPort {
                             finish(ActionOutcome.State.FAILED,"Container geometry changed or its complete contents were not opened"); return;
                         }
                         ownedMenu=menu.id(); ownedContainer=currentShape.canonical(); ownedShape=currentShape;
+                        var snapshot=observations.fullMenuSnapshotSince(menu.id(),beforeSequence);
+                        observeTomatoStock(menu,snapshot==null ? null : snapshot.items());
                         finish(ActionOutcome.State.SUCCEEDED,"Container synchronized"); return;
                     }
                 }
@@ -328,7 +332,10 @@ public final class MinecraftActions implements ActionPort {
                     quantity=InventoryAcknowledgements.removed(beforeMenu,acknowledgement.items(),drop.slot());
                     confirmed=quantity>0;
                 }
-                if (confirmed) { finish(ActionOutcome.State.SUCCEEDED,"Server confirmed inventory change",quantity); return; }
+                if (confirmed) {
+                    observeTomatoStock(beforeMenu,acknowledgement.items());
+                    finish(ActionOutcome.State.SUCCEEDED,"Server confirmed inventory change",quantity); return;
+                }
             }
         }
         if (world.tick()-started>=context.profile().interactionTimeoutTicks) finish(ActionOutcome.State.FAILED,"No server confirmation; inspect before retrying");
@@ -715,11 +722,27 @@ public final class MinecraftActions implements ActionPort {
         if(artisanAttempt!=null && state==ActionOutcome.State.SUCCEEDED)artisanAttempts.confirmed(artisanAttempt.target(),artisanAttempt);
         artisanAttempt=null; // Failed/cancelled sent attempts remain in their target-scoped RAM fence.
     }
-    private void finish(ActionOutcome.State state,String message) { finishConsolidation(state,message); finishTrash(state,message); finishLogging(state,message); finishArtisan(state); wineFeedAttempt=null; put(pendingTicket,state,message); pending=null; }
+    private void observeTomatoStock(MenuData shape,List<ItemData> packetItems) {
+        if(context==null || ownedContainer==null || context.profile().pois(PoiKind.TOMATO_CHEST).stream().noneMatch(p->p.pos().equals(ownedContainer)))return;
+        List<ItemData> contents=TomatoStockSnapshots.storage(shape,packetItems);
+        if(contents==null || !context.session().tomatoStockCache.observeVerified(context,ownedContainer,contents)) {
+            context.session().tomatoStockCache.invalidate(ownedContainer);context.session().tomatoSalePermit=null;
+        }
+    }
+    private void finishTomatoStock(ActionOutcome.State state) {
+        if(state==ActionOutcome.State.SUCCEEDED || context==null)return;
+        Pos affected=pending instanceof Action.UseBlock use && use.purpose()==Action.Use.OPEN_CONTAINER ? use.pos()
+            : pending instanceof Action.QuickMove ? ownedContainer : null;
+        if(affected!=null && context.profile().pois(PoiKind.TOMATO_CHEST).stream().anyMatch(p->p.pos().equals(affected))) {
+            context.session().tomatoStockCache.invalidate(affected);context.session().tomatoSalePermit=null;
+        }
+    }
+    private void finish(ActionOutcome.State state,String message) { finishTomatoStock(state);finishConsolidation(state,message); finishTrash(state,message); finishLogging(state,message); finishArtisan(state); wineFeedAttempt=null; put(pendingTicket,state,message); pending=null; }
     private void finish(ActionOutcome.State state,String message,int quantity) {
         finish(state,message,quantity,ActionOutcome.Proof.NONE);
     }
     private void finish(ActionOutcome.State state,String message,int quantity,ActionOutcome.Proof proof) {
+        finishTomatoStock(state);
         finishConsolidation(state,message);
         finishTrash(state,message);
         finishLogging(state,message);

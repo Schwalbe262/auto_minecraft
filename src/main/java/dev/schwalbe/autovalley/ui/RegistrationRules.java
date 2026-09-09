@@ -83,6 +83,12 @@ public final class RegistrationRules {
         if (percent<1 || percent>100) throw new IllegalArgumentException("Tomato storage percentage must be 1 to 100");
         return percent;
     }
+    public static int tomatoStockRefreshDays(String value) {
+        if (value==null || !value.trim().matches("[0-9]{1,2}")) throw new IllegalArgumentException("Enter whole game days");
+        int days=Integer.parseInt(value.trim());
+        if (days<1 || days>28) throw new IllegalArgumentException("Tomato inventory refresh must be 1 to 28 game days");
+        return days;
+    }
 
     /** Only an explicitly aimed spruce planting/trunk block can seed a plot draft. */
     public static boolean loggingCorner(BlockData block) {

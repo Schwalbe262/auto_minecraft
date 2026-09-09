@@ -15,6 +15,8 @@ public final class MachineModule implements AutomationModule {
     private long useSettleAt = -1;
     private List<Poi> machines = List.of(), sources = List.of();
     private final Map<Poi,int[]> stock = new LinkedHashMap<>();
+    private final Map<Pos,List<ItemData>> surveyedStock = new LinkedHashMap<>();
+    private TomatoStockCache.SurveyToken stockSurvey;
     private final Map<Pos,BlockData> wineObservations=new LinkedHashMap<>();
     private Set<Pos> wineObservationTargets=Set.of();
     private long wineObservationDay=Long.MIN_VALUE,wineObservationRetry;
@@ -85,17 +87,25 @@ public final class MachineModule implements AutomationModule {
             boolean skippedOutput=result.state()==ActionOutcome.State.SKIPPED && pending==Pending.OUTPUT_MERGE
                 && feature==Feature.WINE && result.proof()==ActionOutcome.Proof.CONSOLIDATION_SKIPPED_UNSENT
                 && result.confirmedCount()==0;
-            if (!result.success() && !skippedOutput) return fail("Production action failed: " + result.message());
+            if (!result.success() && !skippedOutput) {
+                if (source!=null && (pending==Pending.OPEN_SCAN || pending==Pending.OPEN_FETCH || pending==Pending.WITHDRAW))
+                    c.session().tomatoStockCache.invalidate(source.pos());
+                return fail("Production action failed: " + result.message());
+            }
             switch (pending) {
                 case CLOSE -> { containerId = -1; stage = afterClose; }
                 case OPEN_SCAN, OPEN_FETCH -> {
                     if (!c.world().menu().container() || !c.world().menu().carried().empty()) return fail("Tomato source menu did not synchronize");
                     containerId = c.world().menu().id(); stage = pending == Pending.OPEN_SCAN ? Stage.SNAPSHOT : Stage.FETCH;
+                    if (pending==Pending.OPEN_FETCH) {
+                        String invalid=snapshot(c,source,true);
+                        if (invalid!=null) return fail(invalid);
+                    }
                 }
                 case WITHDRAW -> {
                     if (!validMenu(c)) return fail("Tomato source changed during withdrawal");
                     if (ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade)) <= withdrawalBefore) return fail("Tomato withdrawal was not acknowledged");
-                    String invalid = snapshot(c,source);
+                    String invalid = snapshot(c,source,true);
                     if (invalid != null) return fail(invalid);
                     stage = Stage.FETCH;
                 }
@@ -141,8 +151,8 @@ public final class MachineModule implements AutomationModule {
                 if (c.world().menu().container()) close(c,Stage.CHOOSE); else stage=Stage.CHOOSE;
                 return WorkResult.busy(progressStatus() + " · 보유 재료부터 사용");
             }
-            beginStockScan(c);
-            if (c.world().menu().container()) close(c,Stage.SOURCE);
+            prepareStockHaul(c);
+            if (c.world().menu().container()) close(c,stage);
             return WorkResult.busy(progressStatus() + " · 재료 보충 전 날짜 변경 확인");
         }
         switch (stage) {
@@ -200,6 +210,10 @@ public final class MachineModule implements AutomationModule {
             }
             case SOURCE -> {
                 if (sourceIndex >= sources.size()) {
+                    // Only the final CLOSE receipt reaches this boundary. Partial
+                    // surveys and individual withdrawals never renew the survey date.
+                    c.session().tomatoStockCache.completeSurvey(c,stockSurvey,surveyedStock);
+                    stockSurvey=null; surveyedStock.clear();
                     stockReady = true; freshForHaul = true; stockDay = gameDay(c);
                     stage = Stage.CHOOSE; break;
                 }
@@ -211,7 +225,7 @@ public final class MachineModule implements AutomationModule {
             }
             case SNAPSHOT -> {
                 if (!validMenu(c)) return fail("Tomato source menu changed during stock count");
-                String invalid = snapshot(c,source);
+                String invalid = snapshot(c,source,true);
                 if (invalid != null) return fail(invalid);
                 sourceIndex++; close(c,Stage.SOURCE);
             }
@@ -219,10 +233,11 @@ public final class MachineModule implements AutomationModule {
                 int carriedGrade=carriedBatchGrade(c);
                 if (carriedGrade>=0) grade=carriedGrade;
                 else {
-                    // A supply trip allocates one grade from a fresh whole-stock count.
+                    // A supply trip allocates one grade from verified stock memory,
+                    // or counts the warehouses when that periodic survey has expired.
                     // Carried batches are used first; time or stock balancing cannot
                     // trigger an underground recount while usable ingredients remain.
-                    if (!stockReady || !freshForHaul || stockDay!=gameDay(c)) { beginStockScan(c); break; }
+                    if (!stockReady || !freshForHaul || stockDay!=gameDay(c)) { prepareStockHaul(c); break; }
                     grade=chooseGrade(totals(c),cost);
                 }
                 // Bulk-hauling 64-stacks leaves 1/4-tomato fragments for 3/5-input
@@ -277,7 +292,7 @@ public final class MachineModule implements AutomationModule {
             }
             case FETCH -> {
                 if (!validMenu(c)) return fail("Tomato source menu changed before withdrawal");
-                String invalid = snapshot(c,source);
+                String invalid = snapshot(c,source,false);
                 if (invalid != null) return fail(invalid);
                 // Count this source again after opening it; never withdraw from an old chest snapshot.
                 boolean funded=heldCandidate(c)!=null;
@@ -619,6 +634,22 @@ public final class MachineModule implements AutomationModule {
     private void beginStockScan(Context c) {
         sources = StorageVisitOrder.order(c.profile().pois(PoiKind.TOMATO_CHEST),c.world().player());
         stock.clear(); stockReady = false; freshForHaul = false; sourceIndex = 0; grade=-1; stage = Stage.SOURCE;
+        surveyedStock.clear(); stockSurvey=c.session().tomatoStockCache.beginSurvey(c);
+    }
+    private void prepareStockHaul(Context c) {
+        // This is called only after usable carried ingredients are exhausted.
+        // Cache contents select a destination, never authorize its QuickMove.
+        Optional<TomatoStockCache.View> remembered=c.session().tomatoStockCache.reusable(c);
+        if (remembered.isEmpty()) { beginStockScan(c); return; }
+        sources=StorageVisitOrder.order(c.profile().pois(PoiKind.TOMATO_CHEST),c.world().player());
+        stock.clear(); surveyedStock.clear(); stockSurvey=null;
+        for (Poi poi:sources) {
+            int[] counts=new int[4];
+            for (ItemData item:remembered.get().contents().get(poi.pos()))
+                if (item.is(ItemData.TOMATO)) counts[item.quality()]+=item.count();
+            stock.put(poi,counts);
+        }
+        stockReady=true; freshForHaul=true; stockDay=gameDay(c); grade=-1; stage=Stage.CHOOSE;
     }
     private Poi sourceForGrade(Context c,Poi excluded) {
         // Storage is tomato-only, not grade-assigned. Source order comes from the
@@ -651,15 +682,35 @@ public final class MachineModule implements AutomationModule {
     private void schedule(Context c,Poi poi,int days) {
         c.profile().nextEligibleDay.put(scheduleKey(poi),Math.floorDiv(c.world().dayTime(),24000)+Math.max(1,days));
     }
-    private String snapshot(Context c, Poi poi) {
+    private String snapshot(Context c, Poi poi, boolean verifiedReceipt) {
         int[] counts = new int[4];
         for (ItemSlot s : c.world().menu().slots()) if (!s.player() && !s.item().empty()) {
-            if (!s.item().is(ItemData.TOMATO)) return "Tomato source contains a non-tomato item; inspect the registered tomato-only storage";
+            if (!s.item().is(ItemData.TOMATO)) {
+                c.session().tomatoStockCache.invalidate(poi.pos());
+                return "Tomato source contains a non-tomato item; inspect the registered tomato-only storage";
+            }
             int q = s.item().quality();
-            if (q < 0 || q > 3) return "Tomato source contains an unknown tomato grade";
+            if (q < 0 || q > 3) {
+                c.session().tomatoStockCache.invalidate(poi.pos());
+                return "Tomato source contains an unknown tomato grade";
+            }
             counts[q] += s.item().count();
         }
-        stock.put(poi,counts); return null;
+        stock.put(poi,counts);
+        if (verifiedReceipt) {
+            // Legacy menu shapes remain usable locally, but cannot be promoted
+            // to the shared, complete 27-slot warehouse memory.
+            List<ItemSlot> slots=c.world().menu().slots().stream().filter(s -> !s.player())
+                .sorted(Comparator.comparingInt(ItemSlot::index)).toList();
+            boolean complete=slots.size()==TomatoStockCache.STORAGE_SLOTS;
+            for (int i=0;complete && i<slots.size();i++) complete=slots.get(i).index()==i;
+            if (complete) {
+                List<ItemData> items=slots.stream().map(ItemSlot::item).toList();
+                if (c.session().tomatoStockCache.observeVerified(c,poi.pos(),items) && stage==Stage.SNAPSHOT && stockSurvey!=null)
+                    surveyedStock.put(poi.pos(),items);
+            } else c.session().tomatoStockCache.invalidate(poi.pos());
+        }
+        return null;
     }
     private ItemSlot heldCandidate(Context c) {
         List<ItemSlot> held=c.world().inventory().stream()
@@ -745,6 +796,7 @@ public final class MachineModule implements AutomationModule {
         wineObservations.clear(); wineObservationTargets=Set.of(); wineObservationDay=Long.MIN_VALUE; wineObservationRetry=0;
         stage = Stage.START; afterClose = null; pending = null; ticket = -1; verifySince = 0; useSettleAt = -1;
         machines = List.of(); sources = List.of(); stock.clear(); machineIndex = 0; selectedMachineIndex = -1; sourceIndex = 0;
+        surveyedStock.clear(); stockSurvey=null;
         stockReady = false; freshForHaul = false; stockDay = 0;
         source = null; containerId = -1; grade = -1; collected = false; feeding = false;
         partialWineFeedEligible=false;partialWineFeedTarget=null;confirmedPartialWineInput=0;

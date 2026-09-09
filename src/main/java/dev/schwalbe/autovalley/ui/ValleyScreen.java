@@ -79,6 +79,7 @@ public final class ValleyScreen extends Screen {
     private String recordingNameDraft = "";
     private boolean tomatoSurplusDraft;
     private String tomatoStorageLimitDraft = "";
+    private String tomatoStockRefreshDraft = "";
     private PendingMachineOutput selectedPendingOutput;
     private MachineOutputLedger.Resolution pendingResolution;
     private EditBox nameInput, classifierInput;
@@ -164,6 +165,7 @@ public final class ValleyScreen extends Screen {
         button(left + third + 6, settingsY, third, tr("tomato_storage.settings.open"), () -> {
             tomatoSurplusDraft = runtime.profile().tomatoSurplusShippingEnabled;
             tomatoStorageLimitDraft = Integer.toString(runtime.profile().tomatoStorageLimitPercent);
+            tomatoStockRefreshDraft = Integer.toString(runtime.profile().tomatoStockRefreshDays);
             toolsEditor = true; toolPage = ToolPage.TOMATO_STORAGE; rebuild();
         }).setTooltip(Tooltip.create(tr("tomato_storage.settings.hint")));
         button(left + (third + 6) * 2, settingsY, third, tr("background.toggle", tr(runtime.profile().allowBackground ? "on" : "off")), () -> {
@@ -209,16 +211,27 @@ public final class ValleyScreen extends Screen {
         int presetWidth = (panelWidth - half - 12) / 2;
         button(left + half + 6, 118, presetWidth, Component.literal("80%"), () -> { tomatoStorageLimitDraft = "80"; rebuild(); });
         button(left + half + presetWidth + 12, 118, presetWidth, Component.literal("90%"), () -> { tomatoStorageLimitDraft = "90"; rebuild(); });
-        text(151, tr("tomato_storage.settings.hint"));
+        text(149, tr("tomato_storage.settings.refresh"));
+        EditBox refresh = input(left + half + 6, 143, half, tr("tomato_storage.settings.refresh"), 2);
+        refresh.setValue(tomatoStockRefreshDraft); refresh.setResponder(value -> tomatoStockRefreshDraft = value);
+        refresh.setTooltip(Tooltip.create(tr("tomato_storage.settings.refresh_hint")));
         button(left, 179, half, tr("back"), () -> { toolsEditor = false; rebuild(); });
         button(left + half + 6, 179, half, tr("confirm"), () -> {
-            int percent;
-            try { percent = RegistrationRules.tomatoStorageLimitPercent(tomatoStorageLimitDraft); }
+            int percent, refreshDays;
+            try {
+                percent = RegistrationRules.tomatoStorageLimitPercent(tomatoStorageLimitDraft);
+                refreshDays = RegistrationRules.tomatoStockRefreshDays(tomatoStockRefreshDraft);
+            }
             catch (IllegalArgumentException invalid) { error("tomato_storage.settings.error"); return; }
             Profile profile = runtime.profile();
             int oldPercent = profile.tomatoStorageLimitPercent; boolean oldEnabled = profile.tomatoSurplusShippingEnabled;
+            int oldRefreshDays = profile.tomatoStockRefreshDays;
             profile.tomatoStorageLimitPercent = percent; profile.tomatoSurplusShippingEnabled = tomatoSurplusDraft;
-            if (persist(() -> { profile.tomatoStorageLimitPercent = oldPercent; profile.tomatoSurplusShippingEnabled = oldEnabled; })) {
+            profile.tomatoStockRefreshDays = refreshDays;
+            if (persist(() -> {
+                profile.tomatoStorageLimitPercent = oldPercent; profile.tomatoSurplusShippingEnabled = oldEnabled;
+                profile.tomatoStockRefreshDays = oldRefreshDays;
+            })) {
                 toolsEditor = false; rebuild();
             }
         });

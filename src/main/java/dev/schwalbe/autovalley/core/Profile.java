@@ -27,6 +27,8 @@ public final class Profile {
     /** Keep this share of tomato storage capacity; ship only surplus through registered shipping. */
     public int tomatoStorageLimitPercent = 90;
     public boolean tomatoSurplusShippingEnabled = true;
+    /** Refresh expired stock during an actual warehouse visit, never by a timer-only round trip. */
+    public int tomatoStockRefreshDays = 3;
     public int hoeHotbarSlot = 0;
     public int loggingAxeHotbarSlot = -1;
     public int loggingSaplingReserve = 0;
