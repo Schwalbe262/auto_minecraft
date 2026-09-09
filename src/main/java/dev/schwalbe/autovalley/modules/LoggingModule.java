@@ -8,6 +8,7 @@ import java.util.*;
 public final class LoggingModule implements AutomationModule {
     private static final int SAPLING_WAIT_TICKS=400;
     private static final int VISIBILITY_RETRY_TICKS=1200;
+    private static final int MAX_STALE_APPROACH_REPLANS=2;
     private static final int CLEANUP_QUIET_TICKS=20,CLEANUP_QUIET_TIMEOUT=400;
     private enum Stage { START, PLOT, CHOP, SETTLE, PLANT, WASTE, RESTORE, CRAFT_OPEN, CRAFT, CRAFT_CLOSE, WOOD, BERRIES, FINISH }
     private enum Pending { SELECT, SWAP, BORROW, RESTORE, CHOP, PLANT, TRASH, OPEN, CRAFT, CLOSE }
@@ -34,6 +35,7 @@ public final class LoggingModule implements AutomationModule {
     private long visibilityRetryAt=-1;
     // Temporary negative observations only: never reorder or complete the saved batch.
     private final Map<Pos,LoggingApproachSearch> invisiblePlots=new LinkedHashMap<>();
+    private final Map<Pos,Integer> staleApproachReplans=new HashMap<>();
     private long visibilityScanTick=Long.MIN_VALUE;
     private final Map<Pos,List<String>> initialPlotObservations=new HashMap<>();
     private long initialObservationDay=Long.MIN_VALUE;
@@ -59,6 +61,9 @@ public final class LoggingModule implements AutomationModule {
                 if (completed==Pending.CHOP) {
                     if (outcome.confirmedCount()<=0) return fail("벌목 진행이 서버에서 확인되지 않았습니다.");
                     if (++chopStrokes>512) return fail("한 나무의 벌목 진행 횟수가 한도를 넘었습니다. 밑동을 확인하세요.");
+                    // TreeChop's native outline can shrink without changing BlockData.
+                    // Only real progress renews the consecutive stale-goal budget.
+                    if (plot!=null) staleApproachReplans.remove(plot.corner());
                 } else if (completed==Pending.PLANT) {
                     if (outcome.confirmedCount()<=0 || !occupied(c,actionPos)) return fail("묘목 재식재가 확인되지 않았습니다.");
                 } else if (completed==Pending.TRASH) {
@@ -349,9 +354,26 @@ public final class LoggingModule implements AutomationModule {
         if (choppingApproach.status()==LoggingApproachSearch.Status.FOUND) {
             if (c.world().canInteract(choppingApproach.target(),4) || choppingApproach.endpointValid(c.world()))
                 return choppingApproach.target();
-            // The canopy or support changed after the read-only preflight.
-            choppingApproach=null; c.actions().stopMovement();
-            approachResult=WorkResult.deferred("벌목 접근 위치의 지형·시야가 바뀌었습니다. 미완료 구역을 보존하고 다시 확인합니다.");
+            // An acknowledged partial chop can shrink the native outline while the
+            // block ID/properties stay unchanged. Replan geometry, never replay a use.
+            if (!plotRestoreBoundary(c)) {
+                fail("벌목 접근 위치가 바뀌었지만 미확인 조작이 남아 다시 탐색할 수 없습니다."); return null;
+            }
+            LoggingHotbarLease lease=c.profile().loggingHotbarLease;
+            if (lease!=null && (lease.stage()!=LoggingHotbarLease.Stage.PARKED || !parked(c,lease))) {
+                fail("벌목 재탐색 전 임시 단축바의 원래 아이템을 확인할 수 없습니다. 복원 의무를 보존했습니다."); return null;
+            }
+            int attempts=staleApproachReplans.getOrDefault(plot.corner(),0);
+            if (attempts>=MAX_STALE_APPROACH_REPLANS) {
+                fail("새 벌목 진행 없이 접근 시야가 반복해서 바뀌어 재탐색 한도에 도달했습니다. 미완료 구역을 보존했습니다."); return null;
+            }
+            staleApproachReplans.put(plot.corner(),attempts+1);
+            choppingApproach=null; visibilityScanTick=c.world().tick();
+            c.actions().stopMovement(); c.navigation().reset();
+            if (lease!=null) {
+                restoreBeforePlot=true; clearCleanupQuiet(); stage=Stage.RESTORE;
+                approachResult=busy("벌목 접근 재탐색 전 빌린 단축바를 먼저 복원");
+            } else approachResult=busy("변경된 벌목 밑동 시야를 새로 확인 ("+(attempts+1)+"/"+MAX_STALE_APPROACH_REPLANS+")");
             return null;
         }
         c.actions().stopMovement();
@@ -394,7 +416,7 @@ public final class LoggingModule implements AutomationModule {
         return null;
     }
     private void clearVisibilitySweep() {
-        invisiblePlots.clear(); choppingApproach=null; visibilityRetryAt=-1; visibilityScanTick=Long.MIN_VALUE;
+        invisiblePlots.clear(); staleApproachReplans.clear(); choppingApproach=null; visibilityRetryAt=-1; visibilityScanTick=Long.MIN_VALUE;
     }
     private boolean plotRestoreBoundary(Context c) {
         return pending==null && ticket<0 && c.profile().loggingRunActive && c.world().player().onGround()

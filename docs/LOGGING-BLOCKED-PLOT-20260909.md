@@ -64,5 +64,41 @@ The updated focused logging suite passed 92 tests, including restore-before-skip
 pending/failed acknowledgement preservation and unsafe-boundary rejection. The
 combined offline Java 17 test/build passed 1,828 tests across 138 suites, with no
 failures, errors or skips. The restoration build was installed with a recoverable
-backup and a normal single-client restart. Its next native run is pending;
-the remaining three plots have not been claimed complete.
+backup and a normal single-client restart. The next native run confirmed the
+inverse hotbar swap and cleared the lease. Twelve subsequent chop actions had
+stored successful server acknowledgements before a stale approach caused a
+separate stop. No native request or failure fence remained unresolved.
+
+An explicit safe resume then completed another two trees and eight plantings.
+Across these runs, four of the original five remaining trees were felled and
+replanted; one hidden plot remains, with no replant or borrowed-slot obligation.
+The module stayed running in isolated one-shot resource wait rather than marking
+that last plot complete. Whole-routine crafting, storage and shipment are not
+claimed complete by these observations.
+
+## Outline changes during partial felling
+
+Installed TreeChop changes its block-entity radius as successful chop count
+increases. The native outline therefore shrinks without necessarily changing
+the `BlockData` projection used by the approach cache. A previously visible
+endpoint may legitimately become stale after a confirmed partial chop. Neither
+camera yaw nor the cached endpoint is permission to bypass the current native
+outline and actual-eye checks.
+
+A stale `FOUND` endpoint now stops movement, resets navigation and starts a fresh
+bounded search for the same retained plot. At most two consecutive stale replans
+are allowed without confirmed chop progress. A positive native chop receipt
+renews this local budget; selecting an axe or finding a theoretical stance does
+not. A parked item uses the normal restore-before-plot path first. Repeatedly
+unstable geometry, unresolved native actions and unsafe boundaries still retain
+the unfinished work and stop. A fresh negative visibility search uses the normal
+other-plot/resource-wait path; it is never fabricated from retry exhaustion.
+
+The focused logging suite passed 97 tests, including 12 confirmed partial chops
+followed by a changed outline and eventual 24-chop completion, finite oscillating
+endpoint rejection, progress-only retry renewal, borrowed-slot restoration and
+unsafe-boundary rejection. This is detached regression coverage, not a claim of
+native completion for the remaining hidden tree.
+
+The final combined offline Java 17 test/build passed 1,833 tests across 138 suites
+with zero failures, errors or skips.

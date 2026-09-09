@@ -216,9 +216,91 @@ class LoggingModuleTest {
         f.chopGoalTarget=bases.get(3); f.chopGoalFeet=new Pos(3,63,0); f.movementExposesChop=true;
         f.until(() -> f.pending instanceof Action.SelectHotbar);
         f.advance(); f.occludedChopping.addAll(bases); f.chopGoalTarget=null; f.movementExposesChop=false;
-        assertEquals(WorkResult.State.DEFERRED,f.step().state());
+        assertEquals(WorkResult.State.BUSY,f.step().state());
         assertFalse(f.actions.stream().anyMatch(a -> a instanceof Action.ChopTree));
         assertTrue(f.profile.loggingRunActive); assertEquals(List.of(bases.get(0)),f.profile.loggingRemainingPlots);
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        assertFalse(f.actions.stream().anyMatch(a -> a instanceof Action.ChopTree));
+    }
+
+    @Test void twelveAcknowledgedPartialChopsMayInvalidateTheOutlineAndResumeThroughFreshGeometry() {
+        Fixture f=new Fixture(1); f.strokesPerTree=24;
+        List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
+        f.until(() -> f.chops==11);
+        f.occludedChopping.addAll(bases); f.blockAllChopRays=true;
+        f.chopGoalTarget=bases.get(0); f.chopGoalFeet=new Pos(3,63,0); f.movementExposesChop=true;
+        f.until(() -> f.pending instanceof Action.ChopTree); f.advance(); assertEquals(12,f.chops);
+        int sent=f.actions.size();
+        f.occludedChopping.addAll(bases); f.chopGoalTarget=null; f.movementExposesChop=false;
+        WorkResult replan=f.step(); assertEquals(WorkResult.State.BUSY,replan.state()); assertTrue(replan.message().contains("시야를 새로"));
+        assertEquals(sent,f.actions.size()); assertEquals(12,f.chops); assertEquals(0,f.plants);
+        f.chopGoalTarget=bases.get(2); f.movementExposesChop=true;
+        f.until(() -> f.pending instanceof Action.ChopTree);
+        assertEquals(bases.get(2),((Action.ChopTree)f.pending).pos()); assertEquals(12,f.chops);
+        assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(24,f.chops); assertEquals(4,f.plants);
+    }
+
+    @Test void repeatedlyUnstableFoundGoalsHaveAFiniteBudgetWithoutAnyNativeChop() {
+        Fixture f=new Fixture(1); List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
+        f.occludedChopping.addAll(bases); f.blockAllChopRays=true;
+        f.chopGoalTarget=bases.get(3); f.chopGoalFeet=new Pos(3,63,0); f.alternateChopGoal=true;
+        WorkResult result=f.finish(); assertEquals(WorkResult.State.BLOCKED,result.state());
+        assertTrue(result.message().contains("재탐색 한도")); assertEquals(6,f.chopGoalChecks);
+        assertTrue(f.actions.isEmpty()); assertEquals(0,f.chops); assertEquals(1,f.profile.loggingRemainingPlots.size());
+        assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void aRealPartialChopAckRenewsTheStaleBudgetWithoutCompletingOrReplayingTheTree() {
+        Fixture f=new Fixture(1); f.strokesPerTree=24;
+        List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
+        f.occludedChopping.addAll(bases); f.blockAllChopRays=true;
+        f.chopGoalTarget=bases.get(3); f.chopGoalFeet=new Pos(3,63,0); f.alternateChopGoal=true;
+        f.until(() -> f.chopGoalChecks==4); // Two stale endpoints, no native progress yet.
+        assertTrue(f.actions.isEmpty());
+        f.alternateChopGoal=false; f.movementExposesChop=true;
+        f.until(() -> f.pending instanceof Action.ChopTree); f.advance();
+        assertEquals(1,f.chops); f.occludedChopping.addAll(bases); f.movementExposesChop=false;
+        f.until(() -> f.chopGoalChecks>=6); // Fresh FOUND snapshot of the partially chopped block.
+        f.chopGoalTarget=null; int sent=f.actions.size();
+        WorkResult result=f.step(); assertEquals(WorkResult.State.BUSY,result.state(),result.message());
+        assertTrue(result.message().contains("시야를 새로")); assertEquals(sent,f.actions.size());
+        assertEquals(1,f.chops); assertEquals(0,f.plants); assertTrue(f.profile.loggingRunActive);
+        assertEquals(1,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void staleGoalWithAParkedLoanUsesNormalRestoreBeforeResumingPlotSelection() {
+        Fixture f=parkedVisibilityFixture(); List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
+        f.chopGoalTarget=bases.get(3); f.chopGoalFeet=new Pos(3,63,0); f.movementExposesChop=true;
+        ItemData original=f.profile.loggingHotbarLease.original();
+        f.until(() -> f.pending instanceof Action.SelectHotbar); f.advance();
+        f.occludedChopping.addAll(bases); f.chopGoalTarget=null; f.movementExposesChop=false;
+        assertEquals(WorkResult.State.BUSY,f.step().state());
+        f.until(() -> f.pending instanceof Action.SwapHotbar);
+        assertEquals(LoggingHotbarLease.Stage.RESTORING,f.profile.loggingHotbarLease.stage()); assertEquals(0,f.chops);
+        f.advance(); f.step(); assertNull(f.profile.loggingHotbarLease); assertEquals(original,f.inventory[0]);
+        f.until(() -> f.pending instanceof Action.ChopTree);
+        assertTrue(f.profile.loggingPlots.get(1).plantingPositions().contains(((Action.ChopTree)f.pending).pos()));
+        assertEquals(0,f.trashed); assertEquals(0,f.crafted); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void staleGoalReplanCannotRunAcrossANativeFenceOrUnsafeBoundary() {
+        for(String unsafe:List.of("busy","fence","airborne","cursor","changed lease")) {
+            Fixture f=new Fixture(1); List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
+            f.occludedChopping.addAll(bases); f.blockAllChopRays=true;
+            f.chopGoalTarget=bases.get(3); f.chopGoalFeet=new Pos(3,63,0); f.movementExposesChop=true;
+            f.until(() -> f.pending instanceof Action.SelectHotbar); f.advance();
+            f.occludedChopping.addAll(bases); f.chopGoalTarget=null; f.movementExposesChop=false;
+            switch(unsafe) {
+                case "busy" -> f.forcedNativeBusy=true;
+                case "fence" -> f.nativeFence="unconfirmed native action";
+                case "airborne" -> f.grounded=false;
+                case "cursor" -> f.cursor=item(LoggingRules.SAPLING,1);
+                case "changed lease" -> f.profile.loggingHotbarLease=new LoggingHotbarLease(9,0,item("minecraft:torch",5),"a".repeat(64),LoggingHotbarLease.Stage.PARKED);
+                default -> throw new AssertionError(unsafe);
+            }
+            int sent=f.actions.size(); assertEquals(WorkResult.State.BLOCKED,f.step().state(),unsafe);
+            assertEquals(sent,f.actions.size()); assertEquals(0,f.chops); assertTrue(f.profile.loggingRunActive);
+        }
     }
 
     @Test void searchingDoesNotRepeatActualEyeQueriesOutsideThePreflightSlice() {
@@ -1153,7 +1235,7 @@ class LoggingModuleTest {
         final List<List<Pos>> plantingApproaches=new ArrayList<>();
         final Set<Pos> occludedPlanting=new HashSet<>();
         final Set<Pos> occludedChopping=new HashSet<>();
-        boolean blockAllChopRays,movementExposesChop; int chopRays,actualChopQueries;
+        boolean blockAllChopRays,movementExposesChop,alternateChopGoal; int chopRays,actualChopQueries,chopGoalChecks;
         final Set<Pos> chopRayTargets=new HashSet<>();
         Pos chopGoalTarget,chopGoalFeet; String treeRejection;
         boolean grounded=true,forcedNativeBusy; String nativeFence; ItemData cursor=ItemData.EMPTY;
@@ -1293,8 +1375,10 @@ class LoggingModuleTest {
         }
         public boolean canInteractFrom(Pos feet,Pos target,double reach) {
             chopRays++; chopRayTargets.add(target);
-            return Objects.equals(feet,chopGoalFeet) && Objects.equals(target,chopGoalTarget)
-                || !blockAllChopRays && WorldAccess.super.canInteractFrom(feet,target,reach);
+            if (Objects.equals(feet,chopGoalFeet) && Objects.equals(target,chopGoalTarget)) {
+                chopGoalChecks++; return !alternateChopGoal || chopGoalChecks%2==1;
+            }
+            return !blockAllChopRays && WorldAccess.super.canInteractFrom(feet,target,reach);
         }
         public List<BlockData> scan(Pos pos,int h,int v) { return List.of(); }
         public String loggingTreeRejection(Pos pos,List<LoggingPlot> plots) { return treeRejection; }
