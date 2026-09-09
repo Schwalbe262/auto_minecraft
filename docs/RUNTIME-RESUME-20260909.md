@@ -337,3 +337,23 @@ outcome was changed and no acknowledgement/fence was fabricated or cleared.
 The corrected 6E8BDB artifact was then installed through a normal same-instance
 restart, retaining the previous JAR, profile and private failure/recovery evidence.
 Post-install connection and resumed-batch acceptance remain to be observed.
+
+The corrected client reconnected and acknowledged a CONTINUOUS start at
+02:17:16 UTC. It returned the carried tomatoes/wine, harvested and stored the next
+tomato crops, and processed ordinary work without a new native action fence.
+The ancient-fruit field's day-467 inspection found no mature harvest and moved
+its reinspection to day 468; this is not a second successful ten-day harvest.
+
+Wine resumption encountered an independently changed rack. In the fresh client,
+while automation was still OFF, observed rack counts changed from 202 working /
+160 mature / 22 idle to 215 / 158 / 11 before the new start. They subsequently
+settled at 249 / 127 / 8 while this client was storing items and harvesting crops,
+not servicing wine. The persisted batch still has 224 unconfirmed members and
+only its prior 160 acknowledged feeds. These observations do not identify who
+or what changed the other machines. The existing preflight correctly did not
+invent refill acknowledgements or repeat their inputs; other eligible modules
+continue but the working unconfirmed members prevent wine resumption. The user
+has been asked whether another player or automation is servicing the rack.
+The new inventory fix has passed detached tests but has not yet re-encountered
+the same race in a resumed native wine batch. Continuous all-feature acceptance
+remains incomplete.
