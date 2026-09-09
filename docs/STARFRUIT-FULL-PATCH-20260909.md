@@ -32,3 +32,26 @@ pending fruit acknowledgements. All **1,695 tests / 127 suites** passed, includi
 
 Live installation and full-patch harvest acceptance are pending. A completed pass
 can still leave an unreachable fruit; completion text does not claim otherwise.
+
+## Native acceptance
+
+The artifact was installed after normal shutdown at 07:26:44 UTC in client
+51508. The same Society instance reconnected normally. Ordinary coordinate
+navigation placed the player at a verified standing cell near the tree; no
+position/velocity injection or OS input was used.
+
+Immediately before the one-shot start at **07:30:20.737 UTC**, a read-only probe
+observed six mature fruit among the registered eight and zero held fruit. The
+player was at `(674.5234,72,1569.1423)`, leaving some left-side members beyond the
+initial six-block radius. Native tickets **1–6 each confirmed fruit interaction**.
+Only then was the store opened: ticket **8 confirmed six fruit deposited**, with
+one open (7) and one close (9). A fresh post-pass read observed **zero mature
+fruit and zero held fruit**. Some harvested blocks had already advanced a growth
+stage; the acceptance is all six original ripe fruit handled, not every final
+age being exactly zero.
+
+The missing eighth registration participated in this same completed pass.
+Unripe members were not forcibly harvested. This accepts the full activated
+patch one-shot on the actual tree. Exact original-job resumption is additionally
+covered by the detached regression; this one-shot does not independently prove
+that continuous interruption/resumption branch or multi-hour uptime.
