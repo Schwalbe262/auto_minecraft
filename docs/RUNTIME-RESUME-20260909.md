@@ -127,3 +127,33 @@ Before that restart, a separate native sleep one-shot reached the registered bed
 was observed actually sleeping on day 459, and completed after day 460 began.
 This establishes the bed interaction/day transition, but by itself is not a
 continuous-scheduler sleep acceptance of the new cooldown fix.
+
+The new build subsequently reconnected and acknowledged a continuous start.
+On day 460 it harvested/stored tomatoes, then serviced all four newly mature seed
+makers, stored seeds and returned unused ancient fruit. All four machines were
+observed working with day-461 eligibility; neither ingredient nor output remained
+in inventory. The engine then reached its normal crops/machines/bedtime WAITING
+state instead of reselecting the zero-target artisan pass. The three crystalariums
+remained working with unchanged day-462 deadlines.
+
+## Native descent measurements
+
+Two supervised runs down the same six-edge cellar route completed in approximately
+5.86 and 6.17 seconds from first controller observation through controller removal.
+The different initial alignments affected the preparation time; the common lower
+five edges took 98 ticks in both runs. Both stopped grounded with zero horizontal
+velocity and about 0.065-block final center error, with no observed navigation
+failure. These are sampled native observations, not simulated player motion.
+
+An earlier chain-handoff implementation took 137 ticks on the common lower-five-
+edge section, versus 98 now (28.5% fewer ticks). The old run started that section
+from rest after a turn, whereas the new run retained momentum from a straight
+preceding stair. This is useful historical evidence but not an equal-initial-state
+benchmark or a new blanket twofold-speed guarantee.
+
+The current controller used its verified flow corridor for the first three edges
+and ordinary descent for the remaining three. A separate read-only native probe
+confirmed that the middle extended envelope is rejected while a later two-edge
+stair corridor is independently valid. The final platform is not a stair. At this
+checkpoint, re-entering flow after that observed ordinary handoff is under test;
+the rejected middle envelope has not been waived or enlarged.
