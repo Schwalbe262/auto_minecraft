@@ -28,6 +28,7 @@ public final class MinecraftActions implements ActionPort {
     private net.minecraft.world.item.ItemStack artisanIngredient;
     private final ArtisanAttemptFence<NativeArtisanReceipt.Attempt> artisanAttempts=new ArtisanAttemptFence<>(128);
     private NativeArtisanReceipt.Attempt artisanAttempt;
+    private NativeWineFeedReceipt.Attempt wineFeedAttempt;
     private Movement movement;
     private long movementAt;
     private long movementLookAt=Long.MIN_VALUE;
@@ -109,6 +110,7 @@ public final class MinecraftActions implements ActionPort {
         beforeBlock=action instanceof Action.UseBlock use ? world.block(use.pos()) : null;
         artisanIngredient=action instanceof Action.UseBlock use && use.purpose()==Action.Use.ARTISAN ? mc.player.getMainHandItem().copy() : null;
         artisanAttempt=null;
+        wineFeedAttempt=null;
         put(ticket,ActionOutcome.State.PENDING,"");
         try { execute(action); }
         catch (RuntimeException e) { finish(ActionOutcome.State.FAILED,"Game rejected the action: " + e.getClass().getSimpleName()); }
@@ -151,6 +153,13 @@ public final class MinecraftActions implements ActionPort {
                 if(!artisanAttempts.sent(use.pos(),observations.generation(),artisanAttempt)) {
                     artisanAttempt=null;finish(ActionOutcome.State.FAILED,"Unconfirmed artisan attempt prevents another send");return;
                 }
+            }
+            if(use.purpose()==Action.Use.MACHINE && NativeWineFeedReceipt.eligible(use.pos(),beforeBlock,
+                    mc.player.getMainHandItem(),beforePlayer.selectedSlot(),beforeMenu)) {
+                // An idle keg may already contain one or two inputs. Capture this exact
+                // dispatch; do not guess the unsynchronized block-entity stage.
+                wineFeedAttempt=new NativeWineFeedReceipt.Attempt(use.pos(),beforeBlock,mc.player.getMainHandItem(),
+                    beforePlayer.selectedSlot(),beforeMenu.id(),beforeMenu,beforeSequence,observations.generation());
             }
             var result=mc.gameMode.useItemOn(mc.player,InteractionHand.MAIN_HAND,hit);
             if (result.consumesAction()) mc.player.swing(InteractionHand.MAIN_HAND);
@@ -246,6 +255,19 @@ public final class MinecraftActions implements ActionPort {
                     }
                 }
                 case HARVEST, MACHINE, FRUIT, DOOR -> {
+                    if(use.purpose()==Action.Use.MACHINE && wineFeedAttempt!=null) {
+                        int consumed=wineFeedAttempt.confirmedCount(observations);
+                        if(consumed>0) {
+                            var proof=consumed<3 ? ActionOutcome.Proof.WINE_PARTIAL_FEED : ActionOutcome.Proof.NONE;
+                            // Existing full-feed count semantics stay zero. Only the
+                            // explicit partial proof carries the actual input decrease.
+                            finish(ActionOutcome.State.SUCCEEDED,"Server confirmed wine feed and selected slot",consumed<3 ? consumed : 0,proof);return;
+                        }
+                        // No broad block-or-any-inventory fallback for this opted-in
+                        // attempt, including at timeout. A late selected-slot ACK must
+                        // not be cut off by an earlier block-only generic success.
+                        break;
+                    }
                     boolean blockChanged=!world.block(use.pos()).equals(beforeBlock);
                     boolean inventoryChanged=!world.inventory().equals(beforeInventory);
                     if ((blockChanged && observations.blockSince(use.pos(),beforeSequence))
@@ -633,7 +655,7 @@ public final class MinecraftActions implements ActionPort {
         if(artisanAttempt!=null && state==ActionOutcome.State.SUCCEEDED)artisanAttempts.confirmed(artisanAttempt.target(),artisanAttempt);
         artisanAttempt=null; // Failed/cancelled sent attempts remain in their target-scoped RAM fence.
     }
-    private void finish(ActionOutcome.State state,String message) { finishConsolidation(state,message); finishTrash(state,message); finishLogging(state,message); finishArtisan(state); put(pendingTicket,state,message); pending=null; }
+    private void finish(ActionOutcome.State state,String message) { finishConsolidation(state,message); finishTrash(state,message); finishLogging(state,message); finishArtisan(state); wineFeedAttempt=null; put(pendingTicket,state,message); pending=null; }
     private void finish(ActionOutcome.State state,String message,int quantity) {
         finish(state,message,quantity,ActionOutcome.Proof.NONE);
     }
@@ -642,6 +664,7 @@ public final class MinecraftActions implements ActionPort {
         finishTrash(state,message);
         finishLogging(state,message);
         finishArtisan(state);
+        wineFeedAttempt=null;
         outcomes.put(pendingTicket,new ActionOutcome(state,message,quantity,proof)); pending=null;
         if (outcomes.size()>512) outcomes.remove(outcomes.keySet().iterator().next());
     }

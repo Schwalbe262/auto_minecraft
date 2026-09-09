@@ -26,6 +26,9 @@ public final class MachineModule implements AutomationModule {
     private int machineIndex, selectedMachineIndex = -1, sourceIndex, containerId = -1, grade = -1, cost, hotbar, inputBefore, withdrawalBefore;
     private Poi source;
     private boolean collected, feeding;
+    private boolean partialWineFeedEligible;
+    private Pos partialWineFeedTarget;
+    private int confirmedPartialWineInput;
     private String unresolvedInteraction;
     private String outputOperationId;
     private Map<Integer,ItemData> inventoryBeforeOutput=Map.of();
@@ -92,7 +95,16 @@ public final class MachineModule implements AutomationModule {
                     stage = Stage.FETCH;
                 }
                 case SWAP, SELECT -> stage = Stage.EQUIP;
-                case USE -> { stage = Stage.VERIFY; verifySince = c.world().tick(); }
+                case USE -> {
+                    confirmedPartialWineInput=0;
+                    if(result.proof()==ActionOutcome.Proof.WINE_PARTIAL_FEED) {
+                        if(!partialWineFeedEligible || feature!=Feature.WINE || !feeding || collected || cost!=3
+                            || !Objects.equals(partialWineFeedTarget,target().pos()) || result.confirmedCount()<1 || result.confirmedCount()>2)
+                            return fail("Unexpected partial wine-feed proof; inspect the machine");
+                        confirmedPartialWineInput=result.confirmedCount();
+                    }
+                    stage = Stage.VERIFY; verifySince = c.world().tick();
+                }
                 case INPUT_MERGE -> {
                     if (result.confirmedCount()==0 && !pendingReposition) rejectedInputMerge=pendingMergeState;
                     stage=Stage.CHOOSE;
@@ -345,6 +357,10 @@ public final class MachineModule implements AutomationModule {
                     return WorkResult.busy(machineStatus("상호작용 위치 재접근"));
                 }
                 inputBefore = ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
+                partialWineFeedEligible=feature==Feature.WINE && feeding && !collected && cost==3
+                    && "false".equals(block.properties().get("working")) && "false".equals(block.properties().get("mature"));
+                partialWineFeedTarget=partialWineFeedEligible ? target().pos() : null;
+                confirmedPartialWineInput=0;
                 // submit() can dispatch immediately: preserves obligations reach disk first.
                 if (collected) {
                     Map<Integer,ItemData> before=new HashMap<>();
@@ -360,8 +376,13 @@ public final class MachineModule implements AutomationModule {
             case VERIFY -> {
                 BlockData block = machine(c);
                 int consumed = inputBefore - ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
-                boolean inputConfirmed = !feeding || consumed == cost;
-                boolean stateConfirmed = !block.flag("mature") && (!feeding || block.flag("working"));
+                boolean exactPartial=feature==Feature.WINE && feeding && !collected && partialWineFeedEligible && cost==3
+                    && Objects.equals(partialWineFeedTarget,target().pos()) && confirmedPartialWineInput>=1 && confirmedPartialWineInput<=2;
+                boolean inputConfirmed = !feeding || consumed == cost || exactPartial;
+                boolean stateConfirmed = blockId().equals(block.id()) && target().pos().equals(block.pos())
+                    && !block.flag("mature") && (!feeding || block.flag("working"));
+                if(exactPartial)stateConfirmed &= "false".equals(block.properties().get("mature"))
+                    && "true".equals(block.properties().get("working"));
                 if (inputConfirmed && stateConfirmed) {
                     if (feeding) { freshForHaul = false; inputMergeAttempts=0; }
                     if (feature==Feature.WINE) WineBatchRules.confirmFeed(c,target().pos());
@@ -690,6 +711,7 @@ public final class MachineModule implements AutomationModule {
         machines = List.of(); sources = List.of(); stock.clear(); machineIndex = 0; selectedMachineIndex = -1; sourceIndex = 0;
         stockReady = false; freshForHaul = false; stockDay = 0;
         source = null; containerId = -1; grade = -1; collected = false; feeding = false;
+        partialWineFeedEligible=false;partialWineFeedTarget=null;confirmedPartialWineInput=0;
         outputOperationId=null;
         inventoryBeforeOutput=Map.of(); outputWineYear=null; preferredOutputSource=null;
         pendingMergeState=null; singleStackFallbackState=null; inputMergeAttempts=0; outputMergeAttempts=0;

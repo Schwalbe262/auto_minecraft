@@ -1899,6 +1899,100 @@ class LogisticsTest {
         return f;
     }
 
+    @Test void exactNativePartialIdleWineFeedCompletesOnlyItsConfirmedMemberOnTheActualDay() {
+        for(int consumed:new int[]{1,2}) {
+            Fixture f=new Fixture();f.equipHoe();f.inventory[1]=tomato(2,9);f.dayTime=472*24000L+1000;
+            Pos target=f.machine(PoiKind.WINE_KEG,10,false,false,false);
+            f.profile.nextEligibleDay.put("wine:999:64:0",123L);
+            f.machineConsumptionOverride=consumed;
+            f.machineUseOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"exact selected native tomato loss",consumed,ActionOutcome.Proof.WINE_PARTIAL_FEED);
+            assertEquals(WorkResult.State.IDLE,f.run(new MachineModule(Feature.WINE),100).state());
+            assertEquals(1,f.machineClicks());assertEquals(consumed,f.consumed);
+            assertEquals(9-consumed,ModuleSupport.count(f.context(),i->i.is(ItemData.TOMATO)));
+            assertFalse(f.profile.wineBatchSchedule.active());assertTrue(f.profile.wineBatchSchedule.remaining().isEmpty());
+            assertEquals(472L,f.profile.wineBatchSchedule.latestFeedDay());assertEquals(478,f.profile.wineBatchSchedule.nextDueDay());
+            assertEquals(478L,f.profile.nextEligibleDay.get(WineBatchRules.key(target)));assertEquals(123L,f.profile.nextEligibleDay.get("wine:999:64:0"));
+        }
+    }
+
+    @Test void aggregatePartialConsumptionWithoutExactWineProofNeverAcknowledgesTheBatch() {
+        for(ActionOutcome.Proof proof:List.of(ActionOutcome.Proof.NONE,ActionOutcome.Proof.ARTISAN_CYCLE_ADVANCED)) {
+            Fixture f=new Fixture();f.equipHoe();f.inventory[1]=tomato(2,9);f.profile.interactionTimeoutTicks=5;
+            Pos target=f.machine(PoiKind.WINE_KEG,10,false,false,false);f.machineConsumptionOverride=2;
+            f.machineUseOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"unrelated or ordinary acknowledgement",2,proof);
+            MachineModule module=new MachineModule(Feature.WINE);assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state());
+            assertEquals(1,f.machineClicks());assertEquals(2,f.consumed);assertTrue(f.profile.nextEligibleDay.isEmpty());
+            assertEquals(List.of(target),f.profile.wineBatchSchedule.remaining());assertNull(f.profile.wineBatchSchedule.latestFeedDay());
+            assertEquals(WorkResult.State.BLOCKED,module.tick(f.context()).state(),"the unresolved same-run interaction is not an automatic resend permission");
+            assertEquals(1,f.machineClicks());
+        }
+    }
+
+    @Test void incidentalSameGradePickupMayMaskAggregateConsumptionOnlyWithTheExactPartialProof() {
+        for(boolean proven:new boolean[]{false,true}) {
+            Fixture f=new Fixture();f.equipHoe();f.inventory[1]=tomato(2,9);f.profile.interactionTimeoutTicks=5;
+            Pos target=f.machine(PoiKind.WINE_KEG,10,false,false,false);f.machineConsumptionOverride=2;
+            f.machineUseOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"selected-slot native receipt",2,
+                proven?ActionOutcome.Proof.WINE_PARTIAL_FEED:ActionOutcome.Proof.NONE);
+            MachineModule module=new MachineModule(Feature.WINE);
+            for(int tick=0;tick<100 && f.machineClicks()==0;tick++){module.tick(f.context());f.advance();}
+            assertEquals(1,f.machineClicks());assertEquals(2,f.consumed);f.inventory[35]=tomato(2,2);
+            assertEquals(9,ModuleSupport.count(f.context(),i->i.is(ItemData.TOMATO)),"the total inventory count alone shows no consumption");
+            assertEquals(proven?WorkResult.State.IDLE:WorkResult.State.BLOCKED,f.run(module,100).state());
+            assertEquals(1,f.machineClicks());
+            if(proven) {assertFalse(f.profile.wineBatchSchedule.active());assertEquals(6L,f.profile.nextEligibleDay.get(WineBatchRules.key(target)));}
+            else {assertEquals(List.of(target),f.profile.wineBatchSchedule.remaining());assertNull(f.profile.wineBatchSchedule.latestFeedDay());assertTrue(f.profile.nextEligibleDay.isEmpty());}
+        }
+    }
+
+    @Test void priorMatureWineStillRequiresThreeEvenWhenAPartialProofIsPresented() {
+        for(int consumed:new int[]{1,2,3}) {
+            Fixture f=new Fixture();f.equipHoe();f.inventory[1]=tomato(2,9);f.profile.interactionTimeoutTicks=5;
+            Pos target=f.machine(PoiKind.WINE_KEG,10,true,true,false);f.machineConsumptionOverride=consumed;
+            f.machineUseOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"mature native use",consumed,
+                consumed==3?ActionOutcome.Proof.NONE:ActionOutcome.Proof.WINE_PARTIAL_FEED);
+            WorkResult result=f.run(new MachineModule(Feature.WINE),100);
+            assertEquals(consumed==3?WorkResult.State.IDLE:WorkResult.State.BLOCKED,result.state());assertEquals(1,f.machineClicks());
+            if(consumed!=3){assertEquals(List.of(target),f.profile.wineBatchSchedule.remaining());assertNull(f.profile.wineBatchSchedule.latestFeedDay());assertTrue(f.profile.nextEligibleDay.isEmpty());}
+        }
+    }
+
+    @Test void aPartialWineReceiptCannotAuthorizeAnotherFeatureOrAChangedTargetAtVerification() {
+        for(int change=0;change<6;change++) {
+            Fixture f=new Fixture();f.equipHoe();f.inventory[1]=tomato(2,9);f.profile.interactionTimeoutTicks=5;
+            Feature feature=change==0?Feature.PRESERVES:Feature.WINE;
+            Pos target=f.machine(change==0?PoiKind.PRESERVES_JAR:PoiKind.WINE_KEG,10,false,false,false);
+            f.machineConsumptionOverride=2;f.machineUseOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"partial wine proof",2,ActionOutcome.Proof.WINE_PARTIAL_FEED);
+            MachineModule module=new MachineModule(feature);
+            for(int tick=0;tick<100 && f.machineClicks()==0;tick++){module.tick(f.context());f.advance();}
+            assertEquals(1,f.machineClicks());BlockData confirmed=f.blocks.get(target);
+            if(change==1)f.blocks.put(target,new BlockData(target,"minecraft:air",confirmed.properties()));
+            if(change==2)f.blocks.put(target,new BlockData(target.offset(1,0,0),confirmed.id(),confirmed.properties()));
+            if(change==3)f.blocks.put(target,new BlockData(target,confirmed.id(),Map.of("working","true")));
+            if(change==4)f.blocks.put(target,new BlockData(target,confirmed.id(),Map.of("mature","false")));
+            if(change==5)f.blocks.put(target,new BlockData(target,confirmed.id(),Map.of("mature","FALSE","working","true")));
+            assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state(),"change="+change);
+            assertEquals(1,f.machineClicks());assertTrue(f.profile.nextEligibleDay.isEmpty());
+            if(feature==Feature.WINE){assertEquals(List.of(target),f.profile.wineBatchSchedule.remaining());assertNull(f.profile.wineBatchSchedule.latestFeedDay());}
+        }
+    }
+
+    @Test void aConfirmedPartialReceiptCannotLeakIntoTheNextUnprovenTargetOrSurviveReset() {
+        for(boolean reset:new boolean[]{false,true}) {
+            Fixture f=new Fixture();f.equipHoe();f.inventory[1]=tomato(2,12);f.profile.interactionTimeoutTicks=5;
+            Pos first=f.machine(PoiKind.WINE_KEG,10,false,false,false),second=f.machine(PoiKind.WINE_KEG,11,false,false,false);
+            f.machineConsumptionOverride=2;f.machineUseOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"first exact native receipt",2,ActionOutcome.Proof.WINE_PARTIAL_FEED);
+            MachineModule module=new MachineModule(Feature.WINE);
+            for(int tick=0;tick<100 && !f.profile.nextEligibleDay.containsKey(WineBatchRules.key(first));tick++){module.tick(f.context());f.advance();}
+            assertEquals(1,f.machineClicks());assertEquals(List.of(second),f.profile.wineBatchSchedule.remaining());
+            if(reset)module.reset();
+            f.machineUseOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"second ordinary acknowledgement",2);
+            assertEquals(WorkResult.State.BLOCKED,f.run(module,100).state());assertEquals(2,f.machineClicks());
+            assertEquals(List.of(second),f.profile.wineBatchSchedule.remaining());assertEquals(0L,f.profile.wineBatchSchedule.latestFeedDay());
+            assertEquals(6L,f.profile.nextEligibleDay.get(WineBatchRules.key(first)));assertFalse(f.profile.nextEligibleDay.containsKey(WineBatchRules.key(second)));
+        }
+    }
+
     @Test void activeWinePreflightDefersWithoutAcknowledgingWorkingOrServicingReadyMembers() {
         Fixture f=waitingActiveWineRack(); WineBatchSchedule original=f.profile.wineBatchSchedule;
         Map<String,Long> deadlines=Map.copyOf(f.profile.nextEligibleDay);
@@ -2384,6 +2478,8 @@ class LogisticsTest {
         boolean reportConfirmedCount;
         boolean immediateMachine, requireSavedBeforeMachine, separateFreshWineSlots;
         boolean consolidationNoProgress, consolidationFails;
+        Integer machineConsumptionOverride;
+        ActionOutcome machineUseOutcome;
         Runnable checkpointHook=() -> { };
         ItemData dropped;
         ItemData refillAfterWineSale;
@@ -2538,10 +2634,12 @@ class LogisticsTest {
             BlockData block=blocks.get(use.pos());
             boolean wineMachine=block.id().equals("society:wine_keg");
             int batch=wineMachine || block.flag("upgraded") ? 3 : 5;
+            if(machineConsumptionOverride!=null)batch=machineConsumptionOverride;
             if (block.flag("mature")) dropped=wineMachine ? wine(wineClockYear) : new ItemData(ItemData.PRESERVES,1,0,null,false,99);
             boolean feed=inventory[selected].is(ItemData.TOMATO) && inventory[selected].count()>=batch;
             if (feed) { consumed+=batch; usedGrades.add(inventory[selected].quality()); inventory[selected]=tomato(inventory[selected].quality(),inventory[selected].count()-batch); }
             blocks.put(use.pos(),new BlockData(block.pos(),block.id(),Map.of("working",""+feed,"mature","false","upgraded",""+block.flag("upgraded"),"facing","north")));
+            if(machineUseOutcome!=null)outcome=machineUseOutcome;
         }
         private static boolean add(ItemData[] slots,ItemData item) {
             int capacity=0;

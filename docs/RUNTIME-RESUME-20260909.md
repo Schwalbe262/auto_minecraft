@@ -554,3 +554,28 @@ preserves and then zero at the registered shipping destination. Retained native
 outcomes 257, 258 and 259 confirm transfers of 64, 64 and 16 respectively; 256
 confirmed the open container and 260 its close. The engine then began seed-maker
 work. This proves the deposit, not a later payout or ownership match to the HUD.
+
+### Exact proof for an idle keg's partial refill
+
+The prior runtime's wine ticket 261 returned ordinary success while the same-grade
+inventory fell by two and a keg became working. The installed KubeJS implementation
+supports completing an idle keg with one or two inputs already present, but the
+retained evidence cannot retrospectively prove that this was ticket 261's cause.
+Its old result and remaining-batch membership have not been rewritten.
+
+New idle-wine dispatches capture the specific target, prepared tomato hand, menu
+slot, sequence and server-observation generation. Partial completion now requires
+both the latest raw target working transition and a latest raw selected-slot/full
+menu receipt proving exactly one or two identical tomatoes consumed. A different
+target, tags, generation, stale/contradicting state, arbitrary inventory delta or
+predicted menu cannot provide this proof. The opted-in attempt has no broad
+block-or-inventory fallback. Mature collection/refill and preserves keep their
+existing full-input rules; the module also rechecks the current target and state.
+
+The full build passed **1,626 tests / 119 suites**, zero failures, errors or skips
+(16 new regressions). SHA256:
+`F17B15D0B02E7DEDC63D3C3DE3914E3B2BF17CCE2F5B8A0C02C6530B7B1329F2`.
+The pure receipt tests cover the projected selected proof, not direct native
+slot-versus-full-menu arbitration; that wrapper was code reviewed. Native partial
+refill acceptance is pending. No existing production stage was manufactured to
+force such a test, and this artifact is not yet installed.
