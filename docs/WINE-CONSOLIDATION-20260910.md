@@ -60,3 +60,38 @@ read-only review found no blocker. Artifact SHA-256:
 These tests and the retained real-packet diagnosis establish the specific fix;
 they do not establish multi-hour unattended stability. Native restart/resume
 verification is recorded separately below when completed.
+
+## Installed-client checkpoint
+
+The previous Society process was normally closed and the artifact above installed
+with a recoverable previous-JAR backup. The replacement client connected to the
+same server, loaded the existing 596 registered POIs, and retained the active wine
+batch's 95 outstanding machines. No profile or pending machine queue was erased.
+This build also includes the previously uninstalled logging continuation fixes.
+
+Normal `start` acknowledged `CONTINUOUS` at 2026-09-09 15:15:14 UTC. The former
+inventory failure fence was absent after reconnect. The client handled its held
+tomatoes and proceeded into harvesting. This is a resume checkpoint, not proof
+that all remaining wine work or a fresh metadata-race occurrence has completed.
+
+The resumed pipeline subsequently harvested tomatoes, handled tomato overflow,
+harvested/stored ancient fruit, shipped pine tar, and serviced the preserves rack.
+At 15:21:10 UTC it held 144 preserves and 48 remaining tomatoes from the 768-item
+haul: 720 tomatoes consumed matches 144 recipes at five each. Remaining tomatoes
+were handled before shipping; preserves reached zero during the shipping phase,
+then seed-making began. The rack was observed as all 144 working/non-mature.
+A read-only query retained 31/31 successful native action receipts for tickets
+452–482; that bounded range is not asserted to cover the whole pipeline.
+
+There was a brief direct-player-input OFF interval at 15:18:29–30, followed by
+ON at 15:18:31. Do not describe the interval as uninterrupted automation. No new
+failure fence was observed in this check, including after that manual interruption.
+
+By the final production observation all 384 wine machines were working and none
+were mature. The original batch's 95 outstanding entries remain preserved; no
+cooldown or completion flags were forced for testing. A new live occurrence of
+the fixed wine RESTORE metadata race therefore has **not** been claimed. The
+specific fix is supported by the retained failing native packet, exact detached
+mod prediction, and regression tests. Continuous mode remains on, with the
+already attached bounded passive diagnostic recorder; this is not a guarantee
+of multi-hour unattended stability or a separate automatic repair service.
