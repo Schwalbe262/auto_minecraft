@@ -22,17 +22,19 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 
-/** One narrowly admitted native mining stroke or one UP-face sapling use. */
+/** One narrowly admitted tree/obstructing-leaf mining stroke or one UP-face sapling use. */
 final class NativeLoggingActions {
     final long generation,beforeSequence;
     final Pos target;
     private final boolean planting;
+    private final Action.ClearLoggingLeaf leafAction;
     private final ItemStack held;
     private final int heldIndex;
     private final BlockState original;
     private final Map<Pos,Integer> beforeChops;
     private final Map<Pos,BlockState> beforeStates;
     private final Direction face;
+    private final Vec3 miningHit;
     private float progress;
     private boolean started,stopped,aborted;
 
@@ -41,24 +43,38 @@ final class NativeLoggingActions {
             || !mc.player.inventoryMenu.getCarried().isEmpty() || mc.player.isCreative() || mc.player.isSpectator())
             throw new IllegalArgumentException("Logging requires the normal survival inventory");
         planting=action instanceof Action.PlantSapling;
-        target=planting ? ((Action.PlantSapling)action).pos() : ((Action.ChopTree)action).pos();
+        leafAction=action instanceof Action.ClearLoggingLeaf leaf ? leaf : null;
+        if (planting) target=((Action.PlantSapling)action).pos();
+        else if (leafAction!=null) target=leafAction.pos();
+        else if (action instanceof Action.ChopTree chop) target=chop.pos();
+        else throw new IllegalArgumentException("Unsupported native logging operation");
         generation=observations.generation(); beforeSequence=observations.sequence();
         heldIndex=mc.player.getInventory().selected; held=mc.player.getMainHandItem().copy();
         original=mc.level.getBlockState(MinecraftWorld.nativePos(target));
         if (planting) {
             if (!held.is(Items.SPRUCE_SAPLING) || !canPlant(mc,target)) throw new IllegalArgumentException("Sapling planting position changed");
-            face=Direction.UP; beforeChops=Map.of(); beforeStates=Map.of();
+            face=Direction.UP; miningHit=null; beforeChops=Map.of(); beforeStates=Map.of();
         } else {
             if (mc.player.isShiftKeyDown() || !mc.player.onGround()) throw new IllegalArgumentException("Logging requires standing without crouching");
-            var proof=NativeLoggingTree.inspect(mc.level,target,context.profile().loggingPlots);
-            if (!proof.safe()) throw new IllegalArgumentException(proof.rejection());
-            beforeChops=proof.chops();
-            Map<Pos,BlockState> states=new HashMap<>();
-            beforeChops.keySet().forEach(p -> states.put(p,mc.level.getBlockState(MinecraftWorld.nativePos(p))));
-            beforeStates=Map.copyOf(states);
+            if (leafAction!=null) {
+                String rejection=LoggingLeafRules.rejection(leafAction,context);
+                if (rejection!=null) throw new IllegalArgumentException(rejection);
+                if (!original.is(Blocks.SPRUCE_LEAVES) || !held.is(Items.NETHERITE_AXE)
+                    || heldIndex!=context.profile().loggingAxeHotbarSlot || !world.loggingAxe(heldIndex))
+                    throw new IllegalArgumentException("Only the registered axe may clear the verified spruce leaf");
+                // A leaf action never borrows the whole-tree/multiple-base chop ACK path.
+                beforeChops=Map.of(); beforeStates=Map.of();
+            } else {
+                var proof=NativeLoggingTree.inspect(mc.level,target,context.profile().loggingPlots);
+                if (!proof.safe()) throw new IllegalArgumentException(proof.rejection());
+                beforeChops=proof.chops();
+                Map<Pos,BlockState> states=new HashMap<>();
+                beforeChops.keySet().forEach(p -> states.put(p,mc.level.getBlockState(MinecraftWorld.nativePos(p))));
+                beforeStates=Map.copyOf(states);
+            }
             var hit=world.hit(target,mc.player.getEyePosition());
-            if (hit==null) throw new IllegalArgumentException("Tree target is not visible");
-            face=hit.getDirection();
+            if (hit==null) throw new IllegalArgumentException("Logging target is not visible");
+            face=hit.getDirection(); miningHit=hit.getLocation();
             progress=original.getDestroyProgress(mc.player,mc.level,MinecraftWorld.nativePos(target));
             if (!Float.isFinite(progress) || progress<=0) throw new IllegalArgumentException("Native axe cannot break this tree block");
         }
@@ -85,8 +101,16 @@ final class NativeLoggingActions {
         if (planting) return null;
         boolean axeMatches=stopped ? axeAfterStop(NativeLoggingRecipe.stack(held),NativeLoggingRecipe.stack(mc.player.getMainHandItem()))
             : ItemStack.matches(held,mc.player.getMainHandItem());
-        if (!miningContinuationAllowed(LoggingRules.allowed(context) && LoggingRules.base(context.profile(),target),
-                mc.player.onGround(),mc.player.isShiftKeyDown(),world.canInteract(target,4),
+        boolean authorised=leafAction==null ? LoggingRules.allowed(context) && LoggingRules.base(context.profile(),target)
+            : LoggingLeafRules.authorised(context,leafAction.stump(),leafAction.pos());
+        // AIR may already be applied before its raw reply is observed. After STOP,
+        // keep the admitted hit point in ordinary reach without requiring the removed
+        // leaf to remain ray-hittable. This is not evidence of completion.
+        boolean inReach=leafAction!=null && stopped
+            ? mc.player.getEyePosition().distanceTo(miningHit)<=Math.min(4,mc.gameMode.getPickRange())
+            : world.canInteract(target,4);
+        if (!miningContinuationAllowed(authorised,
+                mc.player.onGround(),mc.player.isShiftKeyDown(),inReach,
                 mc.player.getInventory().selected==heldIndex && world.loggingAxe(heldIndex) && axeMatches))
             return "벌목 거리·자세 또는 대상 블록이 변경되었습니다.";
         // STOP is never replayed. Keep checking the operating boundary while its
@@ -94,11 +118,15 @@ final class NativeLoggingActions {
         if (stopped) return null;
         if (!original.equals(mc.level.getBlockState(MinecraftWorld.nativePos(target))))
             return "벌목 대상 블록이 변경되었습니다.";
+        if (leafAction!=null) {
+            String rejection=LoggingLeafRules.rejection(leafAction,context);
+            if (rejection!=null) return rejection;
+        }
         float increment=original.getDestroyProgress(mc.player,mc.level,MinecraftWorld.nativePos(target));
         if (!Float.isFinite(increment) || increment<=0) return "네이티브 채굴 속도를 확인할 수 없습니다.";
         progress+=increment;
         if (progress>=1) {
-            String rejection=LoggingRules.chopRejection(target,context);
+            String rejection=leafAction==null ? LoggingRules.chopRejection(target,context) : LoggingLeafRules.rejection(leafAction,context);
             if (rejection!=null) return rejection;
             stopped=true; send(mc,observations,ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK);
         }
@@ -128,6 +156,12 @@ final class NativeLoggingActions {
     }
     boolean confirmed(ServerObservations observations) {
         if (generation!=observations.generation()) return false;
+        if (leafAction!=null) {
+            return leafClearedConfirmed(started,original.is(Blocks.SPRUCE_LEAVES),held.is(Items.NETHERITE_AXE),
+                generation,observations.generation(),beforeSequence,target,
+                observations.nativeBlocksSince(beforeSequence).stream().map(s -> new LeafBlockAck(s.seq(),s.pos(),
+                    s.state().is(Blocks.AIR))).toList());
+        }
         if (planting) {
             // Placement is a world postcondition, not an inventory transfer. Concurrent
             // falling-tree pickups may coalesce away the transient held-count decrement.
@@ -146,6 +180,22 @@ final class NativeLoggingActions {
                 && LoggingRules.CHOPPED_LOG.equals(BuiltInRegistries.BLOCK.getKey(s.state().getBlock()).toString())));
     }
     record PlantBlockAck(long sequence,Pos pos,boolean planted) { }
+    record LeafBlockAck(long sequence,Pos pos,boolean air) { }
+    /** Latest exact-target raw server AIR only; no tree-chop, inventory or client prediction proof. */
+    static boolean leafClearedConfirmed(boolean started,boolean originalSpruceLeaf,boolean axeHeld,
+            long generation,long currentGeneration,long beforeSequence,Pos target,List<LeafBlockAck> replies) {
+        if (!started || !originalSpruceLeaf || !axeHeld || generation!=currentGeneration || target==null || replies==null) return false;
+        LeafBlockAck latest=null;
+        Set<Long> targetSequences=new HashSet<>();
+        for (LeafBlockAck reply:replies) {
+            if (reply==null || reply.pos()==null) return false;
+            if (reply.sequence()>beforeSequence && target.equals(reply.pos())) {
+                if (!targetSequences.add(reply.sequence())) return false;
+                if (latest==null || reply.sequence()>latest.sequence()) latest=reply;
+            }
+        }
+        return latest!=null && latest.air();
+    }
     /** Reduced raw-block proof, kept pure so stale/latest/connection guards can be tested without a running registry. */
     static boolean plantingConfirmed(boolean started,boolean originalAir,boolean saplingHeld,
             long generation,long currentGeneration,long beforeSequence,Pos target,List<PlantBlockAck> replies) {

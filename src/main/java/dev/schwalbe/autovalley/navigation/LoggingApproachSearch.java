@@ -12,14 +12,23 @@ public final class LoggingApproachSearch {
     private static final double REACH=4, GOAL_RADIUS=REACH+2.5;
     public enum Status { SEARCHING, FOUND, NO_VISIBLE_STANCE, UNLOADED, CHANGED }
     private final WorldAccess source;
+    private final LoggingPlot plot;
+    private final boolean leaves;
     private final List<Pos> targets,stances,plotCells;
     private final List<BlockData> plotStates;
     private int nextStance,nextTarget,checkedStances,checkedQueries;
-    private Pos current,chosenTarget,chosenStance,missing;
+    private Pos current,chosenTarget,chosenBase,chosenStance,missing,pendingLeaf,pendingBase;
     private long budgetTick=Long.MIN_VALUE;
     private Status status=Status.SEARCHING;
 
     public LoggingApproachSearch(WorldAccess world,LoggingPlot plot,List<Pos> targets) {
+        this(world,plot,targets,false);
+    }
+    /** Same finite stance envelope; the returned leaf is not itself action authority. */
+    public static LoggingApproachSearch forLeafObstructions(WorldAccess world,LoggingPlot plot,List<Pos> targets) {
+        return new LoggingApproachSearch(world,plot,targets,true);
+    }
+    private LoggingApproachSearch(WorldAccess world,LoggingPlot plot,List<Pos> targets,boolean leaves) {
         if (world==null || plot==null || plot.corner()==null
             || Math.abs((long)plot.corner().x())>29_999_984 || Math.abs((long)plot.corner().z())>29_999_984
             || plot.corner().y() < -2032 || plot.corner().y()>1967
@@ -27,7 +36,7 @@ public final class LoggingApproachSearch {
             || targets.stream().anyMatch(Objects::isNull) || new HashSet<>(targets).size()!=targets.size()
             || !plot.plantingPositions().containsAll(targets))
             throw new IllegalArgumentException("Logging approaches must stay inside one registered 2x2 base");
-        source=world; this.targets=List.copyOf(targets);
+        source=world; this.plot=plot; this.leaves=leaves; this.targets=List.copyOf(targets);
         plotCells=plot.plantingPositions();
         if (plotCells.stream().anyMatch(p -> !world.loaded(p))
             || targets.stream().anyMatch(p -> !LoggingRules.stump(world.block(p))))
@@ -51,6 +60,7 @@ public final class LoggingApproachSearch {
     }
     public Status status() { return status; }
     public Pos target() { return chosenTarget; }
+    public Pos chosenBase() { return chosenBase; }
     public Pos stance() { return chosenStance; }
     public Pos missing() { return missing; }
     public int candidateCount() { return stances.size(); }
@@ -63,9 +73,11 @@ public final class LoggingApproachSearch {
     }
     /** A changed endpoint must be replanned, never promoted to movement/action permission. */
     public boolean endpointValid(WorldAccess world) {
-        return status==Status.FOUND && matches(world,targets) && loadedStance(world,chosenStance)
+        if (!(status==Status.FOUND && matches(world,targets) && loadedStance(world,chosenStance)
             && world.canStand(chosenStance) && loadedRayBounds(world,chosenStance,chosenTarget)
-            && world.canInteractFrom(chosenStance,chosenTarget,REACH);
+            && world.canInteractFrom(chosenStance,chosenTarget,REACH))) return false;
+        return !leaves || validLeaf(world,chosenTarget) && loadedRayBounds(world,chosenStance,chosenBase)
+            && chosenTarget.equals(world.loggingLeafObstructionFrom(chosenStance,chosenBase,REACH));
     }
     public Status advance(WorldAccess world) {
         return advance(world,STANCES_PER_TICK,QUERIES_PER_TICK,SLICE_NANOS);
@@ -79,6 +91,19 @@ public final class LoggingApproachSearch {
         budgetTick=world.tick();
         int positions=0,queries=0; long began=System.nanoTime(); boolean worked=false;
         while (status==Status.SEARCHING && (!worked || System.nanoTime()-began<nanosBudget)) {
+            if (pendingLeaf!=null) {
+                if (queries>=queryBudget) break;
+                Pos leaf=pendingLeaf,base=pendingBase;pendingLeaf=pendingBase=null;
+                if (!validLeaf(world,leaf)) { if (!world.loaded(leaf)) rememberMissing(leaf);continue; }
+                if (!loadedStance(world,current)) { rememberMissing(current);current=null;continue; }
+                if (!world.canStand(current)) { current=null;continue; }
+                if (!loadedRayBounds(world,current,leaf)) { rememberMissing(current);continue; }
+                queries++;checkedQueries++;worked=true;
+                if (world.canInteractFrom(current,leaf,REACH)) {
+                    chosenTarget=leaf;chosenBase=base;chosenStance=current;return status=Status.FOUND;
+                }
+                continue;
+            }
             if (current==null) {
                 if (nextStance>=stances.size()) return status=missing==null ? Status.NO_VISIBLE_STANCE : Status.UNLOADED;
                 if (positions>=stanceBudget) break;
@@ -93,11 +118,17 @@ public final class LoggingApproachSearch {
             nextTarget++; worked=true;
             if (!loadedRayBounds(world,current,target)) { rememberMissing(current); continue; }
             queries++; checkedQueries++;
-            if (world.canInteractFrom(current,target,REACH)) {
-                chosenTarget=target; chosenStance=current; return status=Status.FOUND;
+            if (leaves) {
+                Pos leaf=world.loggingLeafObstructionFrom(current,target,REACH);
+                if (leaf!=null && LoggingLeafRules.inShell(plot,leaf)) { pendingLeaf=leaf;pendingBase=target; }
+            } else if (world.canInteractFrom(current,target,REACH)) {
+                chosenTarget=target; chosenBase=target; chosenStance=current; return status=Status.FOUND;
             }
         }
         return status;
+    }
+    private boolean validLeaf(WorldAccess world,Pos leaf) {
+        return LoggingLeafRules.inShell(plot,leaf) && world.loaded(leaf) && world.block(leaf).id().equals(LoggingLeafRules.LEAVES);
     }
     private void rememberMissing(Pos pos) { if (missing==null) missing=pos; }
     private static boolean loadedStance(WorldAccess world,Pos feet) {

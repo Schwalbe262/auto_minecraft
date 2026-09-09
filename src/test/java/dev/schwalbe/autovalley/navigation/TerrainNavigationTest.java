@@ -36,6 +36,52 @@ class TerrainNavigationTest {
         assertEquals(0,f.submissions);f.grounded=false;
         assertNotEquals(Navigation.Result.ARRIVED,f.navigation.moveToObserve(START,16,f.context));
     }
+    @Test void loggingPositionDoesNotStopMerelyBecauseTheObstructingLeafIsWithinReach() {
+        Fixture f=new Fixture(5);f.profile.loggingRunActive=true;f.context.session().oneShotFeature=Feature.LOGGING;
+        Pos nearbyLeaf=new Pos(3,64,0),provenStance=new Pos(5,64,0);
+        assertEquals(Navigation.Result.ARRIVED,f.navigation.moveToLogging(nearbyLeaf,4,f.context));
+        assertEquals(.5,f.x);f.navigation.reset();f.rays=0;f.now++;
+        Navigation.Result result=Navigation.Result.MOVING;
+        for(int i=0;i<250 && result==Navigation.Result.MOVING;i++) {
+            result=f.navigation.moveToLoggingPosition(provenStance,.1,f.context);f.advance();
+        }
+        assertEquals(Navigation.Result.ARRIVED,result);assertTrue(Math.abs(f.x-5.5)<=.1);
+        assertEquals(0,f.rays,"A literal stance is not a ray to the leaf or the block occupying the feet cell");
+        assertEquals(0,f.submissions);assertNull(f.movement);
+    }
+    @Test void loggingPositionUsesTheActualFractionalSurfaceRatherThanIntegerCellY() {
+        Fixture f=new Fixture(5);f.profile.loggingRunActive=true;f.context.session().oneShotFeature=Feature.LOGGING;
+        f.y=63.5;f.standing.forEach(p -> f.heights.put(p,63.5));f.interaction=false;Pos target=new Pos(5,64,0);
+        Navigation.Result result=Navigation.Result.MOVING;
+        for(int i=0;i<250 && result==Navigation.Result.MOVING;i++) {
+            result=f.navigation.moveToLoggingPosition(target,.1,f.context);f.advance();
+        }
+        assertEquals(Navigation.Result.ARRIVED,result,f.navigation.failureReason());
+        assertEquals(63.5,f.y);assertTrue(Math.abs(f.x-5.5)<=.1);assertTrue(f.player().distance(target)>.49);
+        assertEquals(target,NavigationFeet.resolve(f,f.player()));assertEquals(0,f.rays);assertEquals(0,f.submissions);
+    }
+    @Test void loggingPositionRetainsRunPermissionAndResetBoundaries() {
+        Fixture f=new Fixture(5);Pos target=new Pos(5,64,0);
+        assertEquals(Navigation.Result.BLOCKED,f.navigation.moveToLoggingPosition(target,.1,f.context));
+        f.profile.loggingRunActive=true;assertEquals(Navigation.Result.BLOCKED,f.navigation.moveToLoggingPosition(target,.1,f.context));
+        assertNull(f.movement);f.context.session().oneShotFeature=Feature.LOGGING;f.now++;
+        for(int i=0;i<20 && f.movement==null;i++){f.navigation.moveToLoggingPosition(target,.1,f.context);f.now++;}
+        assertNotNull(f.movement);assertTrue(f.navigation.permitsTransit(START,f.context));
+        f.navigation.reset();assertNull(f.movement);assertFalse(f.navigation.permitsTransit(START,f.context));
+        f.profile.loggingRunActive=false;assertEquals(Navigation.Result.BLOCKED,f.navigation.moveToLoggingPosition(target,.1,f.context));
+        assertEquals(0,f.submissions);
+    }
+    @Test void loggingPositionKeepsTheExistingVerifiedLoggingAscentAuthority() {
+        Fixture f=new Fixture(0);Pos end=new Pos(1,65,0);f.standing.add(end);f.nativeLoggingJump=true;
+        f.profile.loggingRunActive=true;f.context.session().oneShotFeature=Feature.LOGGING;
+        f.profile.loggingPlots.add(new LoggingPlot("nearby",new Pos(0,64,3)));
+        for(int i=0;i<30 && f.loggingLaunches==0;i++) {
+            assertEquals(Navigation.Result.MOVING,f.navigation.moveToLoggingPosition(end,.1,f.context),f.navigation.failureReason());f.now++;
+        }
+        assertEquals(1,f.loggingLaunches);assertEquals(0,f.launches);assertEquals(0,f.submissions);
+        assertFalse(f.navigation.permitsStepUp(new LoggingJumpEdge(START,end),f.context),"Logging authority is not general step-up authority");
+        f.navigation.reset();assertNull(f.movement);
+    }
     @Test void unloadedDestinationFollowsOnlySafePrefixThenWaitsAndResumesWhenLoaded() {
         Fixture f=new Fixture(12);Pos target=new Pos(12,64,0);f.unloadedFromX=5;
         for(int i=0;i<180 && !f.navigation.diagnosticStatus().equals("WAITING_CHUNKS");i++) {
@@ -247,7 +293,8 @@ class TerrainNavigationTest {
         final Profile profile=new Profile();final LocalNavigator navigation=new LocalNavigator();
         final Context context=new Context(this,this,navigation,profile,new SessionState());
         final Set<Pos> standing=new HashSet<>();
-        long now;double x=.5,y=64,z=.5;boolean grounded=true,interaction=true,allowStairs,largeFloor,nativeStepUp;
+        final Map<Pos,Double> heights=new HashMap<>();
+        long now;double x=.5,y=64,z=.5;boolean grounded=true,interaction=true,allowStairs,largeFloor,nativeStepUp,nativeLoggingJump;
         int unloadedFromX=Integer.MAX_VALUE,rays,submissions,launches,loggingLaunches;Movement movement;
         Pos door;boolean doorAcknowledged;
         Fixture(int length) { for(int i=0;i<=length;i++) standing.add(new Pos(i,64,0)); }
@@ -264,10 +311,11 @@ class TerrainNavigationTest {
         public PlayerState player(){return new PlayerState(x,y,z,0,0,grounded,false,20,20,0,true,true);}
         public boolean loaded(Pos p){return p.x()<unloadedFromX;}
         public boolean canStand(Pos p){return loaded(p) && (standing.contains(p) || largeFloor && p.y()==64 && p.x()>=0 && p.z()>=0 && p.x()<256 && p.z()<256);}
-        public double standingY(Pos p){return canStand(p)?p.y():Double.NaN;}
+        public double standingY(Pos p){return canStand(p)?heights.getOrDefault(p,(double)p.y()):Double.NaN;}
         public boolean canTraverse(Pos from,Pos to){return canStand(from) && canStand(to)
             && Math.abs(from.x()-to.x())+Math.abs(from.z()-to.z())==1 && (from.y()==to.y() || allowStairs && Math.abs(from.y()-to.y())<=1);}
         public boolean canStepUp(LoggingJumpEdge edge,Profile profile){return nativeStepUp;}
+        public boolean canLoggingJump(LoggingJumpEdge edge,Profile profile){return nativeLoggingJump;}
         public BlockData block(Pos p){assertTrue(loaded(p),"No reads into unloaded terrain");return p.equals(door)
             ? new BlockData(p,"minecraft:oak_door",Map.of("open",Boolean.toString(doorAcknowledged))) : new BlockData(p,"minecraft:air",Map.of());}
         public List<BlockData> scan(Pos p,int h,int v){return List.of();}

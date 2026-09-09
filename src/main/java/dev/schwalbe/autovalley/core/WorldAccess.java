@@ -47,6 +47,10 @@ public interface WorldAccess {
     /** Read-only planting goal from a verified standing cell; unknown adapters fail closed. */
     default boolean canPlantLoggingSaplingFrom(Pos feet,Pos target,double reach) { return false; }
     default boolean loggingAxe(int inventoryIndex) { return false; }
+    /** First actual OUTLINE obstruction of a reachable registered base; unknown adapters admit no leaf. */
+    default Pos loggingLeafObstruction(Pos base,double reach) { return null; }
+    /** Read-only version from a natively supported standing cell; not permission to clear a leaf. */
+    default Pos loggingLeafObstructionFrom(Pos feet,Pos base,double reach) { return null; }
     /** Exact native stack fingerprint for protecting a borrowed hotbar item; unknown is null. */
     default String loggingItemFingerprint(int inventoryIndex) { return null; }
     default boolean loggingCraftingMenu() { return false; }

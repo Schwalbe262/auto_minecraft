@@ -5,6 +5,7 @@ import dev.schwalbe.autovalley.core.*;
 import dev.schwalbe.autovalley.modules.*;
 import dev.schwalbe.autovalley.navigation.LocalNavigator;
 import dev.schwalbe.autovalley.ui.ValleyScreen;
+import dev.schwalbe.autovalley.ui.LoggingLeafSettings;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.network.Connection;
@@ -231,6 +232,27 @@ public final class ClientRuntime {
     public void manualOutputInteraction() { MachineOutputLedger.invalidateLiveEvidence(context); }
     public void openSettings() { pause("설정 중"); mc.setScreen(new ValleyScreen()); }
     public void toggleFeature(Feature feature) { pause("기능 설정 변경"); profile.enabled.put(feature,!profile.enabled(feature)); saveProfile(); }
+    private LoggingLeafSettings.Boundary loggingLeafSettingBoundary() {
+        boolean connected=mc.player!=null && mc.level!=null && mc.getConnection()!=null && context.profile()==profile;
+        return new LoggingLeafSettings.Boundary(running(),recording(),connected,
+            connected && mc.player.onGround() && !mc.player.isSleeping(),
+            connected && mc.player.containerMenu==mc.player.inventoryMenu,
+            connected && mc.player.inventoryMenu.getCarried().isEmpty(),actions.settingsEditSafe(),
+            profileKey!=null && persistenceError==null && !automationStartBlocked());
+    }
+    /** Explicit setting only; does not start work, reconcile failures or alter a retained logging batch. */
+    public boolean loggingLeafSettingEditable() { return LoggingLeafSettings.editable(profile,loggingLeafSettingBoundary()); }
+    public boolean setLoggingLeafClearing(boolean desired) {
+        try {
+            LoggingLeafSettings.apply(profile,desired,loggingLeafSettingBoundary(),this::saveProfile);
+            notifyUser(Component.translatable("autovalley.logging.leaf_saved",
+                Component.translatable("autovalley."+(desired ? "on" : "off"))).getString());
+            return true;
+        } catch (RuntimeException rejected) {
+            notifyUser(Component.translatable("autovalley.logging.leaf_edit_blocked").getString());
+            return false;
+        }
+    }
     public void saveProfile() {
         if (profileKey==null) throw new IllegalStateException("게임에 접속한 뒤 설정하세요.");
         if (persistenceError!=null) throw new IllegalStateException(persistenceError);

@@ -104,6 +104,74 @@ class LoggingApproachSearchTest {
         search.advance(world,1,1,Long.MAX_VALUE); world.tick=9;
         assertEquals(LoggingApproachSearch.Status.CHANGED,search.advance(world));
     }
+    @Test void leafModeKeepsTheRegisteredBaseAndReturnsOnlyItsProvenVisibleLeaf() {
+        World world=new World();Pos feet=new Pos(3,63,0),base=world.plot.corner(),leaf=base.offset(2,1,0);
+        world.leaf(feet,base,leaf);LoggingApproachSearch search=world.leafSearch();
+        assertEquals(LoggingApproachSearch.Status.FOUND,finish(search,world));
+        assertEquals(base,search.chosenBase());assertEquals(leaf,search.target());assertEquals(feet,search.stance());
+        assertTrue(search.endpointValid(world));assertTrue(search.matches(world,world.plot.plantingPositions()));
+        assertEquals(world.search().candidateCount(),search.candidateCount(),"Leaf mode never expands the old 6.5-block base envelope");
+    }
+    @Test void leafModeRequiresBothNativeObstructionAndOrdinaryLeafVisibility() {
+        World world=new World();Pos feet=new Pos(3,63,0),base=world.plot.corner(),leaf=base.offset(2,1,0);
+        world.leaf(feet,base,leaf);world.visible.clear();
+        assertEquals(LoggingApproachSearch.Status.NO_VISIBLE_STANCE,finish(world.leafSearch(),world));
+        world.visible.put(feet,Set.of(leaf));world.obstructions.clear();
+        assertEquals(LoggingApproachSearch.Status.NO_VISIBLE_STANCE,finish(world.leafSearch(),world));
+        world.leaf(feet,base,leaf);world.standing.clear();
+        assertEquals(LoggingApproachSearch.Status.NO_VISIBLE_STANCE,finish(world.leafSearch(),world));
+    }
+    @Test void leafModeNeverAcceptsOtherSpeciesOutsideShellOrAnyPlantingBaseCell() {
+        for(Pos leaf:List.of(new Pos(3,65,0),new Pos(2,67,0),new Pos(2,63,0),new Pos(1,64,1))) {
+            World world=new World();Pos feet=new Pos(3,63,0),base=world.plot.corner();
+            world.standing.add(feet);world.obstructions.put(List.of(feet,base),leaf);world.visible.put(feet,Set.of(leaf));
+            if(!world.plot.plantingPositions().contains(leaf))world.blocks.put(leaf,new BlockData(leaf,LoggingLeafRules.LEAVES,Map.of()));
+            assertEquals(LoggingApproachSearch.Status.NO_VISIBLE_STANCE,finish(world.leafSearch(),world));
+        }
+        World world=new World();Pos feet=new Pos(3,63,0),leaf=world.plot.corner().offset(2,1,0);
+        world.leaf(feet,world.plot.corner(),leaf);world.blocks.put(leaf,new BlockData(leaf,"minecraft:oak_leaves",Map.of()));
+        assertEquals(LoggingApproachSearch.Status.NO_VISIBLE_STANCE,finish(world.leafSearch(),world));
+    }
+    @Test void leafProofAndInteractionEachSpendOneQueryAndRepeatedPollsCannotRefuel() {
+        World world=new World();Pos feet=new Pos(3,63,0),leaf=world.plot.corner().offset(2,1,0);
+        world.leaf(feet,world.plot.corner(),leaf);LoggingApproachSearch search=world.leafSearch();
+        search.advance(world,64,1,Long.MAX_VALUE);
+        assertEquals(1,world.leafQueries);assertEquals(0,world.rays);assertEquals(1,search.checkedQueries());
+        for(int i=0;i<20;i++)search.advance(world,64,1,Long.MAX_VALUE);
+        assertEquals(1,search.checkedQueries());world.tick++;
+        assertEquals(LoggingApproachSearch.Status.FOUND,search.advance(world,64,1,Long.MAX_VALUE));
+        assertEquals(1,world.rays);assertEquals(2,search.checkedQueries());
+    }
+    @Test void leafEndpointNeedsFreshSameObstructionEvenWhenBaseBlockDataDidNotChange() {
+        World world=new World();Pos feet=new Pos(3,63,0),base=world.plot.corner(),leaf=base.offset(2,1,0);
+        world.leaf(feet,base,leaf);LoggingApproachSearch search=world.leafSearch();finish(search,world);
+        world.obstructions.put(List.of(feet,base),base.offset(-1,1,0));
+        assertTrue(search.matches(world,world.plot.plantingPositions()));assertFalse(search.endpointValid(world));
+        world.obstructions.put(List.of(feet,base),leaf);world.blocks.put(leaf,new BlockData(leaf,"minecraft:air",Map.of()));
+        assertFalse(search.endpointValid(world));world.blocks.put(leaf,new BlockData(leaf,LoggingLeafRules.LEAVES,Map.of()));
+        world.unloaded.add(leaf);assertFalse(search.endpointValid(world));world.unloaded.clear();
+        world.standing.clear();assertFalse(search.endpointValid(world));assertFalse(search.endpointValid(new World()));
+    }
+    @Test void unknownLeafAdaptersAndUnloadedReturnedLeavesDoNotCreateAClearingGoal() {
+        World world=new World();world.allStanding=true;
+        assertEquals(LoggingApproachSearch.Status.NO_VISIBLE_STANCE,finish(world.leafSearch(),world));
+        Pos feet=new Pos(3,63,0),base=world.plot.corner(),leaf=base.offset(2,1,0);
+        world.allStanding=false;world.leaf(feet,base,leaf);LoggingApproachSearch search=world.leafSearch();
+        search.advance(world,64,1,Long.MAX_VALUE);world.unloaded.add(leaf);world.tick++;
+        assertEquals(LoggingApproachSearch.Status.UNLOADED,finish(search,world));assertNull(search.target());
+    }
+    @Test void supportLostBetweenBudgetedLeafProofAndInteractionCannotBecomeAnEndpoint() {
+        World world=new World();Pos feet=new Pos(3,63,0),leaf=world.plot.corner().offset(2,1,0);
+        world.leaf(feet,world.plot.corner(),leaf);LoggingApproachSearch search=world.leafSearch();
+        search.advance(world,64,1,Long.MAX_VALUE);world.standing.clear();world.tick++;
+        assertEquals(LoggingApproachSearch.Status.NO_VISIBLE_STANCE,finish(search,world));assertNull(search.target());assertEquals(0,world.rays);
+    }
+    @Test void plainChoppingSearchNeverRequestsLeafClearingProofs() {
+        World world=new World();Pos feet=new Pos(3,63,0),base=world.plot.corner();
+        world.standing.add(feet);world.visible.put(feet,Set.of(base));LoggingApproachSearch search=world.search();
+        assertEquals(LoggingApproachSearch.Status.FOUND,finish(search,world));assertEquals(base,search.target());
+        assertEquals(0,world.leafQueries);
+    }
     private static LoggingApproachSearch.Status finish(LoggingApproachSearch search,World world) {
         for(int i=0;i<2000 && search.status()==LoggingApproachSearch.Status.SEARCHING;i++,world.tick++)
             search.advance(world,64,16,Long.MAX_VALUE);
@@ -113,9 +181,15 @@ class LoggingApproachSearchTest {
         final LoggingPlot plot=new LoggingPlot("test",new Pos(0,64,0));
         final Set<Pos> standing=new HashSet<>(),unloaded=new HashSet<>();
         final Map<Pos,Set<Pos>> visible=new HashMap<>(); final Map<Pos,BlockData> blocks=new HashMap<>();
-        long tick; int rays; boolean allStanding;
+        final Map<List<Pos>,Pos> obstructions=new HashMap<>();
+        long tick; int rays,leafQueries; boolean allStanding;
         World() { for(Pos p:plot.plantingPositions()) blocks.put(p,new BlockData(p,LoggingRules.LOG,Map.of())); }
         LoggingApproachSearch search() { return new LoggingApproachSearch(this,plot,plot.plantingPositions()); }
+        LoggingApproachSearch leafSearch() { return LoggingApproachSearch.forLeafObstructions(this,plot,plot.plantingPositions()); }
+        void leaf(Pos feet,Pos base,Pos leaf) {
+            standing.add(feet);obstructions.put(List.of(feet,base),leaf);visible.put(feet,Set.of(leaf));
+            blocks.put(leaf,new BlockData(leaf,LoggingLeafRules.LEAVES,Map.of()));
+        }
         public long tick() { return tick; }
         public long dayTime() { return 0; }
         public PlayerState player() { return new PlayerState(3.5,63,.5,0,0,true,false,20,20,2,true,true); }
@@ -123,8 +197,13 @@ class LoggingApproachSearchTest {
         public boolean loaded(Pos p) { return !unloaded.contains(p); }
         public boolean canStand(Pos p) { assertTrue(loaded(p)); return allStanding || standing.contains(p); }
         public boolean canInteractFrom(Pos feet,Pos target,double reach) {
-            assertEquals(4,reach); assertTrue(canStand(feet)); assertTrue(loaded(target)); assertTrue(plot.plantingPositions().contains(target));
+            assertEquals(4,reach); assertTrue(canStand(feet)); assertTrue(loaded(target));
+            assertTrue(plot.plantingPositions().contains(target) || blocks.containsKey(target));
             rays++; return visible.getOrDefault(feet,Set.of()).contains(target);
+        }
+        public Pos loggingLeafObstructionFrom(Pos feet,Pos base,double reach) {
+            assertEquals(4,reach);assertTrue(canStand(feet));assertTrue(plot.plantingPositions().contains(base));
+            leafQueries++;return obstructions.get(List.of(feet,base));
         }
         public boolean canTraverse(Pos from,Pos to) { throw new AssertionError("Preflight must not search or execute movement"); }
         public List<BlockData> scan(Pos center,int horizontal,int vertical) { throw new AssertionError("No unbounded scanning API"); }

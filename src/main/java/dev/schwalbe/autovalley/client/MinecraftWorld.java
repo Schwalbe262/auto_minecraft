@@ -338,6 +338,47 @@ public final class MinecraftWorld implements WorldAccess {
         BlockHitResult hit=hit(target,eye);
         return hit!=null && hit.getLocation().distanceTo(eye)<=Math.min(4,reach);
     }
+    @Override public Pos loggingLeafObstruction(Pos base,double reach) {
+        if (mc.player==null) return null;
+        return loggingLeafObstruction(base,mc.player.getEyePosition(),reach);
+    }
+    @Override public Pos loggingLeafObstructionFrom(Pos feet,Pos base,double reach) {
+        if (mc.player==null || feet==null || !loaded(feet) || !canStand(feet)) return null;
+        double surface=standingY(feet);
+        if (!Double.isFinite(surface)) return null;
+        return loggingLeafObstruction(base,new Vec3(feet.x()+.5,surface+mc.player.getEyeHeight(),feet.z()+.5),reach);
+    }
+    private Pos loggingLeafObstruction(Pos base,Vec3 eye,double reach) {
+        try {
+            if (mc.level==null || mc.player==null || mc.gameMode==null || base==null || !loaded(base)
+                    || eye==null || !Double.isFinite(eye.x) || !Double.isFinite(eye.y) || !Double.isFinite(eye.z)
+                    || !Double.isFinite(reach) || reach<=0) return null;
+            BlockPos bp=nativePos(base);BlockState state=mc.level.getBlockState(bp);
+            if (!loggingBase(state)) return null;
+            double limit=Math.min(4,Math.min(reach,mc.gameMode.getPickRange()));
+            if (!Double.isFinite(limit) || limit<=0 || !loadedLeafRayBounds(base,eye,limit)) return null;
+            var boxes=state.getShape(mc.level,bp,CollisionContext.of(mc.player)).toAabbs();
+            BlockPos leaf=NativeLoggingLeafHit.obstruction(bp,eye,boxes,limit,
+                end -> mc.level.clip(new ClipContext(eye,end,ClipContext.Block.OUTLINE,ClipContext.Fluid.NONE,mc.player)),
+                p -> loaded(pos(p)) && mc.level.getBlockState(p).is(Blocks.SPRUCE_LEAVES));
+            return leaf==null ? null : pos(leaf);
+        } catch (RuntimeException unavailable) { return null; }
+    }
+    private boolean loadedLeafRayBounds(Pos base,Vec3 eye,double reach) {
+        // Keep even the loaded/border preflight local before any native outline ray.
+        double dx=Math.max(0,Math.max(base.x()-eye.x,eye.x-base.x()-1));
+        double dy=Math.max(0,Math.max(base.y()-eye.y,eye.y-base.y()-1));
+        double dz=Math.max(0,Math.max(base.z()-eye.z,eye.z-base.z()-1));
+        if (dx*dx+dy*dy+dz*dz>reach*reach) return false;
+        int minX=(int)Math.floor(Math.min(eye.x,base.x())),maxX=(int)Math.floor(Math.max(eye.x,base.x()+1.0));
+        int minY=(int)Math.floor(Math.min(eye.y,base.y())),maxY=(int)Math.floor(Math.max(eye.y,base.y()+1.0));
+        int minZ=(int)Math.floor(Math.min(eye.z,base.z())),maxZ=(int)Math.floor(Math.max(eye.z,base.z()+1.0));
+        if ((long)(maxX-minX+1)*(maxY-minY+1)*(maxZ-minZ+1)>512
+                || !insideBorder(new AABB(minX,minY,minZ,maxX+1.0,maxY+1.0,maxZ+1.0))) return false;
+        for(int x=minX;x<=maxX;x++) for(int y=minY;y<=maxY;y++) for(int z=minZ;z<=maxZ;z++)
+            if (!loaded(new Pos(x,y,z))) return false;
+        return true;
+    }
     private static boolean loggingBase(BlockState state) {
         return state.is(Blocks.SPRUCE_LOG)
             || LoggingRules.CHOPPED_LOG.equals(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());

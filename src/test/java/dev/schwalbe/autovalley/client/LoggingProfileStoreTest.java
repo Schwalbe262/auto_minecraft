@@ -23,6 +23,7 @@ class LoggingProfileStoreTest {
         assertEquals(0, p.loggingSaplingReserve); assertEquals(LoggingMode.ALL_GROWN, p.loggingMode);
         assertEquals(1200, p.loggingCheckTicks); assertEquals(1, p.loggingCycleDays);
         assertFalse(p.loggingRunActive); assertTrue(p.loggingRemainingPlots.isEmpty());
+        assertFalse(p.loggingClearObstructingLeaves);
         assertTrue(p.loggingReplantingPlots.isEmpty()); assertNull(p.loggingHotbarLease);
     }
 
@@ -36,20 +37,25 @@ class LoggingProfileStoreTest {
         assertTrue(loaded.enabled(Feature.HARVEST)); assertEquals(-1, loaded.loggingAxeHotbarSlot);
         assertTrue(loaded.loggingPlots.isEmpty()); assertTrue(loaded.loggingRemainingPlots.isEmpty());
         assertFalse(loaded.loggingRunActive); assertEquals(json, Files.readString(file));
+        assertFalse(loaded.loggingClearObstructingLeaves);
     }
 
     @Test void explicitLoggingToggleAndSettingsRoundTripWithoutChangingOtherModules() throws Exception {
         Profile p = new Profile(); p.enabled.put(Feature.LOGGING, true); p.enabled.put(Feature.HARVEST, false);
         p.loggingAxeHotbarSlot = 2; p.loggingMode = LoggingMode.DAILY_GROWN;
         p.loggingCheckTicks = 25; p.loggingCycleDays = 3; p.loggingSaplingReserve = 20;
+        p.loggingClearObstructingLeaves = true;
         ProfileStore store = new ProfileStore(directory); String key = ProfileStore.key("logging settings");
         store.save(key, p); Profile loaded = store.load(key);
         assertTrue(loaded.enabled(Feature.LOGGING)); assertFalse(loaded.enabled(Feature.HARVEST));
+        assertTrue(loaded.loggingClearObstructingLeaves);
         assertEquals(2, loaded.loggingAxeHotbarSlot); assertEquals(LoggingMode.DAILY_GROWN, loaded.loggingMode);
         assertEquals(25, loaded.loggingCheckTicks); assertEquals(3, loaded.loggingCycleDays); assertEquals(20, loaded.loggingSaplingReserve);
         loaded.enabled.put(Feature.LOGGING, false); loaded.loggingMode = LoggingMode.ONCE_ONLY;
+        loaded.loggingClearObstructingLeaves = false;
         store.save(key, loaded); assertFalse(store.load(key).enabled(Feature.LOGGING));
         assertEquals(LoggingMode.ONCE_ONLY, store.load(key).loggingMode);
+        assertFalse(store.load(key).loggingClearObstructingLeaves);
     }
 
     @Test void manyLoggingPlotsRoundTripAlongsideTomatoFarmsAndWineDestinations() throws Exception {

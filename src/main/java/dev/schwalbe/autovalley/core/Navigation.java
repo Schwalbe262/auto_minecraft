@@ -9,6 +9,8 @@ public interface Navigation {
     default Result moveToObserve(Pos target,double reach,Context context) { context.actions().stopMovement(); return Result.BLOCKED; }
     /** Only the active logging routine may opt in to its separately verified ascent edges. */
     default Result moveToLogging(Pos target,double reach,Context context) { return moveTo(target,reach,context); }
+    /** Reach an exact standing surface while retaining logging's existing movement authority. */
+    default Result moveToLoggingPosition(Pos target,double reach,Context context) { context.actions().stopMovement(); return Result.BLOCKED; }
     /** Reach a stance that can plant every missing cell of one registered 2x2 plot. */
     default Result moveToLoggingPlanting(java.util.List<Pos> targets,Context context) {
         context.actions().stopMovement();

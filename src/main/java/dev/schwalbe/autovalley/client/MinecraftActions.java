@@ -59,6 +59,16 @@ public final class MinecraftActions implements ActionPort {
     public void context(Context context) { this.context=context; }
     public void enabled(boolean enabled) { if (!enabled) stopMovement(); this.enabled=enabled; }
     public boolean busy() { return pending!=null; }
+    /** Read-only settings boundary: never reconciles a late reply or clears a failure. */
+    public boolean settingsEditSafe() {
+        return !enabled && pending==null && movement==null && loggingJumpEdge==null
+            && consolidation==null && !consolidationInFlight && consolidationRecovery==null
+            && lateInventoryReply==null && !lateInventoryReplyInFlight && consolidationFailure==null
+            && trash==null && !trashInFlight && lateTrashReply==null && trashFailure==null
+            && loggingAction==null && loggingRecipe==null && loggingSwap==null
+            && lateLoggingAction==null && lateLoggingRecipe==null && lateLoggingSwap==null && loggingFailure==null
+            && artisanAttempt==null && wineFeedAttempt==null && artisanAttempts.size()==0;
+    }
     @Override public String artisanRejection(Pos target) {
         return artisanAttempts.blocked(target,observations.generation(),attempt->attempt.confirmed(observations))
             ? "이 가공 기계의 이전 서버 응답이 아직 불확실합니다. 재클릭하지 않고 다른 작업을 진행합니다." : null;
@@ -199,9 +209,10 @@ public final class MinecraftActions implements ActionPort {
             trash.send();
         } else if (action instanceof Action.TrashLogging waste) {
             trash=new NativeTrashSlot(mc.player,waste,observations); trashInFlight=true; trash.send();
-        } else if (action instanceof Action.ChopTree || action instanceof Action.PlantSapling) {
+        } else if (action instanceof Action.ChopTree || action instanceof Action.PlantSapling || action instanceof Action.ClearLoggingLeaf) {
             loggingAction=new NativeLoggingActions(mc,world,observations,action,context);
-            Pos target=action instanceof Action.ChopTree chop ? chop.pos() : ((Action.PlantSapling)action).pos();
+            Pos target=action instanceof Action.ChopTree chop ? chop.pos()
+                : action instanceof Action.ClearLoggingLeaf leaf ? leaf.pos() : ((Action.PlantSapling)action).pos();
             var hit=world.hit(action instanceof Action.PlantSapling ? target.offset(0,-1,0) : target,mc.player.getEyePosition());
             if (hit!=null) lookAt(hit.getLocation());
             loggingAction.begin(mc,observations);
@@ -323,7 +334,10 @@ public final class MinecraftActions implements ActionPort {
         if (world.tick()-started>=context.profile().interactionTimeoutTicks) finish(ActionOutcome.State.FAILED,"No server confirmation; inspect before retrying");
     }
     private void tickLogging() {
-        if (loggingAction.confirmed(observations)) { finish(ActionOutcome.State.SUCCEEDED,"서버가 벌목·식재 진행을 확인했습니다.",1); return; }
+        if (loggingAction.confirmed(observations)) {
+            finish(ActionOutcome.State.SUCCEEDED,pending instanceof Action.ClearLoggingLeaf
+                ? "서버가 허용된 시야 방해 잎 한 칸의 제거를 확인했습니다." : "서버가 벌목·식재 진행을 확인했습니다.",1); return;
+        }
         String rejection=loggingAction.advance(mc,world,observations,context);
         if (rejection!=null) { finish(ActionOutcome.State.FAILED,rejection); return; }
         if (world.tick()-started>=context.profile().interactionTimeoutTicks)

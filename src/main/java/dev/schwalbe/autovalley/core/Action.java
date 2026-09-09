@@ -14,6 +14,8 @@ public sealed interface Action {
     record TrashRotten(int inventoryIndex, ItemData expected) implements Action { }
     /** One normal mining operation at a verified registered spruce-tree base. */
     record ChopTree(Pos pos) implements Action { }
+    /** One explicitly permitted spruce leaf obstructing this registered tree base. */
+    record ClearLoggingLeaf(Pos pos,Pos stump) implements Action { }
     record PlantSapling(Pos pos) implements Action { }
     /** One validated six-spruce-log recipe batch in an automation-owned crafting table. */
     record CraftFireLogs(Pos table) implements Action { }

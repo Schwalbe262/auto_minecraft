@@ -10,10 +10,12 @@ public final class LoggingModule implements AutomationModule {
     private static final int VISIBILITY_RETRY_TICKS=1200;
     private static final int MAX_STALE_APPROACH_REPLANS=2;
     private static final int CLEANUP_QUIET_TICKS=20,CLEANUP_QUIET_TIMEOUT=400;
-    private enum Stage { START, PLOT, CHOP, SETTLE, PLANT, WASTE, RESTORE, CRAFT_OPEN, CRAFT, CRAFT_CLOSE, WOOD, BERRIES, FINISH }
-    private enum Pending { SELECT, SWAP, BORROW, RESTORE, CHOP, PLANT, TRASH, OPEN, CRAFT, CLOSE }
+    private enum Stage { START, PLOT, CHOP, LEAF_SEARCH, LEAF_APPROACH, SETTLE, PLANT, WASTE, PARTIAL_CLEANUP, RESTORE, CRAFT_OPEN, CRAFT, CRAFT_CLOSE, WOOD, BERRIES, FINISH }
+    private enum Pending { SELECT, SWAP, BORROW, RESTORE, CHOP, LEAF, PLANT, TRASH, OPEN, CRAFT, CLOSE }
     private Stage stage=Stage.START;
     private boolean restoreBeforePlot;
+    private record PartialCleanup(Profile profile,List<LoggingPlot> plots,List<Pos> remaining,List<Pos> replanting,Long due) { }
+    private PartialCleanup partialCleanup;
     private Pending pending;
     private long ticket=-1, settleUntil, nextCheckTick=-1, lastTick=-1;
     private long saplingWaitUntil=-1;
@@ -32,6 +34,10 @@ public final class LoggingModule implements AutomationModule {
     private String failure;
     private WorkResult approachResult;
     private LoggingApproachSearch choppingApproach;
+    private LoggingApproachSearch leafApproach;
+    private Pos leafTarget,leafBase;
+    private final Map<Pos,Integer> clearedLeafCounts=new HashMap<>();
+    private final Set<Pos> clearedLeaves=new HashSet<>();
     private long visibilityRetryAt=-1;
     // Temporary negative observations only: never reorder or complete the saved batch.
     private final Map<Pos,LoggingApproachSearch> invisiblePlots=new LinkedHashMap<>();
@@ -64,6 +70,10 @@ public final class LoggingModule implements AutomationModule {
                     // TreeChop's native outline can shrink without changing BlockData.
                     // Only real progress renews the consecutive stale-goal budget.
                     if (plot!=null) staleApproachReplans.remove(plot.corner());
+                } else if (completed==Pending.LEAF) {
+                    if (outcome.confirmedCount()!=1) return fail("지정한 가문비나무 잎 한 개의 제거가 서버에서 확인되지 않았습니다.");
+                    // A leaf is not a tree/chop/replant receipt. Renew geometry only.
+                    clearedLeaves.add(leafTarget); clearVisibilitySweep(); stage=Stage.PLOT;
                 } else if (completed==Pending.PLANT) {
                     if (outcome.confirmedCount()<=0 || !occupied(c,actionPos)) return fail("묘목 재식재가 확인되지 않았습니다.");
                 } else if (completed==Pending.TRASH) {
@@ -91,6 +101,10 @@ public final class LoggingModule implements AutomationModule {
                     if (c.world().menu().container()) return fail("제작대 닫기가 확인되지 않았습니다.");
                     craftingMenu=-1; stage=Stage.WOOD;
                 }
+            }
+            if (partialCleanup!=null && !partialCleanupMatches(c)) {
+                if (c.actions().busy()) return busy("기존 정리 조작의 서버 확인을 기다립니다");
+                return fail("중간 목재 정리 중 벌목 등록·미완료 기록이 바뀌었습니다. 남은 작업을 완료 처리하지 않습니다.");
             }
             return advance(c);
         } catch (RuntimeException problem) {
@@ -181,6 +195,54 @@ public final class LoggingModule implements AutomationModule {
                 actionPos=stump; submit(c,new Action.ChopTree(stump),Pending.CHOP);
                 return busy("등록한 밑동 벌목");
             }
+            case LEAF_SEARCH -> {
+                if (!leafSearchAllowed(c)) { leafApproach=null; stage=Stage.CHOP; return busy("잎 제거 허용 범위를 다시 확인"); }
+                if (!plotRestoreBoundary(c)) return fail("잎 시야 탐색 전 안전한 조작 경계를 확인할 수 없습니다.");
+                List<Pos> stumps=plot.plantingPositions().stream().filter(p -> LoggingRules.stump(c.world().block(p))).toList();
+                if (!leafApproach.matches(c.world(),stumps)) { clearVisibilitySweep(); stage=Stage.PLOT; return busy("바뀐 밑동 시야 재확인"); }
+                c.actions().stopMovement();
+                LoggingApproachSearch.Status status=leafApproach.advance(c.world());
+                if (status==LoggingApproachSearch.Status.FOUND) {
+                    leafTarget=leafApproach.target(); leafBase=leafApproach.chosenBase(); stage=Stage.LEAF_APPROACH;
+                    return busy("밑동을 가리는 가문비나무 잎 한 개에 접근");
+                }
+                if (status==LoggingApproachSearch.Status.SEARCHING) return busy("밑동 조준을 막는 가까운 가문비나무 잎 확인");
+                if (status==LoggingApproachSearch.Status.UNLOADED || status==LoggingApproachSearch.Status.CHANGED)
+                    return WorkResult.deferred("잎 제거 후보의 지형이 바뀌거나 로드되지 않았습니다. 임의로 제거하지 않습니다.");
+                stage=Stage.CHOP; return busy("제거할 수 있는 잎이 없어 원래 시야 대기로 복귀");
+            }
+            case LEAF_APPROACH -> {
+                if (!leafSearchAllowed(c) || !LoggingLeafRules.authorised(c,leafBase,leafTarget)) {
+                    // Retain this rejected candidate until the bounded visibility retry.
+                    // Otherwise a newly protected leaf would be rediscovered every tick.
+                    stage=Stage.CHOP; return busy("잎 제거 권한이 바뀌어 원래 벌목 상태로 복귀");
+                }
+                if (plot.plantingPositions().stream().anyMatch(p -> c.world().loaded(p)
+                    && LoggingRules.stump(c.world().block(p)) && c.world().canInteract(p,4))) {
+                    clearVisibilitySweep(); stage=Stage.PLOT; return busy("밑동이 보여 잎 제거 없이 원래 벌목 재개");
+                }
+                if (!c.world().loaded(leafTarget)) return WorkResult.deferred("잎 제거 대상 청크를 다시 확인합니다.");
+                if (!LoggingLeafRules.LEAVES.equals(c.world().block(leafTarget).id())) {
+                    clearVisibilitySweep(); stage=Stage.PLOT; return busy("잎 상태가 바뀌어 실제 밑동 시야 재확인");
+                }
+                if (!approachLeafStance(c)) return currentProgress();
+                if (!plotRestoreBoundary(c)) return busy("잎 제거 전 정상 착지와 조작 경계 확인");
+                Pos actual=c.world().loggingLeafObstruction(leafBase,4);
+                if (actual==null || !LoggingLeafRules.authorised(c,leafBase,actual) || clearedLeaves.contains(actual)) {
+                    // Do not promote a candidate stance into an actual-eye permission.
+                    stage=Stage.CHOP; return busy("현재 위치의 조준 장애물이 달라 잎 제거를 생략");
+                }
+                leafTarget=actual;
+                int axe=c.profile().loggingAxeHotbarSlot;
+                if (axe<0 || axe==c.profile().hoeHotbarSlot || !item(c,axe).is(LoggingRules.AXE)
+                    || item(c,axe).durability()<=1 || !c.world().loggingAxe(axe)) return fail("잎 제거에는 등록한 사용 가능한 도끼가 필요합니다.");
+                if (c.world().player().selectedSlot()!=axe) { submit(c,new Action.SelectHotbar(axe),Pending.SELECT); return busy("잎 제거용 도끼 선택"); }
+                Action.ClearLoggingLeaf action=new Action.ClearLoggingLeaf(leafTarget,leafBase);
+                String rejection=LoggingLeafRules.rejection(action,c);
+                if (rejection!=null) { stage=Stage.CHOP; return busy("잎 제거 조건이 바뀌어 밑동 시야를 다시 확인: "+rejection); }
+                clearedLeafCounts.merge(plot.corner(),1,Integer::sum);
+                submit(c,action,Pending.LEAF); return busy("밑동을 가리는 가문비나무 잎 한 개 제거");
+            }
             case SETTLE -> {
                 c.actions().stopMovement();
                 if (c.world().tick()<settleUntil) return busy("벌목 후 잠시 대기");
@@ -257,6 +319,15 @@ public final class LoggingModule implements AutomationModule {
                 stage=c.profile().loggingHotbarLease==null ? nextAfterWaste(c) : Stage.RESTORE;
                 return busy("장작 제작 재료 확인");
             }
+            case PARTIAL_CLEANUP -> {
+                if (!plotRestoreBoundary(c) || c.profile().loggingHotbarLease!=null)
+                    return fail("중간 목재 정리의 안전한 시작 경계를 확인할 수 없습니다. 미완료 작업을 보존했습니다.");
+                WorkResult quiet=awaitCleanupQuiet(c); if (quiet!=null) return quiet;
+                // Missing seeds and unseen trees are still obligations. In particular,
+                // never run WASTE or spend the sapling reserve during a partial pass.
+                stage=nextAfterWaste(c);
+                return busy("묘목·가지를 보존하고 이미 수거한 목재부터 가공·보관");
+            }
             case RESTORE -> {
                 LoggingHotbarLease lease=c.profile().loggingHotbarLease;
                 if (restoreBeforePlot && (lease==null || !plotRestoreBoundary(c)))
@@ -302,7 +373,16 @@ public final class LoggingModule implements AutomationModule {
             case BERRIES -> {
                 WorkResult result=berries.tick(c);
                 if (result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED) return fail(result.message());
-                if (result.state()==WorkResult.State.IDLE) { stage=Stage.FINISH; return busy("벌목 베리 배송 투입 완료"); }
+                if (result.state()==WorkResult.State.IDLE) {
+                    if (partialCleanup!=null) {
+                        if (!partialCleanupMatches(c) || !plotRestoreBoundary(c) || c.profile().loggingHotbarLease!=null)
+                            return fail("중간 목재 정리 후 남은 벌목 기록 또는 복귀 경계를 확인할 수 없습니다.");
+                        partialCleanup=null; table=null; craftingMenu=-1; clearCleanupQuiet();
+                        wood.reset(); berries.reset(); c.navigation().reset(); stage=Stage.PLOT;
+                        return busy("수거한 목재·베리 정리 완료, 남은 벌목·재식재는 보존하고 다시 확인");
+                    }
+                    stage=Stage.FINISH; return busy("벌목 베리 배송 투입 완료");
+                }
                 return busy("벌목 베리 배송: "+result.message());
             }
             case FINISH -> {
@@ -321,6 +401,24 @@ public final class LoggingModule implements AutomationModule {
         Navigation.Result result=c.navigation().moveToLogging(target,reach,c);
         if (result==Navigation.Result.BLOCKED) { approachResult=ModuleSupport.navigationResult(c,"등록한 벌목 작업 위치에 접근할 수 없습니다."); return false; }
         if (result!=Navigation.Result.ARRIVED || !c.world().canInteract(target,reach)) return false;
+        c.actions().stopMovement(); return true;
+    }
+    private boolean approachLeafStance(Context c) {
+        approachResult=null;
+        if (c.world().menu().container() || !c.world().menu().carried().empty()) {
+            fail("잎 제거 접근 중 메뉴나 커서가 바뀌었습니다."); return false;
+        }
+        if (leafApproach==null || !leafApproach.endpointValid(c.world())) {
+            c.actions().stopMovement(); stage=Stage.CHOP;
+            approachResult=busy("잎 제거 접근 지형이 바뀌어 원래 시야 대기로 복귀"); return false;
+        }
+        // Reaching the near leaf at four blocks can leave its stump out of reach.
+        // Go to the verified standing surface instead, then recheck actual-eye rays.
+        Navigation.Result result=c.navigation().moveToLoggingPosition(leafApproach.stance(),.1,c);
+        if (result==Navigation.Result.BLOCKED) {
+            approachResult=ModuleSupport.navigationResult(c,"방해 잎을 확인한 벌목 접근 위치에 도달할 수 없습니다."); return false;
+        }
+        if (result!=Navigation.Result.ARRIVED) return false;
         c.actions().stopMovement(); return true;
     }
     private Pos choppingTarget(Context c,List<Pos> stumps) {
@@ -406,9 +504,15 @@ public final class LoggingModule implements AutomationModule {
                 stage=Stage.PLOT;
                 approachResult=busy("시야가 막힌 구역은 보존하고 다음 등록 구역 확인"); return null;
             }
+            if (leafApproach==null && leafSearchAllowed(c) && plotRestoreBoundary(c)) {
+                leafApproach=LoggingApproachSearch.forLeafObstructions(c.world(),plot,stumps);
+                stage=Stage.LEAF_SEARCH; approachResult=busy("허용된 가문비나무 잎의 실제 조준 장애물 확인"); return null;
+            }
             if (visibilityRetryAt<0) visibilityRetryAt=Math.addExact(c.world().tick(),VISIBILITY_RETRY_TICKS);
-            if (resourceReadiness(c)!=ResourceReadiness.WAITING)
+            if (retainedResourceReadiness(c)!=ResourceReadiness.WAITING)
                 fail("벌목 시야 대기의 안전한 작업 경계를 확인할 수 없습니다. 미완료 구역을 보존하고 중지합니다.");
+            else if (beginPartialCleanup(c))
+                approachResult=busy("시야가 막힌 구역은 남겨 두고 이미 수거한 목재부터 정리");
             else approachResult=WorkResult.resourceWait("벌목 시야 대기: 등록한 2x2 밑동을 볼 수 있는 안전한 격자 위치가 없습니다. "
                 +"미완료 구역을 보존한 채 "+(once(c) ? "이 작업은 대기하고 " : "다른 작업을 진행하고 ")
                 +"1200틱 후 다시 확인합니다. 잎·다른 블록은 임의로 제거하지 않습니다.");
@@ -417,6 +521,14 @@ public final class LoggingModule implements AutomationModule {
     }
     private void clearVisibilitySweep() {
         invisiblePlots.clear(); staleApproachReplans.clear(); choppingApproach=null; visibilityRetryAt=-1; visibilityScanTick=Long.MIN_VALUE;
+        leafApproach=null; leafTarget=null; leafBase=null;
+    }
+    private boolean leafSearchAllowed(Context c) {
+        return c.profile().loggingClearObstructingLeaves && LoggingRules.allowed(c) && plot!=null
+            && c.profile().loggingRunActive && c.profile().loggingRemainingPlots.contains(plot.corner())
+            && !c.profile().loggingReplantingPlots.contains(plot.corner()) && c.profile().loggingHotbarLease==null
+            && plot.plantingPositions().stream().allMatch(c.world()::loaded)
+            && clearedLeafCounts.getOrDefault(plot.corner(),0)<LoggingLeafRules.MAX_CLEARS_PER_PLOT;
     }
     private boolean plotRestoreBoundary(Context c) {
         return pending==null && ticket<0 && c.profile().loggingRunActive && c.world().player().onGround()
@@ -510,14 +622,42 @@ public final class LoggingModule implements AutomationModule {
         // shared by the entire plot, not renewed per empty cell or partial pickup.
         if (saplingWaitUntil<0) saplingWaitUntil=Math.addExact(c.world().tick(),SAPLING_WAIT_TICKS);
         if (c.world().tick()>=saplingWaitUntil) {
-            if (resourceReadiness(c)!=ResourceReadiness.WAITING)
+            if (retainedResourceReadiness(c)!=ResourceReadiness.WAITING)
                 return fail("재식재 재료 대기 상태를 안전하게 확인할 수 없습니다. 미완료 구역을 보존했습니다.");
+            if (beginPartialCleanup(c)) return busy("재식재용 묘목은 보존하고 수거한 목재부터 정리");
             return WorkResult.resourceWait("벌목 재식재 보류: 가문비나무 묘목 "+available+"/"+required
                 +"개. 2x2 미완료 구역을 보존하며 묘목 보충 후 다시 확인합니다.");
         }
         return busy("가문비나무 묘목 도착 대기 ("+available+"/"+required+"개, "+((saplingWaitUntil-c.world().tick()+19)/20)+"초 남음)");
     }
     @Override public ResourceReadiness resourceReadiness(Context c) {
+        ResourceReadiness readiness=retainedResourceReadiness(c);
+        // A previously granted one-shot wait must be released by the scheduler
+        // BEFORE its module may enter crafting/storage. This query does not start it.
+        return readiness==ResourceReadiness.WAITING && partialCleanupReady(c) ? ResourceReadiness.READY : readiness;
+    }
+    private boolean partialCleanupReady(Context c) {
+        return partialCleanup==null && LoggingRules.allowed(c) && plotRestoreBoundary(c) && c.profile().loggingHotbarLease==null
+            && inventory(c).stream().anyMatch(s -> LoggingRules.wood(s.item()) || LoggingRules.byproduct(s.item()));
+    }
+    private boolean beginPartialCleanup(Context c) {
+        if (!partialCleanupReady(c) || retainedResourceReadiness(c)!=ResourceReadiness.WAITING) return false;
+        partialCleanup=new PartialCleanup(c.profile(),List.copyOf(c.profile().loggingPlots),
+            List.copyOf(c.profile().loggingRemainingPlots),List.copyOf(c.profile().loggingReplantingPlots),
+            c.profile().nextEligibleDay.get(LoggingRules.DUE_KEY));
+        clearCleanupQuiet(); table=null; craftingMenu=-1; craftOperations=0;
+        wood.reset(); berries.reset(); c.actions().stopMovement(); c.navigation().reset();
+        stage=Stage.PARTIAL_CLEANUP;
+        return true;
+    }
+    private boolean partialCleanupMatches(Context c) {
+        return partialCleanup.profile()==c.profile() && c.profile().loggingRunActive && c.profile().loggingHotbarLease==null
+            && partialCleanup.plots().equals(c.profile().loggingPlots)
+            && partialCleanup.remaining().equals(c.profile().loggingRemainingPlots)
+            && partialCleanup.replanting().equals(c.profile().loggingReplantingPlots)
+            && Objects.equals(partialCleanup.due(),c.profile().nextEligibleDay.get(LoggingRules.DUE_KEY));
+    }
+    private ResourceReadiness retainedResourceReadiness(Context c) {
         // No menu actions, world changes, saved deadlines or ground-item guesses here.
         if (failure!=null || stage!=Stage.PLANT && stage!=Stage.CHOP || pending!=null || ticket>=0 || plot==null
             || !c.profile().loggingRunActive || c.profile().loggingHotbarLease!=null)
@@ -726,12 +866,13 @@ public final class LoggingModule implements AutomationModule {
     private static WorkResult busy(String text) { return WorkResult.busy("벌목: "+text); }
     private WorkResult fail(String text) { failure=text; return WorkResult.blocked(text); }
     @Override public void reset() {
-        stage=Stage.START; restoreBeforePlot=false; pending=null; ticket=-1; actionPos=null; plot=null; table=null; craftingMenu=-1;
+        stage=Stage.START; restoreBeforePlot=false; partialCleanup=null; pending=null; ticket=-1; actionPos=null; plot=null; table=null; craftingMenu=-1;
         // Scheduler resets must not turn the bounded ALL_GROWN readiness poll into
         // a per-tick scan. Explicit one-shot and durable active resumes bypass it.
         chopStrokes=trashOperations=craftOperations=0; settleUntil=0; saplingWaitUntil=-1; saplingWaitRequired=0; failure=null;
         plantingStanceReady=false; plantingOrder=List.of();
         approachResult=null; clearVisibilitySweep(); initialPlotObservations.clear(); initialObservationDay=Long.MIN_VALUE;
+        clearedLeafCounts.clear(); clearedLeaves.clear();
         observationWindow.clear();
         clearCleanupQuiet();
         // Explicit stop/reconnect may start a fresh bounded seed wait. The durable

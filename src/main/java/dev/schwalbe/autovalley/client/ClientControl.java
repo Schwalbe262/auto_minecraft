@@ -28,7 +28,7 @@ public final class ClientControl {
 
     private ClientControl() { }
 
-    /** Call only on the client thread; this method never sends raw input or edits a profile. */
+    /** Client thread only; requests delegate to checked runtime workflows, never raw input or direct profile edits. */
     public static void tick(ClientRuntime runtime) {
         long now = System.nanoTime();
         if (!EmergencyStartGate.shouldPoll(runtime.automationStartBlocked(),now,nextPoll)) return;
@@ -76,6 +76,7 @@ public final class ClientControl {
                     }
                     case "once" -> runtime.runOnce(parsed.feature());
                     case "import_work" -> runtime.importWorkDefinitions();
+                    case "logging_leaves" -> runtime.setLoggingLeafClearing(parsed.enabled());
                     case "move_once" -> runtime.runMoveOnce(parsed.position());
                     case "recover_pending_ship" -> runtime.recoverPendingShip(parsed.name());
                     case "observe_once" -> {
@@ -108,7 +109,8 @@ public final class ClientControl {
         }
     }
 
-    record Request(String command, Feature feature, String name, Pos position) {
+    record Request(String command, Feature feature, String name, Pos position, Boolean enabled) {
+        Request(String command,Feature feature,String name,Pos position) { this(command,feature,name,position,null); }
         Request(String command,Feature feature,String name) { this(command,feature,name,null); }
     }
 
@@ -129,7 +131,7 @@ public final class ClientControl {
             Map<String,String> fields = new LinkedHashMap<>();
             while (reader.hasNext()) {
                 String key = reader.nextName();
-                if (!Set.of("command","feature","name","x","y","z").contains(key) || fields.containsKey(key)
+                if (!Set.of("command","feature","name","x","y","z","enabled").contains(key) || fields.containsKey(key)
                     || reader.peek() != JsonToken.STRING) throw new IOException("Unknown, duplicate, or non-string field");
                 fields.put(key,reader.nextString());
             }
@@ -148,6 +150,12 @@ public final class ClientControl {
                     try { feature = Feature.valueOf(fields.get("feature")); }
                     catch (IllegalArgumentException e) { throw new IOException("Unknown feature",e); }
                     yield new Request(command,feature,null);
+                }
+                case "logging_leaves" -> {
+                    if (!fields.keySet().equals(Set.of("command","enabled"))
+                        || !Set.of("true","false").contains(fields.get("enabled")))
+                        throw new IOException("Expected only exact true/false enabled string");
+                    yield new Request(command,null,null,null,"true".equals(fields.get("enabled")));
                 }
                 case "move_once" -> {
                     if (!fields.keySet().equals(Set.of("command","x","y","z"))) throw new IOException("Expected only integer coordinate strings");

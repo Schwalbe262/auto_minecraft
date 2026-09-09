@@ -16,7 +16,7 @@ public final class SafetyPolicy {
         boolean surveying=context.session().oneShotFeature==Feature.STORAGE_SURVEY;
         if (surveying && (action instanceof Action.QuickMove || action instanceof Action.SwapHotbar
             || action instanceof Action.ConsolidateInventory || action instanceof Action.ThrowRotten || action instanceof Action.TrashRotten
-            || action instanceof Action.ChopTree || action instanceof Action.PlantSapling
+            || action instanceof Action.ChopTree || action instanceof Action.ClearLoggingLeaf || action instanceof Action.PlantSapling
             || action instanceof Action.CraftFireLogs || action instanceof Action.TrashLogging))
             return "Storage survey is read-only; inventory changes are not permitted";
         if (action instanceof Action.UseBlock use) {
@@ -66,6 +66,7 @@ public final class SafetyPolicy {
             };
         }
         if (action instanceof Action.ChopTree chop) return LoggingRules.chopRejection(chop.pos(),context);
+        if (action instanceof Action.ClearLoggingLeaf leaf) return LoggingLeafRules.rejection(leaf,context);
         if (action instanceof Action.PlantSapling plant) return LoggingRules.plantRejection(plant.pos(),context);
         if (action instanceof Action.TrashLogging trash) return LoggingRules.trashRejection(trash,context);
         if (action instanceof Action.CraftFireLogs craft)

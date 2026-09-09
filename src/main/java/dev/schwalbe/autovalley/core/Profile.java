@@ -33,6 +33,7 @@ public final class Profile {
     public LoggingMode loggingMode = LoggingMode.ALL_GROWN;
     public int loggingCheckTicks = 1200;
     public int loggingCycleDays = 1;
+    public boolean loggingClearObstructingLeaves = false;
     public boolean sprintHarvest = false;
     public boolean sprintCalibrated = false;
     public int scanRadius = 32;

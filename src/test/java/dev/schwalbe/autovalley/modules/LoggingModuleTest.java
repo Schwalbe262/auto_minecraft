@@ -9,6 +9,171 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class LoggingModuleTest {
+    @Test void explicitLeafPermissionClearsOneConfirmedObstructionThenRescansTheSameUnfinishedTree() {
+        Fixture f=leafFixture(1); Pos leaf=f.nextLeaf(f.profile.loggingPlots.get(0).corner());
+        f.until(() -> f.pending instanceof Action.ClearLoggingLeaf);
+        Action.ClearLoggingLeaf action=(Action.ClearLoggingLeaf)f.pending;
+        assertEquals(leaf,action.pos()); assertEquals(f.profile.loggingPlots.get(0).corner(),action.stump());
+        assertEquals(2,f.selected); assertTrue(f.chopRays>0); assertTrue(f.leafRays>0);
+        assertEquals(0,f.chops); assertEquals(0,f.plants); assertEquals(0,f.leavesCleared);
+        assertEquals(List.of(action.stump()),f.profile.loggingRemainingPlots); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        int submitted=f.actions.size();
+        for(int i=0;i<40;i++) { f.ticks++; assertEquals(WorkResult.State.BUSY,f.step().state()); }
+        assertEquals(submitted,f.actions.size(),"One in-flight leaf cannot cause another leaf, chop or planting");
+        f.advance(); f.step();
+        assertEquals(1,f.leavesCleared); assertEquals(0,f.chops); assertEquals(0,f.plants);
+        assertTrue(f.profile.loggingRunActive); assertEquals(List.of(action.stump()),f.profile.loggingRemainingPlots);
+        assertTrue(f.profile.loggingReplantingPlots.isEmpty()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(2,f.chops); assertEquals(4,f.plants);
+        assertEquals(1,f.actions.stream().filter(a->a instanceof Action.ClearLoggingLeaf).count());
+    }
+
+    @Test void normalLoggingVisibilityTakesPriorityOverLeafRemovalEvenWhenExplicitlyEnabled() {
+        Fixture f=leafFixture(1); f.occludedChopping.remove(f.profile.loggingPlots.get(0).plantingPositions().get(3));
+        f.until(() -> f.pending instanceof Action.ChopTree);
+        assertEquals(0,f.leafRays); assertEquals(0,f.leavesCleared);
+        assertTrue(f.actions.stream().noneMatch(a->a instanceof Action.ClearLoggingLeaf));
+    }
+
+    @Test void reachingTheNearLeafDoesNotReplaceReachingTheVerifiedStumpVisibilityStance() {
+        Fixture f=leafFixture(1);Pos base=f.profile.loggingPlots.get(0).corner(),leaf=f.nextLeaf(base);
+        f.playerX=-4;f.requireLeafStance=true;f.holdLeafStanceMovement=true;f.leafProofStance=new Pos(-2,64,0);
+        assertTrue(f.player().distance(leaf)<4,"The near leaf is already in ordinary reach");
+        assertTrue(f.player().distance(base)>4,"The tree base is still outside reach");
+        assertTrue(f.canInteract(leaf,4));assertNull(f.loggingLeafObstruction(base,4));
+        f.until(() -> f.leafStanceMoves>0);
+        assertEquals(f.leafProofStance,f.lastLeafStance);assertEquals(.1,f.leafStanceTolerance);
+        assertTrue(f.actions.isEmpty(),"Selecting an axe or breaking a leaf must wait for the stance arrival");
+        for(int i=0;i<20;i++) { f.ticks++;assertEquals(WorkResult.State.BUSY,f.step().state()); }
+        assertTrue(f.actions.isEmpty());assertFalse(f.leafStanceArrived);
+        f.holdLeafStanceMovement=false;f.until(() -> f.pending instanceof Action.ClearLoggingLeaf);
+        assertTrue(f.leafStanceArrived);assertTrue(f.player().distance(base)<4);
+        assertEquals(leaf,((Action.ClearLoggingLeaf)f.pending).pos());assertEquals(base,((Action.ClearLoggingLeaf)f.pending).stump());
+        assertFalse(f.loggingTargets.contains(leaf),"Leaf-radius interaction navigation must not substitute for literal stance travel");
+        assertEquals(0,f.leavesCleared);assertEquals(0,f.chops);
+    }
+
+    @Test void anUnreachableLeafStanceDoesNotSendALeafUseEvenWhenTheLeafItselfIsVisible() {
+        Fixture f=leafFixture(1);f.blockLeafStanceMovement=true;
+        WorkResult result=f.finish();
+        assertTrue(result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED,result.message());
+        assertTrue(f.leafStanceMoves>0);assertTrue(f.actions.isEmpty());assertEquals(0,f.leavesCleared);assertEquals(0,f.chops);
+        assertTrue(f.profile.loggingRunActive);assertEquals(1,f.profile.loggingRemainingPlots.size());
+    }
+
+    @Test void defaultOffNeverSearchesOrClearsLeavesAndPreservesItsVisibilityWait() {
+        Fixture f=leafFixture(1); f.profile.loggingClearObstructingLeaves=false;
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        assertEquals(0,f.leafRays); assertEquals(0,f.leavesCleared); assertTrue(f.actions.isEmpty());
+        assertEquals(1,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.loggingRunActive);
+    }
+
+    @Test void twoObstructionsAreClearedAsSeparateNativeAcknowledgementsWithFreshVisibilityBetweenThem() {
+        Fixture f=leafFixture(2); f.strokesPerTree=24;
+        f.until(() -> f.pending instanceof Action.ClearLoggingLeaf); Pos first=((Action.ClearLoggingLeaf)f.pending).pos();
+        f.advance(); int rays=f.chopRays;
+        f.until(() -> f.pending instanceof Action.ClearLoggingLeaf); Pos second=((Action.ClearLoggingLeaf)f.pending).pos();
+        assertNotEquals(first,second); assertEquals(1,f.leavesCleared); assertEquals(0,f.chops); assertTrue(f.chopRays>rays);
+        assertEquals(1,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.loggingReplantingPlots.isEmpty());
+        assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(2,f.leavesCleared);
+        assertEquals(24,f.chops,"Leaf acknowledgements must not substitute for any of the 24 native chops"); assertEquals(4,f.plants);
+    }
+
+    @Test void failedOrUnquantifiedLeafAcknowledgementDoesNotCutOrForgetTheTree() {
+        for(int count:List.of(-1,0,2)) {
+            Fixture f=leafFixture(1); f.until(() -> f.pending instanceof Action.ClearLoggingLeaf);
+            int sent=f.actions.size();
+            if(count<0) f.reject("native leaf removal not confirmed");
+            else { f.pending=null; f.outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"invalid count",count); }
+            assertEquals(WorkResult.State.BLOCKED,f.step().state());
+            for(int i=0;i<3;i++) assertEquals(WorkResult.State.BLOCKED,f.step().state());
+            assertEquals(sent,f.actions.size()); assertEquals(0,f.chops); assertEquals(0,f.plants);
+            assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingRemainingPlots.size());
+            assertTrue(f.profile.loggingReplantingPlots.isEmpty()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+
+    @Test void leafAuthorityIsRecheckedAfterAxeSelectionBeforeAnyRemoval() {
+        for(String changed:List.of("disabled","first obstruction gone","stone","sapling","farm","poi","whole tree rejected")) {
+            Fixture f=leafFixture(1); f.until(() -> f.pending instanceof Action.SelectHotbar); f.advance();
+            Pos leaf=f.nextLeaf(f.profile.loggingPlots.get(0).corner());
+            switch(changed) {
+                case "disabled" -> f.profile.loggingClearObstructingLeaves=false;
+                case "first obstruction gone" -> f.actualLeafObstructionAvailable=false;
+                case "stone" -> f.blocks.put(leaf,"minecraft:stone");
+                case "sapling" -> f.blocks.put(leaf,LoggingRules.SAPLING);
+                case "farm" -> f.profile.farms.add(new Farm("protected",leaf,leaf));
+                case "poi" -> f.profile.pois.add(new Poi(leaf,PoiKind.STORAGE_CANDIDATE,"protected",null));
+                case "whole tree rejected" -> f.treeRejection="tree reaches a protected structure";
+                default -> throw new AssertionError(changed);
+            }
+            WorkResult result=assertDoesNotThrow(f::finish,changed);
+            assertTrue(result.state()==WorkResult.State.RESOURCE_WAIT || result.state()==WorkResult.State.BLOCKED,changed+": "+result);
+            assertEquals(0,f.leavesCleared,changed); assertEquals(0,f.chops,changed); assertEquals(0,f.plants,changed);
+            assertTrue(f.actions.stream().noneMatch(a->a instanceof Action.ClearLoggingLeaf),changed);
+            assertEquals(1,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.loggingRunActive);
+        }
+    }
+
+    @Test void anOutsideOrNonSpruceLeafCandidateCannotBecomeAnAction() {
+        for(String candidate:List.of("outside","normal block","sapling","other leaves")) {
+            Fixture f=leafFixture(1); Pos base=f.profile.loggingPlots.get(0).corner(),leaf=f.nextLeaf(base);
+            if(candidate.equals("outside")) { f.leafObstructions.get(base).clear(); leaf=base.offset(-3,1,0); f.leafObstructions.get(base).add(leaf); }
+            f.blocks.put(leaf,switch(candidate) { case "normal block" -> "minecraft:stone"; case "sapling" -> LoggingRules.SAPLING;
+                case "other leaves" -> "minecraft:oak_leaves"; default -> LoggingLeafRules.LEAVES; });
+            assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state(),candidate);
+            assertEquals(0,f.leavesCleared); assertEquals(0,f.chops); assertTrue(f.actions.isEmpty());
+        }
+    }
+
+    @Test void unsafeLeafSearchBoundaryCannotSendAnyActionOrForgetTheBatch() {
+        for(String unsafe:List.of("busy","fence","airborne","cursor","container","output")) {
+            Fixture f=leafFixture(1); f.until(() -> f.leafRays>0);
+            switch(unsafe) {
+                case "busy" -> f.forcedNativeBusy=true;
+                case "fence" -> f.nativeFence="unconfirmed action";
+                case "airborne" -> f.grounded=false;
+                case "cursor" -> f.cursor=item("minecraft:diamond",1);
+                case "container" -> { f.opened=f.woodPos;f.containerId=10; }
+                case "output" -> {
+                    String id="11111111-1111-1111-1111-111111111111";
+                    f.profile.pendingMachineOutputs.put(id,new PendingMachineOutput(id,Feature.PRESERVES,new Pos(30,64,0),1,null,1,PendingMachineOutput.Phase.AWAITING_MACHINE_CONFIRMATION));
+                }
+                default -> throw new AssertionError(unsafe);
+            }
+            int sent=f.actions.size();
+            for(int i=0;i<5;i++) { f.ticks++; f.step(); }
+            assertEquals(sent,f.actions.size(),unsafe); assertEquals(0,f.leavesCleared); assertEquals(0,f.chops);
+            assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingRemainingPlots.size());
+        }
+    }
+
+    @Test void restartingAfterAConfirmedLeafRemovalDoesNotReplayItOrCompleteTheTree() {
+        Fixture f=leafFixture(1); f.until(() -> f.pending instanceof Action.ClearLoggingLeaf);f.advance();
+        assertEquals(1,f.leavesCleared);assertEquals(0,f.chops);f.restart();
+        assertEquals(WorkResult.State.IDLE,f.finish().state());assertEquals(1,f.leavesCleared);assertEquals(2,f.chops);assertEquals(4,f.plants);
+        assertEquals(1,f.actions.stream().filter(a->a instanceof Action.ClearLoggingLeaf).count());
+    }
+
+    @Test void oneTreeCannotConsumeAnUnboundedNumberOfLeafRemovalActions() {
+        Fixture f=leafFixture(LoggingLeafRules.MAX_CLEARS_PER_PLOT+1);
+        WorkResult result=null;
+        for(int i=0;i<20000;i++) { result=f.step();if(result.state()!=WorkResult.State.BUSY)break;f.advance(); }
+        assertNotNull(result);assertEquals(WorkResult.State.RESOURCE_WAIT,result.state(),result.message());
+        assertEquals(LoggingLeafRules.MAX_CLEARS_PER_PLOT,f.leavesCleared);assertEquals(0,f.chops);assertEquals(0,f.plants);
+        assertEquals(1,f.profile.loggingRemainingPlots.size());assertTrue(f.profile.loggingRunActive);assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    private static Fixture leafFixture(int count) {
+        Fixture f=new Fixture(1);f.profile.loggingClearObstructingLeaves=true;
+        LoggingPlot plot=f.profile.loggingPlots.get(0);f.occludedChopping.addAll(plot.plantingPositions());f.blockAllChopRays=true;
+        ArrayDeque<Pos> leaves=new ArrayDeque<>();
+        for(int y=0;y<=2 && leaves.size()<count;y++) for(int x=-1;x<=2 && leaves.size()<count;x++) for(int z=-1;z<=2 && leaves.size()<count;z++) {
+            Pos leaf=plot.corner().offset(x,y,z);if(LoggingLeafRules.inShell(plot,leaf)) { leaves.add(leaf);f.blocks.put(leaf,LoggingLeafRules.LEAVES); }
+        }
+        assertEquals(count,leaves.size());f.leafObstructions.put(plot.corner(),leaves);return f;
+    }
+
     @Test void anOccludedFirstBaseDoesNotHideAnotherVisibleBaseOfTheSameRegisteredTree() {
         Fixture f=new Fixture(1); List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
         f.occludedChopping.add(bases.get(0));
@@ -38,7 +203,160 @@ class LoggingModuleTest {
             .map(a -> ((Action.ChopTree)a).pos()).anyMatch(first.plantingPositions()::contains));
         assertEquals(List.of(first.corner()),f.profile.loggingRemainingPlots);
         assertTrue(f.profile.loggingReplantingPlots.isEmpty()); assertTrue(f.profile.loggingRunActive);
-        assertTrue(f.profile.nextEligibleDay.isEmpty()); assertEquals(0,f.trashed); assertEquals(0,f.crafted);
+        assertTrue(f.profile.nextEligibleDay.isEmpty()); assertEquals(0,f.trashed); assertEquals(8,f.crafted);
+        assertEquals(16,f.stored(LoggingRules.FIRE_LOG)); assertEquals(4,f.shipped(LoggingRules.BERRY));
+        assertEquals(16,f.count(LoggingRules.SAPLING)); assertEquals(12,f.count(LoggingRules.TWIG));
+    }
+
+    @Test void hiddenLastPlotStoresItsHeldHaulWithoutFinishingOrDiscardingAnyFuturePlantingMaterials() {
+        for(boolean continuous:List.of(false,true)) {
+            Fixture f=partialCleanupFixture(); if(continuous) f.continuous();
+            List<Pos> remaining=List.copyOf(f.profile.loggingRemainingPlots);
+            Map<String,Long> due=Map.copyOf(f.profile.nextEligibleDay);
+            WorkResult result=f.finish();
+            assertEquals(WorkResult.State.RESOURCE_WAIT,result.state(),result.message());
+            assertEquals(2,f.crafted); assertEquals(5,f.stored(LoggingRules.FIRE_LOG));
+            assertEquals(2,f.stored(LoggingRules.LOG)); assertEquals(5,f.shipped(LoggingRules.BERRY));
+            assertEquals(0,f.count(LoggingRules.LOG)); assertEquals(0,f.count(LoggingRules.FIRE_LOG)); assertEquals(0,f.count(LoggingRules.BERRY));
+            assertEquals(7,f.count(LoggingRules.SAPLING)); assertEquals(13,f.count(LoggingRules.TWIG)); assertEquals(0,f.trashed);
+            assertEquals(remaining,f.profile.loggingRemainingPlots); assertTrue(f.profile.loggingReplantingPlots.isEmpty());
+            assertTrue(f.profile.loggingRunActive); assertEquals(due,f.profile.nextEligibleDay);
+            assertEquals(0,f.chops); assertEquals(0,f.plants); assertFalse(f.menu().container()); assertTrue(f.cursor.empty());
+            assertTrue(f.actions.stream().noneMatch(a -> a instanceof Action.TrashLogging));
+            int sent=f.actions.size(); f.ticks+=1200;
+            assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+            assertEquals(sent,f.actions.size(),"Retained saplings and twigs must not cause an endless cleanup loop");
+        }
+    }
+
+    @Test void seedShortPartialCleanupPreservesTheExactReplantFifoAndAllowsLaterFourSeedRepair() {
+        Fixture f=resourceFixture(); f.profile.loggingSaplingReserve=0;
+        f.add(LoggingRules.LOG,12); f.add(LoggingRules.FIRE_LOG,2); f.add(LoggingRules.BERRY,3); f.add(LoggingRules.TWIG,9);
+        f.profile.nextEligibleDay.put(LoggingRules.DUE_KEY,37L);
+        List<Pos> remaining=List.copyOf(f.profile.loggingRemainingPlots),replanting=List.copyOf(f.profile.loggingReplantingPlots);
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        assertEquals(2,f.crafted); assertEquals(4,f.stored(LoggingRules.FIRE_LOG)); assertEquals(3,f.shipped(LoggingRules.BERRY));
+        assertEquals(2,f.count(LoggingRules.SAPLING)); assertEquals(9,f.count(LoggingRules.TWIG)); assertEquals(0,f.trashed);
+        assertEquals(remaining,f.profile.loggingRemainingPlots); assertEquals(replanting,f.profile.loggingReplantingPlots);
+        assertEquals(37L,f.profile.nextEligibleDay.get(LoggingRules.DUE_KEY)); assertTrue(f.profile.loggingRunActive);
+        assertEquals(0,f.chops); assertEquals(0,f.plants);
+        f.add(LoggingRules.SAPLING,2);
+        assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(4,f.plants); assertEquals(0,f.chops);
+        assertEquals(2,f.crafted,"Stored logs must not be withdrawn or crafted again after replanting resumes");
+    }
+
+    @Test void heldProductsDoNotCauseCleanupUntilEveryCurrentlyProcessablePlotHasBeenTried() {
+        Fixture f=new Fixture(2); f.add(LoggingRules.LOG,12); f.add(LoggingRules.BERRY,3);
+        f.occludedChopping.addAll(f.profile.loggingPlots.get(0).plantingPositions()); f.blockAllChopRays=true;
+        f.until(() -> f.pending instanceof Action.ChopTree);
+        assertTrue(f.profile.loggingPlots.get(1).plantingPositions().contains(((Action.ChopTree)f.pending).pos()));
+        assertTrue(f.actions.stream().noneMatch(a -> a instanceof Action.UseBlock || a instanceof Action.CraftFireLogs
+            || a instanceof Action.QuickMove || a instanceof Action.TrashLogging));
+        f.until(() -> f.plants==4); assertEquals(0,f.crafted); assertEquals(0,f.trashed);
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        assertEquals(4,f.crafted); assertEquals(6,f.stored(LoggingRules.FIRE_LOG)); assertEquals(4,f.shipped(LoggingRules.BERRY));
+        assertEquals(1,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void unsafeOrUnknownVisibilityBoundariesCannotStartPartialCleanupEvenWithHeldProducts() {
+        for(String unsafe:List.of("busy","fence","cursor","container","airborne","lease","output","unloaded")) {
+            Fixture f=partialCleanupFixture();
+            switch(unsafe) {
+                case "busy" -> f.forcedNativeBusy=true;
+                case "fence" -> f.nativeFence="unconfirmed native action";
+                case "cursor" -> f.cursor=item(LoggingRules.SAPLING,1);
+                case "container" -> { f.opened=f.woodPos; f.containerId=10; }
+                case "airborne" -> f.grounded=false;
+                case "lease" -> f.profile.loggingHotbarLease=new LoggingHotbarLease(35,0,item("minecraft:torch",5),"a".repeat(64),LoggingHotbarLease.Stage.PARKED);
+                case "output" -> {
+                    String id="11111111-1111-1111-1111-111111111111";
+                    f.profile.pendingMachineOutputs.put(id,new PendingMachineOutput(id,Feature.PRESERVES,new Pos(30,64,0),1,null,1,PendingMachineOutput.Phase.AWAITING_MACHINE_CONFIRMATION));
+                }
+                case "unloaded" -> f.unloaded.add(new Pos(-2,64,-2));
+                default -> throw new AssertionError(unsafe);
+            }
+            WorkResult result=f.finish();
+            assertTrue(result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED,unsafe+": "+result);
+            assertTrue(f.actions.isEmpty(),unsafe); assertEquals(14,f.count(LoggingRules.LOG)); assertEquals(0,f.crafted);
+            assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingRemainingPlots.size());
+            assertEquals(37L,f.profile.nextEligibleDay.get(LoggingRules.DUE_KEY));
+        }
+    }
+
+    @Test void partialCleanupNativePendingAndFailureNeverPermitAnotherMutationOrDiscardTheBatch() {
+        for(Class<? extends Action> kind:List.of(Action.CraftFireLogs.class,Action.QuickMove.class,Action.CloseContainer.class)) {
+            Fixture f=partialCleanupFixture(); f.until(() -> kind.isInstance(f.pending));
+            int sent=f.actions.size();
+            for(int i=0;i<100;i++) { f.ticks++; assertEquals(WorkResult.State.BUSY,f.step().state()); }
+            assertEquals(sent,f.actions.size()); assertTrue(f.profile.loggingRunActive);
+            assertEquals(1,f.profile.loggingRemainingPlots.size()); assertEquals(37L,f.profile.nextEligibleDay.get(LoggingRules.DUE_KEY));
+            f.reject("unconfirmed partial cleanup operation");
+            assertEquals(WorkResult.State.BLOCKED,f.step().state());
+            for(int i=0;i<5;i++) assertEquals(WorkResult.State.BLOCKED,f.step().state());
+            assertEquals(sent,f.actions.size()); assertEquals(0,f.trashed);
+            f.closeManually(); f.nativeFence="retained unconfirmed operation"; f.restart();
+            assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertEquals(sent,f.actions.size());
+            assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingRemainingPlots.size());
+        }
+    }
+
+    @Test void restartAfterActualPartialCraftAckUsesOnlyRemainingInventoryWithoutReplayingCraftOrCompletingThePlot() {
+        Fixture f=partialCleanupFixture(); f.until(() -> f.pending instanceof Action.CraftFireLogs);
+        f.advance(); assertEquals(2,f.crafted); assertEquals(2,f.count(LoggingRules.LOG));
+        // The native response was applied, but the module has not consumed its outcome.
+        f.closeManually(); f.restart();
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        assertEquals(1,f.craftCalls); assertEquals(2,f.crafted); assertEquals(5,f.stored(LoggingRules.FIRE_LOG));
+        assertEquals(2,f.stored(LoggingRules.LOG)); assertEquals(5,f.shipped(LoggingRules.BERRY));
+        assertEquals(1,f.profile.loggingRemainingPlots.size()); assertEquals(37L,f.profile.nextEligibleDay.get(LoggingRules.DUE_KEY));
+        assertTrue(f.profile.loggingRunActive); assertEquals(0,f.chops); assertEquals(0,f.trashed);
+    }
+
+    @Test void aChangedDurableLoggingCheckpointDuringPartialCleanupStopsBeforeTheNextUnsentAction() {
+        for(String changed:List.of("remaining","replanting","due","registration","lease")) {
+            Fixture f=partialCleanupFixture(); f.until(() -> f.pending instanceof Action.UseBlock);
+            f.advance(); int sent=f.actions.size();
+            switch(changed) {
+                case "remaining" -> f.profile.loggingRemainingPlots.clear();
+                case "replanting" -> f.profile.loggingReplantingPlots.add(f.profile.loggingRemainingPlots.get(0));
+                case "due" -> f.profile.nextEligibleDay.put(LoggingRules.DUE_KEY,38L);
+                case "registration" -> f.profile.loggingPlots.set(0,new LoggingPlot("changed",f.profile.loggingPlots.get(0).corner()));
+                case "lease" -> f.profile.loggingHotbarLease=new LoggingHotbarLease(35,0,item("minecraft:torch",5),"a".repeat(64),LoggingHotbarLease.Stage.PARKED);
+                default -> throw new AssertionError(changed);
+            }
+            assertEquals(WorkResult.State.BLOCKED,f.step().state(),changed);
+            assertEquals(sent,f.actions.size()); assertEquals(0,f.crafted); assertEquals(0,f.trashed);
+            assertTrue(f.profile.loggingRunActive); assertTrue(f.menu().container(),"No fabricated close acknowledgement");
+        }
+    }
+
+    @Test void aLateHeldProductDuringAnAlreadyGrantedLoggingOneShotWaitCleansAndReturnsToThatWait() {
+        for(int delay:List.of(20,1200)) {
+            Fixture f=partialCleanupFixture(); f.consume(LoggingRules.LOG,14); f.consume(LoggingRules.FIRE_LOG,3); f.consume(LoggingRules.BERRY,5);
+            int[] neighbours={0};
+            AutomationEngine engine=new AutomationEngine(List.of(f.module,
+                resourceNeighbour(Feature.SHIPPING,40,c -> { neighbours[0]++; return WorkResult.idle(); })));
+            engine.startOnce(f.context,Feature.LOGGING); engineUntil(f,engine,() -> engine.state()==AutomationEngine.State.WAITING);
+            assertTrue(f.actions.isEmpty()); f.add(LoggingRules.FIRE_LOG,4);
+            assertEquals(AutomationModule.ResourceReadiness.READY,f.module.resourceReadiness(f.context));
+            // The next ordinary check, even before the 1200-tick timeout, releases
+            // the old wait grant before cleanup owns a crafting/storage menu.
+            f.ticks+=delay;
+            engineUntil(f,engine,() -> f.stored(LoggingRules.FIRE_LOG)==4 && engine.state()==AutomationEngine.State.WAITING && !f.menu().container());
+            assertTrue(engine.running(),engine.status()); assertEquals(0,neighbours[0]); assertEquals(0,f.trashed);
+            assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingRemainingPlots.size());
+            assertEquals(37L,f.profile.nextEligibleDay.get(LoggingRules.DUE_KEY));
+        }
+    }
+
+    private static Fixture partialCleanupFixture() {
+        Fixture f=new Fixture(1); f.profile.loggingRunActive=true;
+        f.profile.loggingRemainingPlots.add(f.profile.loggingPlots.get(0).corner());
+        f.profile.nextEligibleDay.put(LoggingRules.DUE_KEY,37L); f.profile.loggingSaplingReserve=0;
+        f.occludedChopping.addAll(f.profile.loggingPlots.get(0).plantingPositions()); f.blockAllChopRays=true;
+        f.add(LoggingRules.LOG,14); f.add(LoggingRules.FIRE_LOG,3); f.add(LoggingRules.BERRY,5);
+        f.add(LoggingRules.SAPLING,7); f.add(LoggingRules.TWIG,13);
+        return f;
     }
 
     @Test void allInvisiblePlotsAreCheckedOnceBeforeWaitingAndOneShotDoesNotRunNeighbours() {
@@ -138,7 +456,8 @@ class LoggingModuleTest {
         assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
         assertNull(f.profile.loggingHotbarLease); assertEquals(original,f.inventory[0]);
         assertEquals(2,f.chops); assertEquals(4,f.plants); assertEquals(1,f.profile.loggingRemainingPlots.size());
-        assertEquals(0,f.trashed); assertEquals(0,f.crafted); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(0,f.trashed); assertEquals(2,f.crafted); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(4,f.stored(LoggingRules.FIRE_LOG)); assertEquals(1,f.shipped(LoggingRules.BERRY));
     }
 
     @Test void visibilityRestoreMustAwaitItsSingleNativeAckAndCannotReplayAFailedInverse() {
@@ -598,11 +917,13 @@ class LoggingModuleTest {
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(4,f.chops); assertEquals(8,f.plants);
     }
 
-    @Test void missingSaplingsKeepTheDurableReplantObligationAndNeverTrashOrCraft() {
+    @Test void missingSaplingsKeepTheDurableReplantObligationWhileHeldWoodIsStoredWithoutTrashingMaterials() {
         Fixture f=new Fixture(1); f.saplingDrops=0;
         WorkResult result=f.finish(); assertEquals(WorkResult.State.RESOURCE_WAIT,result.state()); assertTrue(result.message().contains("0/4"));
         assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingReplantingPlots.size());
-        assertEquals(0,f.trashed); assertEquals(0,f.crafted); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(0,f.trashed); assertEquals(2,f.crafted); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(4,f.stored(LoggingRules.FIRE_LOG)); assertEquals(1,f.shipped(LoggingRules.BERRY));
+        assertEquals(3,f.count(LoggingRules.TWIG));
         f.inventory[9]=item(LoggingRules.SAPLING,4); f.restart();
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(2,f.chops); assertEquals(4,f.plants);
     }
@@ -620,16 +941,18 @@ class LoggingModuleTest {
         assertEquals(2,f.chops); assertEquals(4,f.plants); assertFalse(f.profile.loggingRunActive);
     }
 
-    @Test void absentSaplingsYieldExactlyAtTheAdditionalFourHundredTickDeadlineAndResumeWithoutReplay() {
+    @Test void absentSaplingsBeginHeldOutputCleanupExactlyAtTheFourHundredTickDeadlineThenYieldWithoutReplay() {
         Fixture f=new Fixture(1); long firstWait=startSeedWait(f);
         int sent=f.actions.size(),moves=f.moves;
         // Repeated calls in one client tick cannot consume or extend elapsed time.
         for(int i=0;i<500;i++) assertEquals(WorkResult.State.BUSY,f.step().state());
         f.ticks=firstWait+399; assertEquals(WorkResult.State.BUSY,f.step().state());
         f.ticks=firstWait+400;
-        WorkResult stopped=f.step(); assertEquals(WorkResult.State.RESOURCE_WAIT,stopped.state());
-        assertTrue(stopped.message().contains("0/4"));
+        WorkResult cleaning=f.step(); assertEquals(WorkResult.State.BUSY,cleaning.state());
+        assertTrue(cleaning.message().contains("수거"));
         assertEquals(sent,f.actions.size()); assertEquals(moves,f.moves); assertEquals(2,f.chops);
+        WorkResult stopped=f.finish(); assertEquals(WorkResult.State.RESOURCE_WAIT,stopped.state());
+        assertTrue(stopped.message().contains("0/4")); assertEquals(2,f.crafted); assertEquals(0,f.trashed);
         assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingRemainingPlots.size());
         assertEquals(1,f.profile.loggingReplantingPlots.size()); assertTrue(f.profile.nextEligibleDay.isEmpty());
         f.add(LoggingRules.SAPLING,4); f.ticks++;
@@ -643,8 +966,10 @@ class LoggingModuleTest {
         f.ticks=firstWait+300; f.add(LoggingRules.SAPLING,2);
         assertEquals(WorkResult.State.BUSY,f.step().state()); assertNull(f.pending);
         f.ticks=firstWait+400;
-        assertEquals(WorkResult.State.RESOURCE_WAIT,f.step().state());
+        assertEquals(WorkResult.State.BUSY,f.step().state());
         assertEquals(2,f.chops); assertEquals(0,f.plants); assertEquals(0,f.trashed); assertEquals(0,f.crafted);
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        assertEquals(2,f.crafted); assertEquals(0,f.plants); assertEquals(0,f.trashed); assertEquals(2,f.count(LoggingRules.SAPLING));
         assertEquals(1,f.profile.loggingReplantingPlots.size());
     }
 
@@ -776,13 +1101,14 @@ class LoggingModuleTest {
         assertTrue(f.profile.loggingRemainingPlots.isEmpty()); assertTrue(f.profile.loggingReplantingPlots.isEmpty());
     }
 
-    @Test void repeatedTwoSeedDropsExhaustOnlyTheExistingTreesThenWaitWithoutPartialPlantingOrCleanup() {
+    @Test void repeatedTwoSeedDropsExhaustOnlyExistingTreesAndStoreWoodWithoutPartialPlantingOrWaste() {
         Fixture f=new Fixture(3); f.saplingDrops=2;
         assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
         assertEquals(6,f.chops); assertEquals(4,f.plants); assertEquals(2,f.count(LoggingRules.SAPLING));
         List<Pos> remaining=List.of(f.profile.loggingPlots.get(1).corner(),f.profile.loggingPlots.get(2).corner());
         assertEquals(remaining,f.profile.loggingRemainingPlots); assertEquals(remaining,f.profile.loggingReplantingPlots);
-        assertEquals(0,f.trashed); assertEquals(0,f.crafted); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(0,f.trashed); assertEquals(6,f.crafted); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(12,f.stored(LoggingRules.FIRE_LOG)); assertEquals(3,f.shipped(LoggingRules.BERRY)); assertEquals(9,f.count(LoggingRules.TWIG));
         f.add(LoggingRules.SAPLING,6); f.restart();
         assertEquals(remaining,f.profile.loggingReplantingPlots);
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(6,f.chops); assertEquals(12,f.plants);
@@ -923,7 +1249,8 @@ class LoggingModuleTest {
         assertEquals(WorkResult.State.BUSY,f.step().state()); // New bounded wait, no mining.
         long resumed=f.ticks;
         f.ticks=resumed+399; assertEquals(WorkResult.State.BUSY,f.step().state());
-        f.ticks=resumed+400; assertEquals(WorkResult.State.RESOURCE_WAIT,f.step().state());
+        f.ticks=resumed+400; assertEquals(WorkResult.State.BUSY,f.step().state());
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
         assertEquals(2,f.chops); assertEquals(0,f.plants); assertTrue(f.profile.loggingRunActive);
         assertEquals(1,f.profile.loggingReplantingPlots.size()); assertEquals(0,f.trashed);
     }
@@ -1238,6 +1565,10 @@ class LoggingModuleTest {
         boolean blockAllChopRays,movementExposesChop,alternateChopGoal; int chopRays,actualChopQueries,chopGoalChecks;
         final Set<Pos> chopRayTargets=new HashSet<>();
         Pos chopGoalTarget,chopGoalFeet; String treeRejection;
+        final Map<Pos,ArrayDeque<Pos>> leafObstructions=new LinkedHashMap<>();
+        boolean actualLeafObstructionAvailable=true; int leafRays,leavesCleared;
+        boolean requireLeafStance,holdLeafStanceMovement,blockLeafStanceMovement,leafStanceArrived;
+        Pos leafProofStance,lastLeafStance;int leafStanceMoves;double leafStanceTolerance;
         boolean grounded=true,forcedNativeBusy; String nativeFence; ItemData cursor=ItemData.EMPTY;
         final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
         final Map<Pos,Integer> nativeChops=new HashMap<>(); int strokesPerTree=2;
@@ -1287,6 +1618,14 @@ class LoggingModuleTest {
                 assertNotEquals(profile.hoeHotbarSlot,swap.hotbarSlot()); assertNotEquals(profile.loggingAxeHotbarSlot,swap.hotbarSlot());
                 ItemData old=inventory[swap.hotbarSlot()]; inventory[swap.hotbarSlot()]=inventory[swap.inventoryIndex()]; inventory[swap.inventoryIndex()]=old;
                 events.add("swap:"+(++swaps));
+            } else if(action instanceof Action.ClearLoggingLeaf leaf) {
+                assertEquals(2,selected);assertEquals(LoggingRules.AXE,inventory[selected].id());
+                assertEquals(leaf.pos(),nextLeaf(leaf.stump()));assertEquals(LoggingLeafRules.LEAVES,id(leaf.pos()));
+                assertTrue(LoggingLeafRules.authorised(context,leaf.stump(),leaf.pos()));
+                blocks.put(leaf.pos(),"minecraft:air");leafObstructions.get(leaf.stump()).removeFirst();
+                if(nextLeaf(leaf.stump())==null) profile.loggingPlots.stream().filter(p->p.plantingPositions().contains(leaf.stump()))
+                    .forEach(p->occludedChopping.removeAll(p.plantingPositions()));
+                confirmed=1;events.add("leaf:"+(++leavesCleared));
             } else if(action instanceof Action.ChopTree chop) {
                 assertTrue(profile.loggingRunActive); assertTrue(profile.loggingRemainingPlots.stream().anyMatch(p -> profile.loggingPlots.stream()
                     .anyMatch(plot -> plot.corner().equals(p) && plot.plantingPositions().contains(chop.pos()))));
@@ -1375,6 +1714,8 @@ class LoggingModuleTest {
         }
         public boolean canInteractFrom(Pos feet,Pos target,double reach) {
             chopRays++; chopRayTargets.add(target);
+            if(leafObstructions.values().stream().anyMatch(leaves->leaves.contains(target)))
+                return WorldAccess.super.canInteractFrom(feet,target,reach);
             if (Objects.equals(feet,chopGoalFeet) && Objects.equals(target,chopGoalTarget)) {
                 chopGoalChecks++; return !alternateChopGoal || chopGoalChecks%2==1;
             }
@@ -1382,6 +1723,13 @@ class LoggingModuleTest {
         }
         public List<BlockData> scan(Pos pos,int h,int v) { return List.of(); }
         public String loggingTreeRejection(Pos pos,List<LoggingPlot> plots) { return treeRejection; }
+        Pos nextLeaf(Pos base) { ArrayDeque<Pos> leaves=leafObstructions.get(base);return leaves==null ? null : leaves.peekFirst(); }
+        public Pos loggingLeafObstruction(Pos base,double reach) {
+            return actualLeafObstructionAvailable && (!requireLeafStance || leafStanceArrived) ? nextLeaf(base) : null;
+        }
+        public Pos loggingLeafObstructionFrom(Pos feet,Pos base,double reach) {
+            leafRays++;return leafProofStance==null || leafProofStance.equals(feet) ? nextLeaf(base) : null;
+        }
         public boolean canPlantLoggingSapling(Pos pos) { return id(pos).equals("minecraft:air") && loaded(pos); }
         public boolean canPlantLoggingSapling(Pos pos,double reach) {
             assertEquals(3.25,reach);
@@ -1424,6 +1772,14 @@ class LoggingModuleTest {
             assertTrue(profile.loggingRunActive); assertTrue(session.allows(profile,Feature.LOGGING));
             if (movementExposesChop) occludedChopping.remove(pos);
             loggingMoves++; loggingTargets.add(pos); return moveTo(pos,reach,c);
+        }
+        public Result moveToLoggingPosition(Pos stance,double tolerance,Context c) {
+            assertTrue(profile.loggingRunActive);assertTrue(session.allows(profile,Feature.LOGGING));assertEquals(.1,tolerance);
+            leafStanceMoves++;loggingMoves++;moves++;lastLeafStance=stance;leafStanceTolerance=tolerance;
+            if(blockLeafStanceMovement)return Result.BLOCKED;
+            if(holdLeafStanceMovement)return Result.MOVING;
+            leafStanceArrived=true;if(requireLeafStance)playerX=stance.x()+.5;
+            return Result.ARRIVED;
         }
         public Result moveToObserve(Pos pos,double reach,Context c) {
             if(!observeLoads)return Result.BLOCKED;

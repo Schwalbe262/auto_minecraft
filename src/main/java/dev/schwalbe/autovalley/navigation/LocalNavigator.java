@@ -147,6 +147,10 @@ public final class LocalNavigator implements Navigation {
         return moveTo(target,reach,context,true,true);
     }
 
+    @Override public Result moveToLoggingPosition(Pos target,double reach,Context context) {
+        return moveTo(target,reach,context,true,true,List.of(),TerrainPathSearch.Goal.POSITION);
+    }
+
     @Override public Result moveToLoggingPlanting(List<Pos> targets,Context context) {
         if (!LoggingRules.plantingTargets(context.profile(),targets)
             || context.profile().loggingPlots.stream().noneMatch(p -> p.plantingPositions().containsAll(targets)

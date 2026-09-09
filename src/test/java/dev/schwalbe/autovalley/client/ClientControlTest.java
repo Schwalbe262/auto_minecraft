@@ -7,6 +7,29 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ClientControlTest {
+    @Test void loggingLeavesRequiresAnExplicitDesiredBooleanStringAndNeverToggles() throws Exception {
+        for(boolean enabled:new boolean[]{false,true}) {
+            var parsed=request("{\"command\":\"logging_leaves\",\"enabled\":\""+enabled+"\"}");
+            assertEquals("logging_leaves",parsed.command()); assertEquals(enabled,parsed.enabled());
+            assertNull(parsed.feature()); assertNull(parsed.name()); assertNull(parsed.position());
+            assertEquals(parsed,request("{\"enabled\":\""+enabled+"\",\"command\":\"logging_leaves\"}"));
+        }
+    }
+
+    @Test void loggingLeafRequestsRejectImplicitCoercedDuplicateOrUnrelatedSettings() {
+        for(String value:new String[]{"true","false","null","1","[]","{}","\"TRUE\"","\"False\"","\" true\"","\"false \"","\"toggle\"","\"1\"","\"\""})
+            assertThrows(Exception.class,()->request("{\"command\":\"logging_leaves\",\"enabled\":"+value+"}"),value);
+        for(String input:new String[]{"{\"command\":\"logging_leaves\"}",
+            "{\"command\":\"logging_leaves\",\"enabled\":\"true\",\"enabled\":\"false\"}",
+            "{\"command\":\"logging_leaves\",\"enabled\":\"true\",\"en\\u0061bled\":\"true\"}",
+            "{\"command\":\"logging_leaves\",\"enabled\":\"true\",\"feature\":\"LOGGING\"}",
+            "{\"command\":\"logging_leaves\",\"enabled\":\"true\",\"name\":\"plot\"}",
+            "{\"command\":\"logging_leaves\",\"enabled\":\"true\",\"x\":\"0\"}",
+            "{\"command\":\"start\",\"enabled\":\"true\"}",
+            "{\"command\":\"import_work\",\"enabled\":\"true\"}"})
+            assertThrows(Exception.class,()->request(input),input);
+    }
+
     @Test void acceptsOnlySupportedStartAndPauseCommands() throws Exception {
         assertEquals("start",parse("{\"command\":\"start\"}"));
         assertEquals("pause",parse(" \n { \"command\" : \"pause\" } \t "));

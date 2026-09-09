@@ -724,10 +724,19 @@ public final class ValleyScreen extends Screen {
         });
         button(left + half + 6, 54, half, tr("logging.settings"), this::beginLoggingSettings)
                 .active = !runtime.profile().loggingRunActive;
-        button(left, 80, panelWidth, tr("logging.add"), () -> {
+        button(left, 80, half, tr("logging.add"), () -> {
             if (loggingLocked()) return;
             loggingPage = LoggingPage.EDIT; rebuild();
         }).active = !runtime.profile().loggingRunActive;
+        Profile leafOwner=runtime.profile(); boolean leafEnabled=leafOwner.loggingClearObstructingLeaves;
+        Button leafToggle=button(left + half + 6, 80, half, tr("logging.leaf_toggle",tr(leafEnabled ? "on" : "off")), () -> {
+            if (runtime.profile()!=leafOwner || leafOwner.loggingClearObstructingLeaves!=leafEnabled
+                    || !runtime.loggingLeafSettingEditable()) { error("logging.leaf_edit_blocked"); return; }
+            if (runtime.setLoggingLeafClearing(!leafEnabled)) { success("saved"); rebuild(); }
+            else error("logging.leaf_edit_blocked");
+        });
+        leafToggle.setTooltip(Tooltip.create(tr("logging.leaf_hint")));
+        leafToggle.active=runtime.loggingLeafSettingEditable();
         text(106, tr(runtime.profile().loggingRunActive ? "logging.active_locked" : "logging.count", runtime.profile().loggingPlots.size()));
         List<LoggingPlot> plots = List.copyOf(runtime.profile().loggingPlots);
         int rows = rowsFrom(120), start = pageStart(plots.size(), rows);
