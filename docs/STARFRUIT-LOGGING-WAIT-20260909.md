@@ -30,5 +30,19 @@ Adjacent standalone engine/logging/logistics regression classes passed 393/393.
 The combined offline Java 17 test/build passed 1,839 tests across 138 suites,
 with no failures, errors or skips. The build was installed with a recoverable
 previous-JAR backup and a normal single-client restart; native acceptance remains
-to be observed. This change does not itself make the leaf-obstructed logging
-plot harvestable.
+to be observed at that build step. Subsequent native acceptance is below. This
+change does not itself make the leaf-obstructed logging plot harvestable.
+
+## Native acceptance
+
+After restart, continuous mode resumed, slept from game day 505 to 506, and
+entered the preserves routine. Its source-travel phase detoured to starfruit,
+while the existing hidden-logging resource wait remained retained. Native trace
+samples captured fruit count increasing to eight and entry to the registered
+storage phase, followed by return to preserves with no failure fence.
+
+A separate passive inspection found all eight registered fruits at age 0 with
+eight stored same-day confirmations, no remaining patch members and no fruit
+left in inventory. This confirms the real fruit pass, not merely an ON flag or
+a detached unit test. Item-specific transfer receipt evidence is a separate
+check; this short acceptance does not prove two-hour stability.
