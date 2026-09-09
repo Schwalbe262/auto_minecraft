@@ -21,8 +21,9 @@ Long-running acceptance remains open. See the [runtime checkpoint](RUNTIME-RESUM
   and day interval. `ArtisanJob` binds that recipe to machine positions and input /
   output groups. The current recipes are ancient-fruit seeds and jade crystals.
   Ancient-fruit wine is not implemented.
-- `FruitPatch` registers exact starfruit blocks. `StarfruitModule` selects one
-  ripe registered fruit within six blocks and stores it. It can run at a normal
+- `FruitPatch` registers exact starfruit blocks. `StarfruitModule` snapshots the
+  ripe, loaded registered fruit within six blocks in one selected patch, harvests
+  its still-eligible members and stores the collected fruit together. It can run at a normal
   scheduler boundary or during an explicitly safe production/bed approach in
   continuous mode, as described below. It does not patrol every fruit.
 
@@ -140,7 +141,7 @@ same-request route, loaded full-footprint flat support and normal traversal. A
 stair's high tread alone is not full-floor proof. Ascents, descents, doors,
 endpoint settling and search/frontier states cannot be interrupted this way.
 
-After one fruit and its registered deposit, the engine resumes the exact original
+After the nearby cohort and its registered deposit, the engine resumes the exact original
 module instance/stage before a new priority scan. A 1,200-tick side-trip cooldown
 ensures progress on the original task. One-shots never run another feature.
 An already approved LOGGING-OFF suspension remains valid without deleting its
@@ -160,6 +161,30 @@ deposit, resumption of the original sleep task and the following day's work.
 See the [runtime checkpoint](RUNTIME-RESUME-20260909.md). Native production-travel
 detours still need a separate live exercise; the engine/module regressions cover
 those permitted stages.
+
+### Finite nearby cohort
+
+The initial version above was exercised with one fruit per pass; that leaves
+neighboring ripe fruit behind during a short production detour. The revised pass
+freezes one patch's currently loaded, mature, registered positions within six
+blocks at entry. It does not acquire later ripening, later loaded chunks, another
+patch or newly nearby positions as the player moves. Remaining targets are chosen
+by current distance and still require current maturity, loading, registration,
+safe hand, pickup space and native interaction checks.
+
+Pre-use unreachable targets can be skipped while the rest of that finite cohort
+continues. A submitted failed/uncertain use is not retried or converted into a
+skip. Loss of safe hand/pickup space ends further picking and stores the actually
+collected fruit. The selected store definition must remain unchanged. Collection
+precedes a single final storage pass, rather than returning to the warehouse
+after every fruit. Its normal inventory-transfer/close acknowledgements still
+apply, and the exact suspended production/bed task resumes afterward.
+
+The one-second pickup observation, per-target approach timeout and post-detour
+cooldown remain bounded. The cohort does not promise a whole-patch patrol or
+successful collection of unreachable/immature/unregistered targets. Revised
+cohort regression and native acceptance results are tracked in the runtime
+checkpoint; the older one-fruit native exercise is not proof of this revision.
 
 ### Late pickup cleanup
 

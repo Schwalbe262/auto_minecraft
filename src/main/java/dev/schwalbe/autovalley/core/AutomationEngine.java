@@ -219,7 +219,7 @@ public final class AutomationEngine {
         if (wait!=null && c.world().tick()<wait.at() || !fruit.hasNearbyWork(c)) return;
         nearbyOrigin=active;nearbyProfile=c.profile();nearbySession=c.session();nearbyWorld=c.world();nearbyStarted=c.world().tick();
         active=fruit;c.actions().stopMovement();c.navigation().reset();
-        status="평지 이동을 잠시 멈추고 근처 스타프루트 한 개를 수확·보관";
+        status="평지 이동을 잠시 멈추고 근처 익은 스타프루트를 모아 수확·보관";
     }
     private void clearNearby() {
         nearbyOrigin=null;nearbyProfile=null;nearbySession=null;nearbyWorld=null;nearbyStarted=0;

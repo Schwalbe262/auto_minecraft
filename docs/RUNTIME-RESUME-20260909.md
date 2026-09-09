@@ -433,3 +433,21 @@ through these operations; no working member was removed or assigned an invented
 refill. This closes native acceptance of clean wine wait → preserves/shipping →
 seed service/storage → real sleep/day advance. Extended uninterrupted stability
 and later remaining-rack resumption are still pending, not implied by this pass.
+
+### Nearby fruit cohort revision (not yet installed)
+
+Completion review found that one fruit per detour could leave ripe neighbors
+behind. The revised module freezes a single patch's initially loaded/mature
+nearby members, collects the still-safe members before one final storage pass,
+and preserves the exact original task on return. It cannot grow the target set
+through later movement, loading or ripening. New regressions cover seven-fruit
+collection, skipped targets, changing capacity/hand, delayed pickups and store
+registration changes. Integration tests use the actual WINE/PRESERVES modules
+at RETURN, partial SOURCE and later MACHINE travel, plus actual SleepModule,
+to verify progress, source audits, inputs, deadlines and feed counts survive.
+
+The combined offline build passed **1,587 tests / 115 suites**, with zero failures,
+errors or skips. This revision is not installed yet and has no cohort native
+acceptance. The running 99D097 client subsequently reached an inventory merge
+fence during its resumed wine batch; that retained transaction must be understood
+and actual borrowed-item custody resolved before a normal restart.

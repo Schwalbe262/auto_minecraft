@@ -3,7 +3,7 @@ package dev.schwalbe.autovalley.modules;
 import dev.schwalbe.autovalley.core.*;
 import java.util.*;
 
-/** One opportunistic nearby fruit, followed by its registered commodity deposit. Never patrols a tree. */
+/** A finite initially nearby fruit cohort, then one registered deposit. Never patrols a tree. */
 public final class StarfruitModule implements AutomationModule {
     private static final double NEARBY_REACH=6;
     private static final int APPROACH_TICKS=100,PICKUP_TICKS=20;
@@ -16,6 +16,9 @@ public final class StarfruitModule implements AutomationModule {
     private final Set<Pos> confirmedToday=new HashSet<>();
     private FruitPatch patch;
     private Pos target;
+    private CommodityStore passStore;
+    private final List<Pos> remainingNearby=new ArrayList<>();
+    private boolean passPicked;
     private FruitPatch lastConfirmedPatch;
     private Pos lastConfirmedTarget;
     private CommodityStore lastConfirmedStore;
@@ -60,6 +63,12 @@ public final class StarfruitModule implements AutomationModule {
                 if (safeHotbar(c)<0 || !hasPickupRoom(c)) return WorkResult.idle();
                 chooseNearby(c);
                 if (target==null) return WorkResult.idle();
+                // Freeze this one patch's currently nearby mature targets. A later
+                // move, ripening or chunk load must not grow an opportunistic pass.
+                passStore=CommodityStorageRules.store(c.profile(),patch.storeId());
+                remainingNearby.clear();
+                for (Pos pos:patch.fruits()) if (!pos.equals(target) && eligibleNearby(c,patch,pos,NEARBY_REACH))
+                    remainingNearby.add(pos);
                 approachSince=c.world().tick();stage=Stage.APPROACH;
             }
         }
@@ -117,6 +126,7 @@ public final class StarfruitModule implements AutomationModule {
                     long today=Math.floorDiv(c.world().dayTime(),24000L);
                     if (confirmedDay!=today) { confirmedToday.clear();confirmedDay=today; }
                     confirmedToday.add(target);lastConfirmedPatch=patch;lastConfirmedTarget=target;
+                    passPicked=true;
                     lastConfirmedStore=CommodityStorageRules.store(c.profile(),patch.storeId());stage=Stage.PICKUP;
                 } else if (c.world().tick()-verifySince>=Math.max(1,c.profile().interactionTimeoutTicks))
                     return fail(c,"같은 스타프루트의 수확 후 성장 상태가 확인되지 않았습니다");
@@ -129,11 +139,8 @@ public final class StarfruitModule implements AutomationModule {
             // Delayed ground delivery gets a bounded observation window, not a
             // persistent output debt. Already arrived fruit goes straight to storage.
             if (fruitCount(c)>fruitBefore || c.world().tick()-verifySince>=PICKUP_TICKS) {
-                storage=new CommodityStorageModule(feature(),patch.storeId(),Set.of(FruitRules.ITEM));
-                stage=Stage.STORE;
-                WorkResult result=storage.tick(c);
-                if (result.state()!=WorkResult.State.BUSY) reset();
-                return result;
+                if (chooseNextNearby(c)) return WorkResult.busy("같은 동선의 다음 익은 스타프루트에 접근");
+                return finishNearby(c);
             }
         }
         return WorkResult.busy(switch(stage) {
@@ -149,30 +156,53 @@ public final class StarfruitModule implements AutomationModule {
         Nearby nearby=findNearby(c);
         target=nearby==null ? null : nearby.target();patch=nearby==null ? null : nearby.patch();
     }
+    /** Recheck each frozen member, but never add a newly nearby/ripe member. */
+    private boolean chooseNextNearby(Context c) {
+        if (safeHotbar(c)<0 || !hasPickupRoom(c)) return false;
+        remainingNearby.removeIf(pos -> !eligibleNearby(c,patch,pos,NEARBY_REACH));
+        Pos next=remainingNearby.stream().min(Comparator.comparingDouble(pos -> c.world().player().distance(pos))).orElse(null);
+        if (next==null) return false;
+        remainingNearby.remove(next);target=next;
+        approachSince=c.world().tick();stage=Stage.APPROACH;
+        return true;
+    }
+    private WorkResult finishNearby(Context c) {
+        remainingNearby.clear();
+        if (!passPicked) { reset();return WorkResult.idle(); }
+        storage=new CommodityStorageModule(feature(),patch.storeId(),Set.of(FruitRules.ITEM));
+        stage=Stage.STORE;
+        WorkResult result=storage.tick(c);
+        if (result.state()!=WorkResult.State.BUSY) reset();
+        return result;
+    }
     private record Nearby(FruitPatch patch,Pos target) { }
     private Nearby findNearby(Context c) {
         Nearby chosen=null;
         if (c.profile().fruitPatches==null) return null;
-        boolean sameDay=observedProfile==c.profile() && confirmedDay==Math.floorDiv(c.world().dayTime(),24000L);
         double nearest=NEARBY_REACH;
         for (FruitPatch candidate:c.profile().fruitPatches) {
             if (candidate==null || !candidate.valid() || !validStore(c,candidate)) continue;
             for (Pos pos:candidate.fruits()) {
                 double distance=c.world().player().distance(pos);
-                if (distance>nearest || sameDay && confirmedToday.contains(pos)
-                        || skipActive(c,pos,skippedTargets.get(pos)) || !c.world().loaded(pos)) continue;
-                // Loaded + nearby is checked before reading any native block.
-                BlockData block=c.world().block(pos);
-                if (block!=null && pos.equals(block.pos()) && FruitRules.mature(block)
-                        && candidate.equals(FruitRules.patch(c.profile(),pos))) {
+                if (eligibleNearby(c,candidate,pos,nearest)) {
                     chosen=new Nearby(candidate,pos);nearest=distance;
                 }
             }
         }
         return chosen;
     }
+    private boolean eligibleNearby(Context c,FruitPatch candidate,Pos pos,double reach) {
+        boolean sameDay=observedProfile==c.profile() && confirmedDay==Math.floorDiv(c.world().dayTime(),24000L);
+        if (c.world().player().distance(pos)>reach || sameDay && confirmedToday.contains(pos)
+                || skipActive(c,pos,skippedTargets.get(pos)) || !c.world().loaded(pos)) return false;
+        // Loaded + nearby is checked before reading any native block.
+        BlockData block=c.world().block(pos);
+        return block!=null && pos.equals(block.pos()) && FruitRules.mature(block)
+            && candidate.equals(FruitRules.patch(c.profile(),pos));
+    }
     private boolean registered(Context c) {
         return target!=null && patch!=null && patch.equals(FruitRules.patch(c.profile(),target)) && validStore(c,patch)
+            && (passStore==null || passStore.equals(CommodityStorageRules.store(c.profile(),patch.storeId())))
             && (!lateCleanup || Objects.equals(lastConfirmedStore,CommodityStorageRules.store(c.profile(),patch.storeId())));
     }
     private boolean lateFruitReady(Context c) {
@@ -228,12 +258,15 @@ public final class StarfruitModule implements AutomationModule {
             skippedTargets.put(target,new SkippedFruit(patch,CommodityStorageRules.store(c.profile(),patch.storeId()),
                 Math.floorDiv(c.world().dayTime(),24000L),c.world().tick()));
         }
-        c.actions().stopMovement();c.navigation().reset();reset();return WorkResult.idle();
+        c.actions().stopMovement();c.navigation().reset();
+        if (chooseNextNearby(c)) return WorkResult.busy("접근할 수 없는 열매를 건너뛰고 같은 동선의 스타프루트 확인");
+        return finishNearby(c);
     }
     private WorkResult fail(Context c,String message) { c.actions().stopMovement();c.navigation().reset();reset();return WorkResult.blocked(message); }
     @Override public void reset() {
         if (storage!=null) storage.reset();
         stage=Stage.FIND;pending=null;ticket=-1;target=null;patch=null;storage=null;lateCleanup=false;
+        remainingNearby.clear();passStore=null;passPicked=false;
         // Confirmed same-day evidence and its destination survive scheduler/one-shot
         // reset. A late arrival is stored only when actually in inventory; no action,
         // borrowed inventory, debt, expected count, or persisted completion is retained.
