@@ -281,3 +281,19 @@ storage pass completed without a global action fence in the corrected build.
 That is not proof that the exact 2-to-4 pickup race happened a second time.
 The continuous run remains under observation; a multi-hour all-feature stability
 pass is still outstanding.
+
+## Continued cycle and newly retained inventory-restoration failure
+
+The same continuous run allowed the day-464 seed-material wait to yield to
+actual sleep, then entered day 465 without a new start command. All 144 preserves
+machines subsequently returned to working state and the sampled inventory
+contained 144 preserves before the following storage/shipping work. The whole
+384-machine wine batch then started; 160 machines were observed refilled with
+160 wines in inventory and 224 batch members still pending.
+
+At 01:57:15 UTC the run paused on a retained inventory-consolidation hotbar loan.
+The client remained connected/responding, the cursor was empty, and the batch
+and ingredients were preserved. This is an inventory-restoration fence, not a
+navigation failure or proof of a completed wine batch. No restart, old-click
+resend or forced fence clearing was used at discovery. Diagnosis of the retained
+native transaction is in progress; this run does **not** pass multi-hour stability.
