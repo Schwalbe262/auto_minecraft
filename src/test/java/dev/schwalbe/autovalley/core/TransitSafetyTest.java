@@ -94,11 +94,83 @@ class TransitSafetyTest {
     }
     @Test void coordinateTravelCannotBypassLoggingObligationsFencesOrHunger() {
         Fixture f=new Fixture(); CoordinateTravel travel=CoordinateTravel.position(TO);
+        f.profile.enabled.put(Feature.LOGGING,true);
         f.profile.loggingRunActive=true; assertEquals(CoordinateTravel.Result.BLOCKED,travel.tick(f.c));
         f.profile.loggingRunActive=false; f.actions.fence="uncertain click"; assertEquals(CoordinateTravel.Result.BLOCKED,travel.tick(f.c));
         f.actions.fence=null; f.world.food=4; assertEquals(CoordinateTravel.Result.BLOCKED,travel.tick(f.c));
         f.world.food=20; f.world.connected=false; assertEquals(CoordinateTravel.Result.BLOCKED,travel.tick(f.c));
         assertEquals(0,f.nav.positions);
+    }
+    @Test void disabledLoggingQueueAllowsMoveWithoutLosingRemainingOrReplantingObligations() {
+        Fixture f=withSuspendedLogging(); CoordinateTravel travel=CoordinateTravel.position(TO);
+        assertNull(CoordinateTravel.rejection(f.c));
+        assertEquals(CoordinateTravel.Result.MOVING,travel.tick(f.c));
+        f.nav.next=Navigation.Result.ARRIVED;
+        assertEquals(CoordinateTravel.Result.COMPLETE,travel.tick(f.c));
+        assertTrue(f.profile.loggingRunActive);
+        assertEquals(List.of(FROM,TO),f.profile.loggingRemainingPlots);
+        assertEquals(List.of(FROM),f.profile.loggingReplantingPlots);
+        assertFalse(f.c.session().allows(f.profile,Feature.LOGGING));
+        assertNotNull(SafetyPolicy.rejection(new Action.ChopTree(TO),f.c));
+        assertEquals(0,f.actions.submissions);
+    }
+    @Test void enabledLoggingOrExplicitLoggingOneShotStillBlocksItsUnfinishedQueue() {
+        for (int mode=0;mode<3;mode++) {
+            Fixture f=withSuspendedLogging();
+            if (mode!=1) f.profile.enabled.put(Feature.LOGGING,true);
+            if (mode==1) f.c.session().oneShotFeature=Feature.LOGGING;
+            if (mode==2) f.c.session().oneShotFeature=Feature.WINE;
+            assertNotNull(CoordinateTravel.rejection(f.c));
+            assertEquals(CoordinateTravel.Result.BLOCKED,CoordinateTravel.position(TO).tick(f.c));
+            assertEquals(0,f.nav.positions);
+        }
+    }
+    @Test void disabledLoggingDoesNotBypassLeaseFencesCursorMenuHealthOrOutputDebt() {
+        for (int guard=0;guard<7;guard++) {
+            Fixture f=withSuspendedLogging();
+            switch (guard) {
+                case 0 -> f.profile.loggingHotbarLease=new LoggingHotbarLease(9,2,
+                    new ItemData("minecraft:torch",55,0,null,false,0),"test");
+                case 1 -> f.actions.fence="uncertain native receipt";
+                case 2 -> f.world.cursor=new ItemData("minecraft:stone",1,0,null,false,0);
+                case 3 -> f.world.container=true;
+                case 4 -> f.world.health=4;
+                case 5 -> f.world.food=4;
+                case 6 -> f.profile.pendingMachineOutputs.put("pending",new PendingMachineOutput("pending",
+                    Feature.PRESERVES,FROM,1,null,1,PendingMachineOutput.Phase.AWAITING_PICKUP));
+            }
+            assertNotNull(CoordinateTravel.rejection(f.c),"guard "+guard);
+            assertEquals(CoordinateTravel.Result.BLOCKED,CoordinateTravel.position(TO).tick(f.c),"guard "+guard);
+            f.actions.busy=true;
+            assertEquals(CoordinateTravel.Result.BLOCKED,CoordinateTravel.position(TO).tick(f.c),"door guard "+guard);
+            assertEquals(0,f.nav.positions);
+        }
+    }
+    @Test void disabledLoggingMayContinueItsPendingDoorButCannotStartWithAnActionInFlight() {
+        Fixture f=withSuspendedLogging(); CoordinateTravel travel=CoordinateTravel.position(TO);
+        assertEquals(CoordinateTravel.Result.MOVING,travel.tick(f.c));
+        f.actions.busy=true;
+        assertNotNull(CoordinateTravel.rejection(f.c),"A new request still requires an idle action port");
+        assertEquals(CoordinateTravel.Result.MOVING,travel.tick(f.c));
+        assertEquals(2,f.nav.positions); assertEquals(0,f.actions.submissions);
+    }
+    @Test void reenabledLoggingBlocksEvenTheExistingDoorPendingException() {
+        for (boolean explicit : List.of(false,true)) {
+            Fixture f=withSuspendedLogging(); CoordinateTravel travel=CoordinateTravel.position(TO);
+            assertEquals(CoordinateTravel.Result.MOVING,travel.tick(f.c));
+            f.actions.busy=true;
+            if (explicit) f.c.session().oneShotFeature=Feature.LOGGING;
+            else f.profile.enabled.put(Feature.LOGGING,true);
+            assertEquals(CoordinateTravel.Result.BLOCKED,travel.tick(f.c));
+            assertEquals(1,f.nav.positions); assertTrue(f.actions.stops>0);
+        }
+    }
+    private static Fixture withSuspendedLogging() {
+        Fixture f=new Fixture(); f.profile.enabled.put(Feature.LOGGING,false);
+        f.profile.loggingRunActive=true;
+        f.profile.loggingRemainingPlots.addAll(List.of(FROM,TO));
+        f.profile.loggingReplantingPlots.add(FROM);
+        return f;
     }
     @Test void failedCoordinateMoveIsNotClaimedCompleteAndDoesNotSubmitWork() {
         Fixture f=new Fixture(); f.nav.next=Navigation.Result.BLOCKED;
