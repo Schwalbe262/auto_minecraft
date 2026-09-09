@@ -54,6 +54,8 @@ public final class ValleyScreen extends Screen {
     private boolean machineBatchPartial;
     private String machineBatchLabel = "";
     private MachineGroup selectedMachineGroup;
+    private StorageListView.Group selectedStorageGroup;
+    private Profile storageGroupOwner;
     private String selectedMachineGroupId;
     private String machineGroupNameDraft = "";
     private MachineGroupPage machineGroupPage = MachineGroupPage.DETAIL;
@@ -118,7 +120,7 @@ public final class ValleyScreen extends Screen {
             Tab target = tabs[i];
             Button button = button(left + i * (tabWidth + gap), 28, tabWidth, tr("tab." + target.name().toLowerCase(Locale.ROOT)), () -> {
                 rememberDraft(); tab = target; rememberedTab = target; page = 0;
-                selected = null; coordinatePromotion = null; selectedMachineGroup = null; farmEditor = false; showSuggestions = false; scheduleEditor = false; toolsEditor = false; machineBatchEditor = false; loggingPage = LoggingPage.LIST; rebuild();
+                selected = null; coordinatePromotion = null; selectedMachineGroup = null; selectedStorageGroup = null; storageGroupOwner = null; farmEditor = false; showSuggestions = false; scheduleEditor = false; toolsEditor = false; machineBatchEditor = false; loggingPage = LoggingPage.LIST; rebuild();
             });
             button.active = target != tab;
         }
@@ -126,7 +128,7 @@ public final class ValleyScreen extends Screen {
             case MODULES -> { if (toolsEditor) toolsEditor(); else if (scheduleEditor) scheduleEditor(); else modules(); }
             case REGISTER -> { if (machineBatchEditor) machineBatchEditor(); else if (selected == null) registration(); else poiEditor(); }
             case FARMS -> { if (loggingAreas) loggingAreas(); else if (farmEditor) farmEditor(); else if (showSuggestions) suggestionList(); else farms(); }
-            case SAVED -> { if (selectedMachineGroup != null) machineGroupEditor(); else saved(); }
+            case SAVED -> { if (selectedStorageGroup != null) storageGroupMembers(); else if (selectedMachineGroup != null) machineGroupEditor(); else saved(); }
         }
         button(left + panelWidth - 72, height - 25, 72, tr("close"), this::onClose);
     }
@@ -421,6 +423,7 @@ public final class ValleyScreen extends Screen {
         text(55, tr("schedule.harvest"));
         EditBox harvest = input(left + panelWidth - 58, 51, 58, tr("schedule.harvest"), 2);
         harvest.setValue(Integer.toString(runtime.profile().harvestCycleDays));
+        harvest.setTooltip(Tooltip.create(tr("schedule.tomato_only").copy().append("\n").append(tr("schedule.hint"))));
         text(84, tr("schedule.wine"));
         EditBox wine = input(left + panelWidth - 58, 80, 58, tr("schedule.wine"), 2);
         wine.setValue(Integer.toString(runtime.profile().wineCycleDays));
@@ -429,8 +432,9 @@ public final class ValleyScreen extends Screen {
         preserves.setValue(Integer.toString(runtime.profile().preservesCycleDays));
         long currentDay = Math.floorDiv(runtime.world().dayTime(), 24000L);
         long nextDay = runtime.profile().nextEligibleDay.values().stream().filter(Objects::nonNull).min(Long::compareTo).orElse(currentDay);
-        text(139, tr("schedule.dates", currentDay + 1, Math.max(currentDay, nextDay) + 1));
-        text(154, tr("schedule.hint"));
+        CropDefinition ancient = CropRules.definition(runtime.profile(), CropRules.ANCIENT_FRUIT);
+        text(139, ancient == null ? tr("schedule.tomato_only") : tr("schedule.ancient_readonly", ancient.cycleDays()));
+        text(154, tr("schedule.dates", currentDay + 1, Math.max(currentDay, nextDay) + 1));
         if (height >= 285) text(209, tr("schedule.ready_hint"));
         int third = (panelWidth - 12) / 3;
         button(left, 179, third, tr("back"), () -> { scheduleEditor = false; rebuild(); });
@@ -981,10 +985,21 @@ public final class ValleyScreen extends Screen {
         text(79, tr("waypoint.hint"));
         List<SavedEntry> entries = savedEntries();
         int rows = rowsFrom(94), start = pageStart(entries.size(), rows);
-        if (runtime.profile().pois.isEmpty()) text(101, tr("saved.empty"));
+        if (entries.isEmpty()) text(101, tr("saved.empty"));
         for (int i = start; i < Math.min(start + rows, entries.size()); i++) {
             SavedEntry entry = entries.get(i);
             int y = 94 + (i - start) * 23;
+            if (entry.storage() != null) {
+                StorageListView.Group group = entry.storage();
+                Component caption = storageCaption(group);
+                if (!group.tomato()) caption = caption.copy().append(" · ").append(tr("storage.groups.items", String.join(", ", group.items())));
+                Component description = caption.copy().append("\n").append(tr("storage.groups.items", String.join(", ", group.items())))
+                    .append("\n").append(tr("storage.groups.view_hint"));
+                button(left, y, panelWidth, clipped(caption, panelWidth - 12), () -> {
+                    selectedStorageGroup = group; storageGroupOwner = runtime.profile(); page = 0; rebuild();
+                }).setTooltip(Tooltip.create(description));
+                continue;
+            }
             if (entry.group() != null) {
                 MachineGroup group = entry.group();
                 Component caption = tr("machines.group_row", group.name(), group.members().size());
@@ -1022,12 +1037,12 @@ public final class ValleyScreen extends Screen {
         pagination(entries.size(), rows);
     }
 
-    private record SavedEntry(String groupId, MachineGroup group, Poi poi) { }
+    private record SavedEntry(String groupId, MachineGroup group, Poi poi, StorageListView.Group storage) { }
 
     private List<SavedEntry> savedEntries() {
         Map<Pos,SavedEntry> membership = new HashMap<>();
         for (var saved : runtime.profile().machineGroups.entrySet()) {
-            SavedEntry entry = new SavedEntry(saved.getKey(), saved.getValue(), null);
+            SavedEntry entry = new SavedEntry(saved.getKey(), saved.getValue(), null, null);
             saved.getValue().members().forEach(pos -> membership.put(pos, entry));
         }
         Map<PoiKind,Integer> ordinal = new EnumMap<>(PoiKind.class);
@@ -1036,16 +1051,58 @@ public final class ValleyScreen extends Screen {
             int number = ordinal.merge(kind, 1, Integer::sum);
             String name = tr("machines.group_default", poiName(kind), number).getString();
             MachineGroup group = new MachineGroup(name, kind, members.stream().map(Poi::pos).toList());
-            SavedEntry entry = new SavedEntry(null, group, null);
+            SavedEntry entry = new SavedEntry(null, group, null, null);
             group.members().forEach(pos -> membership.put(pos, entry));
         }
         List<SavedEntry> entries = new ArrayList<>(); Set<SavedEntry> emitted = new HashSet<>();
-        for (Poi poi : runtime.profile().pois) {
+        StorageListView.Snapshot storage = StorageListView.snapshot(runtime.profile());
+        for (StorageListView.Group group : storage.groups()) entries.add(new SavedEntry(null, null, null, group));
+        for (Poi poi : storage.standalonePois()) {
             SavedEntry entry = membership.get(poi.pos());
-            if (entry == null) entries.add(new SavedEntry(null, null, poi));
+            if (entry == null) entries.add(new SavedEntry(null, null, poi, null));
             else if (emitted.add(entry)) entries.add(entry);
         }
         return List.copyOf(entries);
+    }
+
+    private Component storageCaption(StorageListView.Group group) {
+        return group.tomato() ? tr("storage.groups.tomato", group.members().size())
+            : tr("storage.groups.named", group.name(), group.members().size());
+    }
+
+    private void storageGroupMembers() {
+        StorageListView.Group group = selectedStorageGroup;
+        button(left, 54, panelWidth, tr("back"), () -> { selectedStorageGroup = null; storageGroupOwner = null; page = 0; rebuild(); });
+        if (runtime.profile() != storageGroupOwner || !StorageListView.current(runtime.profile(), group)) {
+            text(82, tr("storage.groups.changed")); return;
+        }
+        text(79, storageCaption(group));
+        Component items = tr("storage.groups.items", String.join(", ", group.items()));
+        button(left, 94, panelWidth, items, () -> { }).setTooltip(Tooltip.create(items.copy().append("\n").append(tr("storage.groups.view_hint"))));
+        int rows = rowsFrom(122); pageStart(group.members().size(), rows);
+        List<Pos> members = StorageListView.page(group, page, rows);
+        for (int i = 0; i < members.size(); i++) {
+            Pos position = members.get(i);
+            Poi poi = group.tomato() ? runtime.profile().pois.stream().filter(p -> p.kind() == PoiKind.TOMATO_CHEST && p.pos().equals(position)).findFirst().orElse(null) : null;
+            Component caption = Component.literal((poi == null ? "" : poi.label() + " · ") + coords(position));
+            int memberWidth = group.tomato() ? panelWidth - 58 : panelWidth;
+            button(left, 122 + i * 23, memberWidth, caption, () -> {
+                if (runtime.profile() != storageGroupOwner || !StorageListView.current(runtime.profile(), group)) { error("storage.groups.changed"); return; }
+                if (poi != null) editSavedPoi(poi);
+            }).setTooltip(Tooltip.create(caption.copy().append("\n").append(tr(group.tomato() ? "storage.groups.tomato_member_hint" : "storage.groups.view_hint"))));
+            if (group.tomato()) button(left + panelWidth - 54, 122 + i * 23, 54, tr("remove"), () -> {
+                Profile profile = runtime.profile();
+                if (!StorageListView.removableTomato(storageGroupOwner, profile, group, poi)) { error("storage.groups.changed"); return; }
+                List<Poi> before = new ArrayList<>(profile.pois);
+                profile.pois.remove(poi);
+                if (persist(() -> { profile.pois.clear(); profile.pois.addAll(before); })) {
+                    selectedStorageGroup = StorageListView.snapshot(profile).groups().stream().filter(StorageListView.Group::tomato).findFirst().orElse(null);
+                    if (selectedStorageGroup == null) storageGroupOwner = null;
+                }
+                rebuild();
+            });
+        }
+        pagination(group.members().size(), rows);
     }
 
     private void openMachineGroup(SavedEntry entry) {
@@ -1142,7 +1199,7 @@ public final class ValleyScreen extends Screen {
         if (!runtime.world().loaded(poi.pos())) { error("error.unloaded"); return; }
         BlockData block = runtime.world().block(poi.pos());
         if (RegistrationRules.kinds(block).isEmpty()) { error("error.changed"); return; }
-        selectedMachineGroup = null; tab = Tab.REGISTER; rememberedTab = tab; selectCandidate(block, true);
+        selectedMachineGroup = null; selectedStorageGroup = null; storageGroupOwner = null; tab = Tab.REGISTER; rememberedTab = tab; selectCandidate(block, true);
     }
 
     private void captureFeet(PoiKind kind) {
