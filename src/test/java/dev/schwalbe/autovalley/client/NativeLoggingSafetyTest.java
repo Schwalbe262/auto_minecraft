@@ -90,23 +90,28 @@ class NativeLoggingSafetyTest {
         assertFalse(NativeLoggingSwap.swapped(before,List.of(tool,sapling,log),0,0));
     }
     private static ItemData data(String id) { return new ItemData(id,1,0,null,false,100); }
-    @Test void trashRecoveryBufferCanTransitionBetweenTheTwoAuthorizedWasteRoutines() {
-        assertTrue(NativeTrashSlot.disposableBuffer(ItemData.EMPTY));
-        assertFalse(NativeTrashSlot.disposableBuffer(null));
-        for(String id:List.of(ItemData.ROTTEN,LoggingRules.TWIG,LoggingRules.SAPLING))
-            assertTrue(NativeTrashSlot.disposableBuffer(data(id)));
-        for(String id:List.of(LoggingRules.LOG,LoggingRules.FIRE_LOG,LoggingRules.BERRY,LoggingRules.AXE,
-                ItemData.TOMATO,ItemData.WINE,ItemData.PRESERVES,ItemData.PINE_TAR,"minecraft:diamond_sword"))
-            assertFalse(NativeTrashSlot.disposableBuffer(data(id)));
-    }
-    @Test void protectedTrashBufferNamesTheUnsentPrerequisiteWithoutDeletingOtherItems() {
-        assertNull(NativeTrashSlot.bufferRejection(ItemData.EMPTY));
-        for (String id:List.of(ItemData.ROTTEN,LoggingRules.TWIG,LoggingRules.SAPLING))
-            assertNull(NativeTrashSlot.bufferRejection(data(id)));
-        for (String id:List.of(ItemData.TOMATO,ItemData.WINE,"minecraft:diamond_sword")) {
-            String refusal=NativeTrashSlot.bufferRejection(data(id));
-            assertTrue(refusal.contains(id)); assertTrue(refusal.contains("삭제 요청은 보내지 않았습니다"));
+    @Test void discardingAnyExistingBufferDoesNotAuthorizeValuableNewInventorySources() {
+        assertTrue(NativeTrashSlot.sourceAllowed(data(ItemData.ROTTEN),false));
+        assertFalse(NativeTrashSlot.sourceAllowed(data(ItemData.ROTTEN),true));
+        for(String id:List.of(LoggingRules.TWIG,LoggingRules.SAPLING)) {
+            assertTrue(NativeTrashSlot.sourceAllowed(data(id),true));
+            assertFalse(NativeTrashSlot.sourceAllowed(data(id),false));
         }
-        assertNotNull(NativeTrashSlot.bufferRejection(null));
+        for(String id:List.of(LoggingRules.LOG,LoggingRules.FIRE_LOG,LoggingRules.BERRY,LoggingRules.AXE,
+                ItemData.TOMATO,ItemData.WINE,ItemData.PRESERVES,ItemData.PINE_TAR,"minecraft:diamond","minecraft:diamond_sword"))
+            for(boolean logging:List.of(false,true))assertFalse(NativeTrashSlot.sourceAllowed(data(id),logging),id);
+        for(boolean logging:List.of(false,true)) {
+            assertFalse(NativeTrashSlot.sourceAllowed(null,logging));assertFalse(NativeTrashSlot.sourceAllowed(ItemData.EMPTY,logging));
+        }
+    }
+    @Test void trashPreflightOnlyRequiresTheServerEndpointNotTheOldBufferContents() {
+        assertNull(NativeTrashSlot.preflightRejection(true));
+        assertNotNull(NativeTrashSlot.preflightRejection(false));
+    }
+    @Test void diamondToolOrUnobservableRecoveryBufferCannotReintroduceAGuiReadGate() throws Exception {
+        String source=java.nio.file.Files.readString(java.nio.file.Path.of("src/main/java/dev/schwalbe/autovalley/client/NativeTrashSlot.java"));
+        assertFalse(source.contains("getTrashSlot"),"No existing-buffer read, including diamonds, tools or absent GUI");
+        assertFalse(source.contains("TrashSlotGuiHandler"));assertFalse(source.contains("bufferRejection"));
+        assertTrue(source.contains("!sourceAllowed(expected,logging)"),"The new selected inventory source stays allowlisted");
     }
 }

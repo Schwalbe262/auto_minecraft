@@ -72,6 +72,11 @@ Those earlier passive checks were not end-to-end automation acceptance; unchange
 
 ## Inventory disposal and configuration update — 2026-09-08
 
+Historical checkpoint: the recovery-buffer restrictions below were removed on
+2026-09-09 after the user explicitly designated all existing TrashSlot contents
+for disposal. Current behavior is documented in
+[the TrashSlot update](TRASHSLOT-BUFFER-20260909.md); source-item and ACK checks remain.
+
 - The user subsequently confirmed that real automated tomato harvesting and storage worked. A later live observation found no remaining inventory/nearby-ground harvest but a stale ephemeral rotten-tomato haul record after manual disposal. Neither observation establishes production, sales, or sleep acceptance.
 - TrashSlot 15.1.3 integration sends its native single-slot deletion request, never delete-all, cursor deletion, or an OS input. Only a matching normal-inventory rotten-tomato stack is permitted. A non-rotten recovery-buffer item prevents overwriting that buffer. Confirmed deletion updates the harvest ledger; missing, cancelled, or late replies cannot cause automatic resends.
 - Full server-menu replies remain separate from single-slot server evidence plus a detached post-application native menu. Exact source deletion, native preservation of every other stack, and an empty cursor are required. A projected count change alone is insufficient.
@@ -969,12 +974,13 @@ hotbar item. An explicit logging one-shot may finish it without changing the
 saved toggle; other one-shots are rejected until it is finished. Ordinary
 inactive logging checks retain the existing scheduler sweep behavior.
 
-TrashSlot's retained recovery buffer accepts the authorized waste union
+At this historical checkpoint, TrashSlot's retained recovery buffer accepted the authorized waste union
 (empty, rotten tomato, spruce sapling or twig) across both disposal workflows.
 The source-item restrictions are unchanged: rotten-tomato disposal cannot
 delete logging products, and logging disposal cannot delete wood, berries,
 tools or unrelated items. A valuable recovery-buffer item still blocks the
-operation. This compatibility change does not prove the contents of a past
+operation. This buffer restriction was later removed by the explicit 2026-09-09
+user instruction; see [the update](TRASHSLOT-BUFFER-20260909.md). This compatibility change does not prove the contents of a past
 failed live buffer that was not captured.
 
 ### Logging-only verified one-block ascent: not yet live-accepted

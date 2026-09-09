@@ -22,6 +22,6 @@ public interface ActionPort {
     default boolean supportsMovingHarvest() { return false; }
     /** Requires a supported server-side TrashSlot single-slot deletion channel. */
     default boolean supportsInventoryTrash() { return false; }
-    /** Read-only preflight; a protected recovery-buffer item is not a sent deletion. */
+    /** Read-only server-endpoint preflight; existing trash-buffer contents do not gate disposal. */
     default String inventoryTrashRejection() { return null; }
 }

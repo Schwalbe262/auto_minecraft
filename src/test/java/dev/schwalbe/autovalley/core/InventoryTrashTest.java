@@ -46,8 +46,8 @@ class InventoryTrashTest {
         assertTrue(result.message().contains("TrashSlot")); assertTrue(f.sent.isEmpty());
     }
 
-    @Test void protectedRecoveryBufferBlocksOnlyDisposalWithoutSendingOrInventingAnAcknowledgement() {
-        Fixture f=new Fixture(); f.put(2,rotten(5)); f.trashRejection="Protected recovery item; request not sent";
+    @Test void unavailableEndpointBlocksOnlyDisposalWithoutSendingOrInventingAnAcknowledgement() {
+        Fixture f=new Fixture(); f.put(2,rotten(5)); f.trashRejection="TrashSlot server unavailable; request not sent";
         DisposalModule module=new DisposalModule();
         for (int i=0;i<10;i++) {
             WorkResult result=module.tick(f.context);
@@ -64,7 +64,7 @@ class InventoryTrashTest {
     }
 
     @Test void continuousEngineCanServiceAnotherJobWhileUnsentDisposalIsBlocked() {
-        Fixture f=new Fixture();f.put(2,rotten(5));f.trashRejection="Protected recovery item; request not sent";
+        Fixture f=new Fixture();f.put(2,rotten(5));f.trashRejection="TrashSlot server unavailable; request not sent";
         int[] otherTicks={0};
         AutomationModule other=new AutomationModule() {
             public Feature feature() {return Feature.SHIPPING;}

@@ -13,11 +13,13 @@ import net.minecraftforge.fml.ModList;
 /**
  * Pinned TrashSlot 15.1.3 public network API. No cursor prediction, world drop,
  * delete-all, trash-buffer clearing, GUI input or packet resend is performed.
+ * The user explicitly designates anything already in TrashSlot for disposal;
+ * its recovery buffer must not gate the next separately allowlisted source.
  * Native snapshots remain RAM-only. A single-slot packet is never represented
  * as a complete authoritative server-menu snapshot.
  */
 final class NativeTrashSlot {
-    private record Hooks(Field installed,Constructor<?> message,Method networking,Method send,Method trashSlot) { }
+    private record Hooks(Field installed,Constructor<?> message,Method networking,Method send) { }
     private static final Hooks HOOKS=hooks();
     final long generation,beforeSequence;
     final int menuId,sourceMenuSlot,quantity;
@@ -37,9 +39,8 @@ final class NativeTrashSlot {
             Class<?> message=Class.forName("net.blay09.mods.trashslot.network.MessageDeleteFromSlot",false,loader);
             Class<?> balm=Class.forName("net.blay09.mods.balm.api.Balm",false,loader);
             Class<?> networking=Class.forName("net.blay09.mods.balm.api.network.BalmNetworking",false,loader);
-            Class<?> gui=Class.forName("net.blay09.mods.trashslot.client.TrashSlotGuiHandler",false,loader);
             return new Hooks(mod.getField("isServerSideInstalled"),message.getConstructor(int.class,boolean.class),
-                balm.getMethod("getNetworking"),networking.getMethod("sendToServer",Object.class),gui.getMethod("getTrashSlot"));
+                balm.getMethod("getNetworking"),networking.getMethod("sendToServer",Object.class));
         } catch (ReflectiveOperationException | LinkageError | RuntimeException failure) { return null; }
     }
     NativeTrashSlot(LocalPlayer player,Action.TrashRotten action,ServerObservations observations) {
@@ -51,7 +52,7 @@ final class NativeTrashSlot {
     private NativeTrashSlot(LocalPlayer player,int inventoryIndex,ItemData expected,ServerObservations observations,boolean logging) {
         this.logging=logging;
         if (!available() || player==null || player.containerMenu!=player.inventoryMenu || !player.inventoryMenu.getCarried().isEmpty()
-            || inventoryIndex<0 || inventoryIndex>=36 || expected==null || !(logging ? LoggingRules.waste(expected) : expected.is(ItemData.ROTTEN))
+            || inventoryIndex<0 || inventoryIndex>=36 || !sourceAllowed(expected,logging)
             || !MinecraftWorld.item(player.getInventory().getItem(inventoryIndex)).equals(expected))
             throw new IllegalArgumentException("Inventory TrashSlot preconditions changed");
         List<Slot> matching=player.inventoryMenu.slots.stream().filter(s -> s.container==player.getInventory()
@@ -70,27 +71,20 @@ final class NativeTrashSlot {
             throw new IllegalArgumentException("Incomplete normal inventory mapping");
         generation=observations.generation(); beforeSequence=observations.sequence();
     }
-    static boolean disposableBuffer(ItemData item) {
-        return item!=null && (item.empty() || item.is(ItemData.ROTTEN) || LoggingRules.waste(item));
+    /** Permission for a NEW normal-inventory source, never the previous recovery buffer. */
+    static boolean sourceAllowed(ItemData item,boolean logging) {
+        return item!=null && (logging ? LoggingRules.waste(item) : item.is(ItemData.ROTTEN));
     }
     static final class PreflightRejected extends IllegalStateException {
         PreflightRejected(String message) { super(message); }
     }
-    static String bufferRejection(ItemData retained) {
-        if (disposableBuffer(retained)) return null;
-        if (retained==null) return "쓰레기칸을 확인할 수 없어 삭제 요청을 보내지 않았습니다.";
-        // Reduced registry ID/count only: never export the retained stack's NBT.
-        return "쓰레기칸에 보호 품목 "+retained.id()+" ×"+retained.count()
-            +"개가 남아 있어 폐기 보류 중입니다. 인벤토리에서 회수하거나 직접 비워 주세요. 삭제 요청은 보내지 않았습니다.";
+    static String preflightRejection(boolean serverAvailable) {
+        // Existing buffer contents are intentionally irrelevant. Do not query a GUI
+        // slot: the normal single-source request may overwrite anything the user put there.
+        return serverAvailable ? null : "서버 TrashSlot을 사용할 수 없어 삭제 요청을 보내지 않았습니다.";
     }
     static String preflightRejection() {
-        if (!available()) return "서버 TrashSlot을 사용할 수 없어 삭제 요청을 보내지 않았습니다.";
-        try {
-            Object buffer=HOOKS.trashSlot().invoke(null);
-            return bufferRejection(buffer instanceof Slot slot ? MinecraftWorld.item(slot.getItem()) : null);
-        } catch (ReflectiveOperationException | LinkageError | RuntimeException failure) {
-            return "쓰레기칸 조회에 실패하여 삭제 요청을 보내지 않았습니다. ("+failure.getClass().getSimpleName()+")";
-        }
+        return preflightRejection(available());
     }
     void send() {
         try {
