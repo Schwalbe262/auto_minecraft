@@ -5,7 +5,9 @@ public sealed interface Action {
     record SelectHotbar(int slot) implements Action { }
     record SwapHotbar(int inventoryIndex, int hotbarSlot) implements Action { }
     /** Cursor-free, owned-inventory-only native stack consolidation. */
-    record ConsolidateInventory(ProductionMergePlanner.Plan plan) implements Action { }
+    record ConsolidateInventory(ProductionMergePlanner.Plan plan, boolean optionalOutput) implements Action {
+        public ConsolidateInventory(ProductionMergePlanner.Plan plan) { this(plan,false); }
+    }
     record QuickMove(int containerId, int slot) implements Action { }
     record ThrowRotten(int containerId, int slot, Pos disposal) implements Action { }
     /** One cursor-free TrashSlot deletion of this exact normal inventory stack. */

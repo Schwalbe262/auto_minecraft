@@ -873,6 +873,139 @@ class LogisticsTest {
         engine.stop(f.context(),AutomationEngine.State.OFF,"end of carried-batch prefix test");
     }
 
+    @Test void wineWithPlentyOfRealEmptySlotsSkipsOptionalOutputMergesAndKeepsEveryBottle() {
+        Fixture f=new Fixture(); f.equipHoe(); f.separateFreshWineSlots=true;
+        f.inventory[1]=tomato(0,12);
+        for (int n=0;n<3;n++) f.machine(PoiKind.WINE_KEG,10+n,true,true,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(3,f.machineClicks()); assertEquals(9,f.consumed);
+        assertEquals(3,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE)));
+        assertEquals(3,Arrays.stream(f.inventory).filter(i -> i.is(ItemData.WINE)).count());
+        assertTrue(f.history.stream().noneMatch(Action.ConsolidateInventory.class::isInstance));
+        assertNull(f.dropped); assertTrue(f.profile.pendingMachineOutputs.isEmpty());
+        assertEquals(3,f.profile.nextEligibleDay.size());
+        assertTrue(f.profile.nextEligibleDay.values().stream().allMatch(day -> day==f.profile.wineCycleDays));
+        assertFalse(f.profile.wineBatchSchedule.active());
+        assertTrue(f.inventory[0].hoe()); assertEquals(3,f.inventory[1].count());
+    }
+
+    @Test void wineOutputMergeThresholdUsesActualEmptySlotsNotProjectedPartialStackRoom() {
+        for (int emptyAfterPickup:List.of(2,3)) {
+            Fixture f=new Fixture(); f.separateFreshWineSlots=true;
+            Arrays.fill(f.inventory,new ItemData("minecraft:dirt",64,0,null,false,999));
+            f.equipHoe(); f.inventory[1]=tomato(0,6); f.inventory[9]=wine(f.wineClockYear,20,0);
+            for (int n=35;n>=35-emptyAfterPickup;n--) f.inventory[n]=ItemData.EMPTY;
+            f.machine(PoiKind.WINE_KEG,10,true,true,false);
+            AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+            engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,100);
+            assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+            assertEquals(emptyAfterPickup==2 ? 1 : 0,
+                f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count());
+            assertEquals(21,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE)));
+            assertEquals(1,f.machineClicks()); assertEquals(3,f.consumed); assertNull(f.dropped);
+        }
+    }
+
+    @Test void wineAtTwoSlotReserveStillConsolidatesAndThenUsesExistingStorageWithoutLoss() {
+        Fixture f=new Fixture(); f.separateFreshWineSlots=true; f.reportConfirmedCount=true;
+        Arrays.fill(f.inventory,new ItemData("minecraft:dirt",64,0,null,false,999));
+        f.equipHoe(); f.inventory[1]=tomato(0,12); f.inventory[9]=wine(f.wineClockYear,62,0);
+        f.inventory[34]=ItemData.EMPTY; f.inventory[35]=ItemData.EMPTY;
+        for (int n=0;n<3;n++) f.machine(PoiKind.WINE_KEG,10+n,true,true,false);
+        Pos store=f.chest(PoiKind.WINE_CHEST,30,f.wineClockYear,ItemData.EMPTY);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE); f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(3,f.machineClicks()); assertEquals(9,f.consumed);
+        assertEquals(2,f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count());
+        assertEquals(65,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE)));
+        assertNull(f.dropped); assertTrue(f.profile.pendingMachineOutputs.isEmpty());
+        assertTrue(f.inventory[0].hoe()); assertEquals(3,f.inventory[1].count());
+        assertEquals(WorkResult.State.IDLE,f.run(new WineStorageModule(),50).state());
+        assertEquals(0,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE)));
+        assertEquals(65,Arrays.stream(f.chests.get(store)).filter(i -> i.is(ItemData.WINE)).mapToInt(ItemData::count).sum());
+        assertFalse(f.menu().container()); assertTrue(f.menu().carried().empty()); assertNull(f.dropped);
+        assertEquals(0,f.soldWine);
+    }
+
+    @Test void explicitOptionalWineSkipContinuesBothOneShotAndContinuousWithoutLosingOutputs() {
+        for(boolean once:List.of(false,true)) {
+            Fixture f=optionalWineSkipFixture();
+            f.machine(PoiKind.WINE_KEG,10,true,true,false); f.machine(PoiKind.WINE_KEG,11,true,true,false);
+            Pos store=f.chest(PoiKind.WINE_CHEST,30,f.wineClockYear,ItemData.EMPTY);
+            AutomationEngine engine=new AutomationEngine(List.of(new MachineModule(Feature.WINE)));
+            if(once)engine.startOnce(f.context(),Feature.WINE);else engine.start(f.context());
+            for(int n=0;n<150 && engine.running();n++) { engine.tick(f.context());f.advance(); }
+            if(once)assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+            else assertTrue(engine.running(),engine.status());
+            assertEquals(2,f.machineClicks()); assertEquals(6,f.consumed);
+            assertFalse(f.profile.wineBatchSchedule.active()); assertEquals(2,f.profile.nextEligibleDay.size());
+            List<Action.ConsolidateInventory> merges=f.history.stream().filter(Action.ConsolidateInventory.class::isInstance)
+                .map(a -> (Action.ConsolidateInventory)a).toList();
+            assertEquals(2,merges.size(),"Each changed output may be attempted once, never loop on its safe skip");
+            assertTrue(merges.stream().allMatch(Action.ConsolidateInventory::optionalOutput));
+            assertEquals(22,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE))); assertNull(f.dropped);
+            assertTrue(f.profile.pendingMachineOutputs.isEmpty()); assertTrue(f.inventory[0].hoe());
+            if(!once)engine.stop(f.context(),AutomationEngine.State.OFF,"fixture production completed");
+            assertEquals(WorkResult.State.IDLE,f.run(new WineStorageModule(),50).state());
+            assertEquals(0,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE)));
+            assertEquals(22,Arrays.stream(f.chests.get(store)).filter(i -> i.is(ItemData.WINE)).mapToInt(ItemData::count).sum());
+            assertFalse(f.menu().container()); assertEquals(0,f.soldWine);
+        }
+    }
+
+    @Test void optionalSkipRejectsTheCurrentFingerprintAfterAnUnsentPickupChange() {
+        Fixture f=optionalWineSkipFixture(); f.machine(PoiKind.WINE_KEG,10,true,true,false);
+        f.consolidationOutcomeHook=() -> f.inventory[9]=wine(f.wineClockYear,21,0);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE);f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());
+        assertEquals(1,f.history.stream().filter(Action.ConsolidateInventory.class::isInstance).count(),
+            "A post-plan pickup must not turn safe abandonment into a fresh plan in the same OUTPUT stage");
+        assertEquals(22,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE)));
+        assertEquals(1,f.machineClicks()); assertEquals(3,f.consumed); assertNull(f.dropped);
+    }
+
+    @Test void inputMergeCannotConsumeAnOptionalOutputSkip() {
+        Fixture f=new Fixture();f.inventory[0]=tomato(2,1);f.inventory[9]=tomato(2,2);f.profile.hoeHotbarSlot=4;
+        f.consolidationOutcome=safeConsolidationSkip();f.machine(PoiKind.WINE_KEG,10,false,false,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.WINE);
+        engine.startOnce(f.context(),Feature.WINE);f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(0,f.machineClicks());
+        assertEquals(0,f.consumed); assertEquals(3,ModuleSupport.count(f.context(),i -> i.is(ItemData.TOMATO)));
+        List<Action.ConsolidateInventory> merges=f.history.stream().filter(Action.ConsolidateInventory.class::isInstance)
+            .map(a -> (Action.ConsolidateInventory)a).toList();
+        assertEquals(1,merges.size());assertFalse(merges.get(0).optionalOutput());
+    }
+
+    @Test void preservesOutputCannotConsumeAWineOnlySafeSkip() {
+        Fixture f=optionalWineSkipFixture();f.inventory[1]=tomato(0,10);
+        f.inventory[9]=new ItemData(ItemData.PRESERVES,20,0,null,false,99);
+        f.inventory[10]=new ItemData(ItemData.PRESERVES,1,0,null,false,99);
+        f.machine(PoiKind.PRESERVES_JAR,10,true,true,false);
+        AutomationEngine engine=isolatedMachineEngine(Feature.PRESERVES);
+        engine.startOnce(f.context(),Feature.PRESERVES);f.runUntilStopped(engine,100);
+        assertEquals(AutomationEngine.State.PAUSED,engine.state());assertEquals(1,f.machineClicks());assertEquals(5,f.consumed);
+        List<Action.ConsolidateInventory> merges=f.history.stream().filter(Action.ConsolidateInventory.class::isInstance)
+            .map(a -> (Action.ConsolidateInventory)a).toList();
+        assertEquals(1,merges.size());assertFalse(merges.get(0).optionalOutput());
+        assertEquals(22,ModuleSupport.count(f.context(),i -> i.is(ItemData.PRESERVES)));assertNull(f.dropped);
+    }
+
+    private static ActionOutcome safeConsolidationSkip() {
+        return new ActionOutcome(ActionOutcome.State.SKIPPED,"Optional unsent consolidation safely abandoned",0,
+            ActionOutcome.Proof.CONSOLIDATION_SKIPPED_UNSENT);
+    }
+    private static Fixture optionalWineSkipFixture() {
+        Fixture f=new Fixture(); f.separateFreshWineSlots=true;f.reportConfirmedCount=true;
+        Arrays.fill(f.inventory,new ItemData("minecraft:dirt",64,0,null,false,999));
+        f.equipHoe();f.inventory[1]=tomato(0,9);f.inventory[9]=wine(f.wineClockYear,20,0);
+        f.inventory[33]=ItemData.EMPTY;f.inventory[34]=ItemData.EMPTY;f.inventory[35]=ItemData.EMPTY;
+        f.consolidationOutcome=safeConsolidationSkip();return f;
+    }
+
     @Test void wineRefillsAllMachinesEvenWhenUnmergeablePickupHasFilledTheInventory() {
         // Native Vinery tags new ground wine only after pickup. This fixture mode
         // deliberately does not credit the ordinary fake add() auto-merge behavior.
@@ -897,6 +1030,8 @@ class LogisticsTest {
             f.inventory[1]=tomato(2,feature==Feature.WINE ? 6 : 10);
             ItemData old=feature==Feature.WINE ? wine(f.wineClockYear,20,0) : new ItemData(ItemData.PRESERVES,20,0,null,false,99);
             f.inventory[9]=old; f.inventory[10]=old;
+            // Wine merging is optional until the two-real-empty-slot reserve is reached.
+            for (int n=12;n<36;n++) f.inventory[n]=new ItemData("minecraft:dirt",64,0,null,false,999);
             f.machine(feature==Feature.WINE ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR,10,true,true,false);
             MachineModule module=new MachineModule(feature);
             if (feature==Feature.PRESERVES) f.awaitPickup(module);
@@ -932,7 +1067,9 @@ class LogisticsTest {
         assertEquals(384,f.machineClicks()); assertEquals(1152,f.consumed); assertEquals(1152,f.tomatoesAtMachineUse.get(0));
         assertEquals(18,f.tomatoWithdrawals); assertTrue(f.opens.get(source)<=6,"periodic stock refreshes are allowed, per-stack underground hauls are not");
         assertEquals(384,ModuleSupport.count(f.context(),i -> i.is(ItemData.WINE)));
-        assertEquals(6,Arrays.stream(f.inventory).filter(i -> i.is(ItemData.WINE)).count());
+        assertTrue(Arrays.stream(f.inventory).filter(i -> i.is(ItemData.WINE)).count()>=6,
+            "space-aware merging may leave harmless partial stacks after the last bottle");
+        assertNull(f.dropped,"deferring optional merges must still pick up all384 outputs in this compatible fixture");
         assertTrue(f.emptySlotsAfterWithdraw.stream().allMatch(n -> n>=2));
         assertTrue(Arrays.stream(f.chests.get(source)).allMatch(ItemData::empty));
         assertTrue(f.history.stream().anyMatch(Action.ConsolidateInventory.class::isInstance));
@@ -2478,6 +2615,8 @@ class LogisticsTest {
         boolean reportConfirmedCount;
         boolean immediateMachine, requireSavedBeforeMachine, separateFreshWineSlots;
         boolean consolidationNoProgress, consolidationFails;
+        ActionOutcome consolidationOutcome;
+        Runnable consolidationOutcomeHook=() -> { };
         Integer machineConsumptionOverride;
         ActionOutcome machineUseOutcome;
         Runnable checkpointHook=() -> { };
@@ -2608,6 +2747,7 @@ class LogisticsTest {
         private void applyConsolidation(ProductionMergePlanner.Plan plan) {
             assertTrue(profile.pendingMachineOutputs.isEmpty(),"no consumer may rearrange output before durable pickup reconciliation");
             assertTrue(ProductionMergePlanner.matchesSnapshot(plan,inventory()));
+            if (consolidationOutcome!=null) { consolidationOutcomeHook.run();outcome=consolidationOutcome;return; }
             if (consolidationFails) { outcome=new ActionOutcome(ActionOutcome.State.FAILED,"native consolidation interrupted"); return; }
             if (plan.reposition()) {
                 int destination=plan.destinations().get(0); assertTrue(inventory[destination].empty());

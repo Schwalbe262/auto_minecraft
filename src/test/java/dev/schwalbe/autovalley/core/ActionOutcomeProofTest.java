@@ -6,6 +6,11 @@ import static org.junit.jupiter.api.Assertions.*;
 class ActionOutcomeProofTest {
     @Test void existingConstructorsCannotInventAdvancedArtisanEvidence() {
         for(ActionOutcome.State state:ActionOutcome.State.values()) {
+            if(state==ActionOutcome.State.SKIPPED) {
+                assertThrows(IllegalArgumentException.class,() -> new ActionOutcome(state,"existing"));
+                assertThrows(IllegalArgumentException.class,() -> new ActionOutcome(state,"quantity",7));
+                continue;
+            }
             assertEquals(ActionOutcome.Proof.NONE,new ActionOutcome(state,"existing").proof());
             ActionOutcome outcome=new ActionOutcome(state,"quantity",7);
             assertEquals(7,outcome.confirmedCount());assertEquals(ActionOutcome.Proof.NONE,outcome.proof());

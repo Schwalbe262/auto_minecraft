@@ -80,7 +80,10 @@ public final class MachineModule implements AutomationModule {
             ActionOutcome result = c.actions().outcome(ticket);
             if (!result.done()) return WorkResult.busy(progressStatus() + " · 서버 응답 대기");
             ticket = -1;
-            if (!result.success()) return fail("Production action failed: " + result.message());
+            boolean skippedOutput=result.state()==ActionOutcome.State.SKIPPED && pending==Pending.OUTPUT_MERGE
+                && feature==Feature.WINE && result.proof()==ActionOutcome.Proof.CONSOLIDATION_SKIPPED_UNSENT
+                && result.confirmedCount()==0;
+            if (!result.success() && !skippedOutput) return fail("Production action failed: " + result.message());
             switch (pending) {
                 case CLOSE -> { containerId = -1; stage = afterClose; }
                 case OPEN_SCAN, OPEN_FETCH -> {
@@ -110,7 +113,11 @@ public final class MachineModule implements AutomationModule {
                     stage=Stage.CHOOSE;
                 }
                 case OUTPUT_MERGE -> {
-                    if (result.confirmedCount()==0) rejectedOutputMerge=pendingMergeState;
+                    // A safe native skip proves no in-flight click or borrowed slot,
+                    // not a completed merge. Reject the current (possibly updated)
+                    // layout so this OUTPUT stage cannot immediately plan it again.
+                    if (skippedOutput) rejectedOutputMerge=mergeState(c,outputId(),null);
+                    else if (result.confirmedCount()==0) rejectedOutputMerge=pendingMergeState;
                     preferredOutputSource=null; inventoryBeforeOutput=Map.of();
                     stage=Stage.OUTPUT;
                 }
@@ -422,12 +429,17 @@ public final class MachineModule implements AutomationModule {
             case OUTPUT -> {
                 // Preserves pickup was checkpointed; wine intentionally has no pickup gate.
                 // Inventory-only merging is not a warehouse deposit or a sale.
-                String fingerprint=mergeState(c,outputId(),null);
-                if (outputMergeAttempts<36 && !fingerprint.equals(rejectedOutputMerge)) {
-                    var merge=ProductionMergePlanner.plan(c.world().inventory(),feature,c.profile().hoeHotbarSlot,preferredOutputSource);
-                    if (merge.isPresent()) {
-                        pendingMergeState=fingerprint; outputMergeAttempts++;
-                        submit(c,new Action.ConsolidateInventory(merge.get()),Pending.OUTPUT_MERGE); break;
+                // Fresh wine need not be rearranged after every bottle. Keep the same
+                // two-real-slot reserve used for supply hauling; apparent partial-stack
+                // capacity is not native tag compatibility or guaranteed pickup room.
+                if (feature!=Feature.WINE || emptyInventorySlots(c)<=RESERVED_OUTPUT_SLOTS) {
+                    String fingerprint=mergeState(c,outputId(),null);
+                    if (outputMergeAttempts<36 && !fingerprint.equals(rejectedOutputMerge)) {
+                        var merge=ProductionMergePlanner.plan(c.world().inventory(),feature,c.profile().hoeHotbarSlot,preferredOutputSource);
+                        if (merge.isPresent()) {
+                            pendingMergeState=fingerprint; outputMergeAttempts++;
+                            submit(c,new Action.ConsolidateInventory(merge.get(),feature==Feature.WINE),Pending.OUTPUT_MERGE); break;
+                        }
                     }
                 }
                 preferredOutputSource=null; inventoryBeforeOutput=Map.of();

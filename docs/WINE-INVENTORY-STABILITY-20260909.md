@@ -38,6 +38,29 @@ normal-inventory slots. Three or more empty slots skip the optional planning ste
 Partial stacks do not masquerade as guaranteed native capacity. Input merging,
 preserves processing, native ACK rules and six-day wine scheduling are unchanged.
 
+A second, explicit opt-in handles a changed baseline for the next **unsent**
+optional wine-output rearrangement. It terminates as `SKIPPED` with a dedicated
+proof and zero confirmed progress, never as a successful merge. The action owner
+must establish the same context/profile/session/world and connection generation,
+normal 46-slot inventory/menu 0, empty cursor, current permissions and protected
+hoe configuration, no borrowed-item restoration, no output debt or other failure
+fence, and an uncancelled/unexpired transaction budget.
+
+An earlier outward swap to an empty scratch slot may already have an exact ACK;
+abandoning its next unsent merge leaves the product in that normal inventory
+slot. An actual borrowed scratch item, in-flight click, timeout, settings change
+or disconnect cannot use this path. No timeout is reset and no previous click is
+resent. The machine rejects the current layout for the rest of that output step
+and continues from observed inventory. Inputs and preserves cannot consume this
+wine-only skip result.
+
+Seventeen guard/contract/module regressions cover these boundaries, including
+continuous and one-shot continuation through normal wine storage. The final
+integrated offline build passed **1,735 tests in 130 suites**, with no failures,
+errors or skipped tests. Artifact SHA-256:
+`AEE1C2F8DC7096255017ABD3AB76D40723A973B95A895904BE5018B68028A0E6`.
+This does not retroactively resolve ticket 1035 or claim a live skip was observed.
+
 The historical TrashSlot failure at ticket 683 also lacks a retained exception
 cause/buffer snapshot. The later current buffer contained disposable rotten
 tomatoes; that later observation does not establish the historical cause.

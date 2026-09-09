@@ -39,6 +39,7 @@ public final class MinecraftActions implements ActionPort {
     private ContainerShape openingShape, ownedShape;
     private int ownedMenu=-1;
     private NativeInventoryConsolidation consolidation, lateInventoryReply;
+    private Context consolidationContext;
     private boolean consolidationInFlight,lateInventoryReplyInFlight;
     private ConsolidationRecoveryBudget consolidationRecovery;
     private long lateInventoryResolutionGeneration,lateInventoryResolutionAfter;
@@ -179,6 +180,7 @@ public final class MinecraftActions implements ActionPort {
         } else if (action instanceof Action.ConsolidateInventory merge) {
             consolidation=NativeInventoryConsolidation.create(mc.player,merge.plan(),observations,context.profile().hoeHotbarSlot);
             if (consolidation==null) { finish(ActionOutcome.State.SUCCEEDED,"Native stacks cannot be consolidated",0); return; }
+            consolidationContext=context;
             consolidationRecovery=new ConsolidationRecoveryBudget();
             sendConsolidationClick();
         } else if (action instanceof Action.TrashRotten rotten) {
@@ -362,6 +364,7 @@ public final class MinecraftActions implements ActionPort {
             finish(ActionOutcome.State.FAILED,"Production settings changed; no further inventory clicks were sent"); return;
         }
         if (!consolidation.matchesLive(mc.player,observations)) {
+            if (skipOptionalUnsentConsolidation()) return;
             awaitConsolidationProof(); return;
         }
         var click=consolidation.transaction.click();
@@ -369,6 +372,28 @@ public final class MinecraftActions implements ActionPort {
         consolidationInFlight=true;
         confirmedClick(consolidation.menuId,consolidation.sourceMenuSlot(),click.type()==InventoryConsolidation.Type.SWAP ? click.hotbar() : 0,
             click.type()==InventoryConsolidation.Type.SWAP ? ClickType.SWAP : ClickType.QUICK_MOVE);
+    }
+    /** A terminal no-op, never a fabricated merge ACK or a retry of an earlier click. */
+    private boolean skipOptionalUnsentConsolidation() {
+        if (!(pending instanceof Action.ConsolidateInventory merge) || consolidation==null || consolidationContext==null
+                || context==null || mc.player==null || consolidationRecovery==null) return false;
+        var boundary=new OptionalConsolidationSkip.Boundary(
+            OptionalConsolidationSkip.Reason.UNSENT_BASELINE_MISMATCH,merge.optionalOutput(),consolidationInFlight,
+            context==consolidationContext,context.profile()==consolidationContext.profile(),
+            context.session()==consolidationContext.session(),context.world()==consolidationContext.world(),
+            consolidation.generation,observations.generation(),
+            mc.getConnection()!=null && world.player().connected() && mc.player.containerMenu==mc.player.inventoryMenu,
+            mc.player.inventoryMenu.containerId,mc.player.inventoryMenu.slots.size(),mc.player.inventoryMenu.getCarried().isEmpty(),
+            enabled,context.session().allows(context.profile(),consolidation.plan.feature()),
+            context.profile().hoeHotbarSlot==consolidation.protectedHotbar,consolidation.protectedHotbar,
+            context.profile().loggingHotbarLease==null,!MachineOutputLedger.hasPending(context),
+            lateInventoryReply==null && lateTrashReply==null && lateLoggingSwap==null && lateLoggingAction==null
+                && lateLoggingRecipe==null && consolidationFailure==null && trashFailure==null && loggingFailure==null,
+            consolidationRecovery.mayContinue(world.tick()),started,world.tick());
+        if (!OptionalConsolidationSkip.allowed(consolidation.transaction,merge.plan(),boundary)) return false;
+        finish(ActionOutcome.State.SKIPPED,"미전송 선택적 와인 정리를 생략하고 현재 재고로 계속합니다.",0,
+            ActionOutcome.Proof.CONSOLIDATION_SKIPPED_UNSENT);
+        return true;
     }
     private void tickConsolidation() {
         if (consolidation==null || observations.generation()!=consolidation.generation) {
@@ -493,6 +518,7 @@ public final class MinecraftActions implements ActionPort {
         if (state==ActionOutcome.State.FAILED) { consolidationFailure=message; failureGeneration=observations.generation(); }
         if (consolidationRecovery!=null) consolidationRecovery.cancel();
         consolidationRecovery=null;
+        consolidationContext=null;
         consolidation=null; consolidationInFlight=false;
     }
     private void finishTrash(ActionOutcome.State state,String message) {
