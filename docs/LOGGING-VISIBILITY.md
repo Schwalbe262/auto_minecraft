@@ -1,5 +1,10 @@
 # Logging visibility recovery (development build)
 
+Deployment update: the candidate described below was installed during the
+[2026-09-09 runtime resume](RUNTIME-RESUME-20260909.md). LOGGING remained OFF, so
+its search-recovery behavior has not yet passed native chopping acceptance.
+The uninstalled-build statements below describe their earlier checkpoints.
+
 The reported terrain-search stop was reproduced as `SEARCH_LIMIT`, not a JVM
 crash. No matching Auto Valley exception or crash report was found. Installed
 Passable Foliage removes the player-body collision of leaves, but native outline

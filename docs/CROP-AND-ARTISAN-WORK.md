@@ -1,7 +1,9 @@
 # Shared crops, commodity stores and artisan jobs
 
 These are development-build additions, not claims about the public 0.1.2 JAR.
-They have not yet been installed or exercised in the user's current game.
+The tested candidate was installed on 2026-09-09. Ancient-fruit harvest/storage
+and crystal-copy one-shots have been exercised; complete seed, starfruit and
+long-running acceptance remain open. See the [runtime checkpoint](RUNTIME-RESUME-20260909.md).
 
 ## Model and workflow
 

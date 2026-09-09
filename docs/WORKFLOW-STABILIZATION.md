@@ -3,7 +3,9 @@
 This checkpoint continues the full stair / ancient-fruit / seed / crystal /
 starfruit objective. It is not completion of native execution or long-running
 acceptance. No new artifact, registration import or gameplay command has been
-applied during these checks.
+applied during these checks. These are historical offline checkpoints; the later
+[runtime resume checkpoint](RUNTIME-RESUME-20260909.md) records installation,
+import and the limited native execution subsequently verified.
 
 ## Stair-to-platform boundary
 
