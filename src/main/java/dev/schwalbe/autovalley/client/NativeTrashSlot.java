@@ -85,14 +85,17 @@ final class NativeTrashSlot {
             HOOKS.send().invoke(HOOKS.networking().invoke(null),message);
         } catch (ReflectiveOperationException failure) { throw new IllegalStateException("TrashSlot single-slot request failed",failure); }
     }
-    boolean confirmed(ServerObservations observations) {
-        if (generation!=observations.generation()) return false;
+    boolean confirmed(ServerObservations observations) { return confirmedCount(observations)>0; }
+    int confirmedCount(ServerObservations observations) {
+        if (generation!=observations.generation()) return 0;
         var full=observations.fullNativeMenuSnapshotsSince(menuId,beforeSequence);
         var slots=observations.nativeSlotSnapshotsSince(menuId,beforeSequence);
         List<InventoryTrashAcknowledgement.SlotProof> proofs=new ArrayList<>();
         for (var ack:slots) proofs.add(new InventoryTrashAcknowledgement.SlotProof(ack.seq(),ack.menuId(),ack.slot(),stacks(List.of(ack.packetItem())).get(0)));
-        // Prior source changes invalidate the original quantity, including changes
-        // authored by a full packet. Other full-menu slots never masquerade as raw-slot proof.
+        // Source history may come from raw slots or full packets. ROTTEN-only
+        // whole-stack deletion can prove an increased count before EMPTY; logging
+        // retains the original strict quantity. Other full-menu slots never
+        // masquerade as independent raw-slot proof for an applied-client menu.
         for (var ack:full) {
             List<ItemStack> items=ack.items();
             if (sourceMenuSlot<items.size()) proofs.add(new InventoryTrashAcknowledgement.SlotProof(ack.seq(),menuId,sourceMenuSlot,
@@ -100,22 +103,38 @@ final class NativeTrashSlot {
         }
         for (var ack:full) {
             var proven=proofsAt(observations,ack.seq(),proofs);
-            if (proven!=null && confirmed(ack,proven,true)) return true;
+            int removed=confirmed(ack,proven,true);if (removed>0) return removed;
         }
         for (var ack:slots) {
             if (ack.slot()!=sourceMenuSlot || !ack.packetItem().isEmpty() || ack.appliedMenu().seq()!=ack.seq()) continue;
             var proven=proofsAt(observations,ack.seq(),proofs);
-            if (proven!=null && confirmed(ack.appliedMenu(),proven,false)) return true;
+            int removed=confirmed(ack.appliedMenu(),proven,false);if (removed>0) return removed;
         }
-        return false;
+        return 0;
     }
-    private Map<Integer,InventoryConsolidation.Stack> proofsAt(ServerObservations observations,long sequence,List<InventoryTrashAcknowledgement.SlotProof> proofs) {
-        return InventoryTrashAcknowledgement.precedingSlotProofs(generation,observations.generation(),menuId,beforeSequence,sequence,
+    private InventoryTrashAcknowledgement.SourceDeletionProof proofsAt(ServerObservations observations,long sequence,List<InventoryTrashAcknowledgement.SlotProof> proofs) {
+        if (!logging) return InventoryTrashAcknowledgement.growingSourceDeletionProof(generation,observations.generation(),menuId,
+            beforeSequence,sequence,sourceMenuSlot,before.get(sourceMenuSlot),proofs);
+        var preceding=InventoryTrashAcknowledgement.precedingSlotProofs(generation,observations.generation(),menuId,beforeSequence,sequence,
             sourceMenuSlot,before.get(sourceMenuSlot),proofs);
+        return preceding==null ? null : new InventoryTrashAcknowledgement.SourceDeletionProof(quantity,preceding);
     }
-    private boolean confirmed(ServerObservations.NativeMenuSnapshot ack,Map<Integer,InventoryConsolidation.Stack> proven,boolean fullServerPacket) {
-        List<InventoryConsolidation.Stack> after=stacks(ack.items());
-        if (after.size()!=before.size()) return false;
+    private int confirmed(ServerObservations.NativeMenuSnapshot ack,InventoryTrashAcknowledgement.SourceDeletionProof proven,boolean fullServerPacket) {
+        return confirmedSnapshot(before,stacks(ack.items()),sourceMenuSlot,logging,fullServerPacket,
+            ack.carried().isEmpty(),inventoryMenuSlots,proven);
+    }
+    /** Detached metadata only; the caller supplies the sequence-validated source proof. */
+    static int confirmedSnapshot(List<InventoryConsolidation.Stack> before,List<InventoryConsolidation.Stack> after,
+            int sourceMenuSlot,boolean logging,boolean fullServerPacket,boolean cursorEmpty,Set<Integer> inventoryMenuSlots,
+            InventoryTrashAcknowledgement.SourceDeletionProof proven) {
+        if (proven==null || after.size()!=before.size() || sourceMenuSlot<0 || sourceMenuSlot>=before.size()) return 0;
+        var original=before.get(sourceMenuSlot);int removed=proven.removedCount();
+        if (removed<original.count() || removed>original.limit()) return 0;
+        if (removed!=original.count()) {
+            if (logging || removed>64) return 0;
+            try { if (!ItemData.ROTTEN.equals(TagParser.parseTag(original.identity()).getString("id"))) return 0; }
+            catch (com.mojang.brigadier.exceptions.CommandSyntaxException malformed) { return 0; }
+        }
         Set<Integer> additions=new HashSet<>();
         for (int slot=0;slot<before.size();slot++) {
             if (slot==sourceMenuSlot || before.get(slot).equals(after.get(slot))) continue;
@@ -124,10 +143,12 @@ final class NativeTrashSlot {
             // the surrounding applied-client menu needs independent earlier raw proofs.
             if (!inventoryMenuSlots.contains(slot) || !(productionAddition(before.get(slot),after.get(slot))
                     || logging && loggingAddition(before.get(slot),after.get(slot)))
-                || !fullServerPacket && !after.get(slot).equals(proven.get(slot))) return false;
+                || !fullServerPacket && !after.get(slot).equals(proven.precedingSlotProofs().get(slot))) return 0;
             additions.add(slot);
         }
-        return InventoryTrashAcknowledgement.confirmed(before,after,sourceMenuSlot,true,ack.carried().isEmpty(),additions,inventoryMenuSlots)==quantity;
+        List<InventoryConsolidation.Stack> deletionBaseline=new ArrayList<>(before);
+        deletionBaseline.set(sourceMenuSlot,new InventoryConsolidation.Stack(original.identity(),removed,original.limit()));
+        return InventoryTrashAcknowledgement.confirmed(deletionBaseline,after,sourceMenuSlot,true,cursorEmpty,additions,inventoryMenuSlots);
     }
     private static boolean productionAddition(InventoryConsolidation.Stack old,InventoryConsolidation.Stack now) {
         if (NativeInventoryConsolidation.productionAddition(old,now)) return true;

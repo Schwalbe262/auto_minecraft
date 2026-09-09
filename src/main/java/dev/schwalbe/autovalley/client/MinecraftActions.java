@@ -381,8 +381,9 @@ public final class MinecraftActions implements ActionPort {
         if (mc.player.containerMenu!=mc.player.inventoryMenu || !mc.player.inventoryMenu.getCarried().isEmpty()) {
             finish(ActionOutcome.State.FAILED,"Inventory or cursor changed during deletion; no further request was sent"); return;
         }
-        if (trash.confirmed(observations)) {
-            int removed=trash.quantity; trashInFlight=false;
+        int removed=trash.confirmedCount(observations);
+        if (removed>0) {
+            trashInFlight=false;
             finish(ActionOutcome.State.SUCCEEDED,"Server verified the single inventory waste stack deletion",removed); return;
         }
         if (world.tick()-started>=context.profile().interactionTimeoutTicks)

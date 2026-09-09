@@ -204,3 +204,24 @@ It was installed through a normal same-instance restart, preserving the previous
 JAR, profile and private failure evidence. The disposal-race correction is not
 in this artifact. Native timing and detour/resume acceptance are still pending
 at this checkpoint.
+
+### Rotten-stack pickup acknowledgement correction
+
+An explicit rotten-only source proof now accepts ordered, server-authored
+monotonic count increases with exactly the original native identity and stack
+limit, followed by that source becoming empty. The action reports the last proven
+quantity (four in the regression), not the original two. Logging disposal still
+uses the unchanged strict proof. Identity/limit changes, decreases, ambiguous
+sequences and an empty/refill/empty sequence before the candidate are rejected.
+Later pickup cannot retroactively invalidate an already proven earlier deletion.
+
+Independent prior raw replies are still required for allowed additions in an
+applied-client menu; that surrounding menu is never promoted into a full server
+packet. Whole-menu conservation, source-empty, cursor and connection checks remain.
+No resend or automatic acknowledgement-fence clearing was added.
+
+The captured sequence was reproduced in detached core/native regression tests.
+The complete offline build passed **1,552 tests / 113 suites**, no failures, errors
+or skips. The corrected artifact SHA-256 is
+`F98D6F29888F241871C9789B8668FC3885329F13C265162E88E21A10CF30AA19`.
+It has not yet been installed or exercised in the live client at this checkpoint.
