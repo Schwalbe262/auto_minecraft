@@ -67,6 +67,34 @@ failures, errors or skips. Candidate SHA-256:
 It was installed through a second normal same-instance restart; old JARs remain
 recoverable in the instance's timestamped Auto Valley backup directories.
 
-Starfruit collection, complete seed-maker operation, logging recovery, native
-stair timing and continuous multi-cycle operation remain to be verified. No
-twofold stair-speed or hours-long stability claim follows from this checkpoint.
+## Successful follow-up and continuous restart
+
+After that second restart, coordinate-only movement with LOGGING OFF succeeded
+while the suspended logging queue remained present. Native read-only samples
+recorded the two ordinary ascents on the adjacent exit row entering flight,
+landing and completing without an ascent failure. This was an explicitly chosen
+alternate destination, not proof that an automatic detour had already recovered
+the original failed attempt in the previous process.
+
+The resumed seed-maker one-shot then completed. All four registered seed makers
+were observed working, day-460 eligibility was saved after the day-459 run, and
+retained successful outcomes included native artisan state/slot confirmation and
+the subsequent inventory transfers. Neither ancient fruit nor seeds remained in
+inventory after the output deposit and unused-ingredient return.
+
+A further coordinate-only move traversed the full exit and reached the starfruit
+area without a retained ascent failure. One STARFRUIT one-shot picked a registered
+ripe fruit, observed its age reset from 7 to 0, and completed the confirmed
+container deposit with no starfruit left in inventory. This one-shot handles one
+nearby fruit; it did not harvest the entire tree. The draft contains seven exact
+fruit positions, while this native observation saw eight nearby fruit blocks.
+The unregistered position was not automatically added or harvested.
+
+The reviewed definitions were subsequently imported with exactly SEED_MAKER,
+CRYSTAL_COPY and STARFRUIT enabled, preserving their existing scheduled dates.
+LOGGING and broad COMMODITY_STORAGE remain OFF. The normal `start` request was
+acknowledged in CONTINUOUS mode, equivalent to starting with F8.
+
+Logging recovery, quantitative native stair timing and continuous multi-cycle
+operation remain to be verified. No twofold stair-speed or hours-long stability
+claim follows from these successful one-shot checks.
