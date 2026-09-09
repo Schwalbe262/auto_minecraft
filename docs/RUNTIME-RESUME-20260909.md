@@ -489,3 +489,20 @@ Four actual sleeping intervals preceded the observed automatic day advances
 while running was false and are not counted as automation acceptance. This
 trace shows continuous engine execution, but cannot independently prove that
 no person interacted with the game during the interval.
+
+### Paused-session custody diagnosis across a wine-clock rollover
+
+A later read-only inspection explains why an exact historical scratch comparison
+no longer passed: the borrowed torch remains exactly 62 items, and scratch still
+contains one wine from vintage 13, but the native clock is now 14. Reproducing
+the installed passive cache refresh on a detached known-vintage copy exactly
+matches the current scratch wine. Ten current menu slots differ from the old
+baseline; those unrelated current contents must not be restored to old values.
+
+A separate, private custody procedure was prepared with an exact borrowed-item
+check, known-vintage-only cache proof at its own current clock, a fresh full-menu
+baseline and an exact new inverse-SWAP acknowledgement requirement. It does not
+change the old failed action, its year or its acknowledgement state. The latest
+read-only preflight refused because the game screen was open. **No recovery
+click or restart was sent.** Native deployment and extended acceptance still
+await a user handoff and successful current-state custody checks.
