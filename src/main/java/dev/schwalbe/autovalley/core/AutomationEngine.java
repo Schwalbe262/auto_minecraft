@@ -8,6 +8,8 @@ public final class AutomationEngine {
     private final Map<AutomationModule,String> blockedThisSweep=new LinkedHashMap<>();
     private record DeferredRetry(int failures,long at,String message,boolean sleepSafe) { }
     private final Map<AutomationModule,DeferredRetry> deferred=new LinkedHashMap<>();
+    private record ProductionCooldown(long at,long day,String message,boolean sleepSafe) { }
+    private final Map<AutomationModule,ProductionCooldown> productionCooldowns=new LinkedHashMap<>();
     private AutomationModule resourceWaiting;
     private String resourceWaitMessage;
     private long resourceCheckAt;
@@ -88,7 +90,7 @@ public final class AutomationEngine {
         c.navigation().reset();
         for (AutomationModule module : modules) module.reset();
         blockedThisSweep.clear();
-        deferred.clear(); clearResourceWait(); loggingSuspended=false; lastTick=Long.MIN_VALUE;
+        deferred.clear(); productionCooldowns.clear(); clearResourceWait(); loggingSuspended=false; lastTick=Long.MIN_VALUE;
         active=null;
         clearNearby();nearbyRetryAt=0;
         c.session().oneShotFeature=null;
@@ -106,8 +108,11 @@ public final class AutomationEngine {
         if (nearbyOrigin!=null && !nearbyOwnershipValid(c)) {
             stop(c,State.PAUSED,"주변 수확 중 원작업 또는 벌목 소유권이 바뀌어 중지했습니다.");return;
         }
-        if (lastTick>c.world().tick()) { deferred.clear(); resourceCheckAt=0; retryAt=0; }
+        if (lastTick>c.world().tick()) { deferred.clear(); productionCooldowns.clear(); resourceCheckAt=0; retryAt=0; }
         lastTick=c.world().tick();
+        // A day boundary is new production evidence, not another failed attempt.
+        // Only normal cooldowns wake here; actual navigation/response backoff is retained.
+        if(productionCooldowns.entrySet().removeIf(entry->entry.getValue().day()!=Math.floorDiv(c.world().dayTime(),24000L)))retryAt=0;
         if (c.world().tick()<retryAt) return;
         try {
             MachineOutputLedger.reconcile(c);
@@ -118,9 +123,11 @@ public final class AutomationEngine {
             if (!refreshResourceWait(c)) return;
             if (mode==RunMode.ONCE) { tickOnce(c); return; }
             deferred.keySet().removeIf(module -> !c.profile().enabled(module.feature()));
+            productionCooldowns.keySet().removeIf(module -> !c.profile().enabled(module.feature()));
             if (active!=null && !c.profile().enabled(active.feature())) { stop(c,State.PAUSED,"Feature was disabled"); return; }
             if (active!=null) {
                 WorkResult result=active.tick(c);
+                if(result.state()!=WorkResult.State.COOLDOWN)productionCooldowns.remove(active);
                 if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) {
                     state=State.RUNNING;status=result.message();tryNearbyWork(c);return;
@@ -129,7 +136,8 @@ public final class AutomationEngine {
                 if (pauseForUnfinishedLogging(c,active,result)) return;
                 if (MachineOutputLedger.hasPending(c)) { stop(c,State.PAUSED,pendingOutputMessage(c)+" — "+result.message()); return; }
                 if (result.state()==WorkResult.State.DEFERRED && !defer(c,active,result)) return;
-                if (result.state()==WorkResult.State.IDLE) deferred.remove(active);
+                if (result.state()==WorkResult.State.COOLDOWN && !cooldown(c,active,result)) return;
+                if (result.state()==WorkResult.State.IDLE) { deferred.remove(active);productionCooldowns.remove(active); }
                 c.actions().stopMovement();
                 c.navigation().reset();
                 if (result.state()==WorkResult.State.BLOCKED) {
@@ -166,11 +174,15 @@ public final class AutomationEngine {
                 if (blockedThisSweep.containsKey(module)) continue;
                 DeferredRetry retry=deferred.get(module);
                 if (retry!=null && c.world().tick()<retry.at()) continue;
+                ProductionCooldown production=productionCooldowns.get(module);
+                if(production!=null && c.world().tick()<production.at())continue;
                 if (module.feature()==Feature.SLEEP && (!blockedThisSweep.isEmpty()
                     || deferred.values().stream().anyMatch(wait->!wait.sleepSafe())
-                    || !deferred.isEmpty() && (!resourceBoundary(c) || c.actions().pauseReason()!=null))) continue;
+                    || productionCooldowns.values().stream().anyMatch(wait->!wait.sleepSafe())
+                    || (!deferred.isEmpty() || !productionCooldowns.isEmpty()) && (!resourceBoundary(c) || c.actions().pauseReason()!=null))) continue;
                 if (module.feature()==Feature.PRESERVES && wineBlocked) continue;
                 WorkResult result=module.tick(c);
+                if(result.state()!=WorkResult.State.COOLDOWN)productionCooldowns.remove(module);
                 if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) { active=module; state=State.RUNNING; status=result.message(); return; }
                 if (result.state()==WorkResult.State.RESOURCE_WAIT && !grantResourceWait(c,module,result)) return;
@@ -179,7 +191,9 @@ public final class AutomationEngine {
                 if (result.state()==WorkResult.State.DEFERRED) {
                     if (!defer(c,module,result)) return;
                     if (blocked==null) blocked=deferred.get(module).message();
-                } else if (result.state()==WorkResult.State.IDLE) deferred.remove(module);
+                } else if(result.state()==WorkResult.State.COOLDOWN) {
+                    if(!cooldown(c,module,result))return;
+                } else if (result.state()==WorkResult.State.IDLE) { deferred.remove(module);productionCooldowns.remove(module); }
                 if (result.state()==WorkResult.State.BLOCKED) {
                     blockedThisSweep.put(module,result.message());
                     if (blocked==null) blocked=result.message();
@@ -189,7 +203,7 @@ public final class AutomationEngine {
             c.actions().stopMovement();
             state=State.WAITING;
             status=blockedThisSweep.values().stream().findFirst().orElseGet(() -> deferred.values().stream()
-                .map(DeferredRetry::message).findFirst().orElse(resourceWaitMessage!=null ? resourceWaitMessage : "Waiting for crops, machines, or bedtime"));
+                .map(DeferredRetry::message).findFirst().orElse(resourceWaitMessage!=null ? resourceWaitMessage : normalWaitStatus(c)));
             blockedThisSweep.clear();
             retryAt=c.world().tick()+20;
         } catch (RuntimeException e) {
@@ -235,7 +249,10 @@ public final class AutomationEngine {
         if (active==resourceWaiting) { state=State.WAITING; status=resourceWaitMessage; retryAt=c.world().tick()+20; return; }
         DeferredRetry retry=deferred.get(active);
         if (retry!=null && c.world().tick()<retry.at()) { state=State.WAITING; status=retry.message(); return; }
+        ProductionCooldown production=productionCooldowns.get(active);
+        if(production!=null && c.world().tick()<production.at()) {state=State.WAITING;status=cooldownStatus(c,production);return;}
         WorkResult result=active.tick(c);
+        if(result.state()!=WorkResult.State.COOLDOWN)productionCooldowns.remove(active);
         if (pauseForActions(c)) return;
         if (result.state()==WorkResult.State.RESOURCE_WAIT && !grantResourceWait(c,active,result)) return;
         if (result.state()!=WorkResult.State.BUSY && pauseForUnfinishedLogging(c,active,result)) return;
@@ -249,6 +266,7 @@ public final class AutomationEngine {
                 + (result.message()==null || result.message().isBlank() ? "" : " — "+result.message()));
             case BLOCKED -> stop(c,State.PAUSED,"One-shot " + oneShotFeature + " paused: " + result.message());
             case DEFERRED -> { if (defer(c,active,result)) { state=State.WAITING; status=deferred.get(active).message(); } }
+            case COOLDOWN -> {if(cooldown(c,active,result)){state=State.WAITING;status=cooldownStatus(c,productionCooldowns.get(active));}}
             case RESOURCE_WAIT -> { state=State.WAITING; status=resourceWaitMessage; retryAt=c.world().tick()+20; }
         }
     }
@@ -323,6 +341,7 @@ public final class AutomationEngine {
     }
     private void clearResourceWait() { resourceWaiting=null; resourceWaitMessage=null; resourceCheckAt=0; }
     private boolean defer(Context c,AutomationModule module,WorkResult result) {
+        productionCooldowns.remove(module);
         // OFF may arrive while an ordinary module owns work after a resource
         // wait. Its DEFERRED result is now the safe yield boundary: do not ask
         // disabled logging's changed terrain to authorize this unrelated retry.
@@ -346,6 +365,36 @@ public final class AutomationEngine {
         deferred.put(module,new DeferredRetry(failures,c.world().tick()+delay,message,sleepSafe));
         c.actions().stopMovement(); c.navigation().reset(); module.reset();
         return true;
+    }
+    private boolean cooldown(Context c,AutomationModule module,WorkResult result) {
+        // Currently only the explicitly observed whole-rack WINE wait opts in.
+        // This is not an escape hatch for sent actions, borrowed inventory or unknown output.
+        boolean loggingAllowsOtherWork=!c.profile().loggingRunActive || loggingSuspended
+            || resourceWaiting!=null && resourceWaiting!=module
+                && resourceWaiting.resourceReadiness(c)!=AutomationModule.ResourceReadiness.UNSAFE;
+        if(module.feature()!=Feature.WINE || !resourceBoundary(c) || !loggingAllowsOtherWork || c.actions().pauseReason()!=null
+            || !module.sleepSafeDeferred(c)) {
+            stop(c,State.PAUSED,"생산 대기 전 미완료 조작을 확인해야 합니다: "+result.message());return false;
+        }
+        deferred.remove(module);
+        productionCooldowns.put(module,new ProductionCooldown(c.world().tick()+100,Math.floorDiv(c.world().dayTime(),24000L),
+            result.message(),module.sleepSafeDeferred(c)));
+        c.actions().stopMovement();c.navigation().reset();
+        // Keep the clean START observation, not a reset/retry cycle. No action is resent.
+        return true;
+    }
+    private String cooldownStatus(Context c,ProductionCooldown cooldown) {
+        long seconds=Math.max(0,(cooldown.at()-c.world().tick()+19)/20);
+        return "정상 생산 대기 — "+cooldown.message()+" · "+seconds+"초 후 상태 확인";
+    }
+    private String normalWaitStatus(Context c) {
+        String waiting=productionCooldowns.values().stream().findFirst().map(value->cooldownStatus(c,value))
+            .orElse("정상 대기 — 작물·설비의 다음 작업일 확인 중");
+        if(c.profile().enabled(Feature.SLEEP) && !c.profile().pois(PoiKind.BED).isEmpty()) {
+            long remaining=Math.max(0,Math.max(12584,c.profile().sleepAtTick)-Math.floorMod(c.world().dayTime(),24000L));
+            waiting+=remaining==0 ? " · 취침 가능 시간" : " · 취침까지 약 "+((remaining+1199)/1200)+"분(20TPS 기준)";
+        }
+        return waiting;
     }
     private static String pendingOutputMessage(Context c) {
         return "미회수 산출물 "+c.profile().pendingMachineOutputs.size()+"건 — Ctrl+F8 → 실행·기록에서 회수 상태를 확인하세요";

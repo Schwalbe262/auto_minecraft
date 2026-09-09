@@ -2199,13 +2199,15 @@ class LogisticsTest {
         }
     }
 
-    @Test void activeWinePreflightDefersWithoutAcknowledgingWorkingOrServicingReadyMembers() {
+    @Test void activeWinePreflightCoolsDownWithoutAcknowledgingWorkingOrServicingReadyMembers() {
         Fixture f=waitingActiveWineRack(); WineBatchSchedule original=f.profile.wineBatchSchedule;
         Map<String,Long> deadlines=Map.copyOf(f.profile.nextEligibleDay);
         f.checkpointHook=() -> fail("waiting must not save an invented feed or batch completion");
         MachineModule module=new MachineModule(Feature.WINE);
         for (int retry=0;retry<3;retry++) {
-            assertEquals(WorkResult.State.DEFERRED,module.tick(f.context()).state());
+            WorkResult waiting=module.tick(f.context());
+            assertEquals(WorkResult.State.COOLDOWN,waiting.state());
+            assertTrue(waiting.message().contains("생산 중 1/2개"),waiting.message());
             assertTrue(module.sleepSafeDeferred(f.context()));
             assertSame(original,f.profile.wineBatchSchedule); assertEquals(deadlines,f.profile.nextEligibleDay);
             assertTrue(f.history.isEmpty()); assertEquals(0,f.navigationCalls); assertEquals(0,f.consumed);
@@ -2214,6 +2216,57 @@ class LogisticsTest {
         }
         assertEquals(2,original.remaining().size()); assertEquals(464L,original.latestFeedDay()); assertEquals(464,original.nextDueDay());
         assertTrue(f.savedOutputs.isEmpty()); assertTrue(f.profile.pendingMachineOutputs.isEmpty());
+    }
+
+    @Test void activeWineCooldownCountsOnlyRemainingMembersAndRefreshesLoadedStateAtDawn() {
+        Fixture f=waitingActiveWineRack(); WineBatchSchedule original=f.profile.wineBatchSchedule;
+        Map<String,Long> deadlines=Map.copyOf(f.profile.nextEligibleDay);
+        MachineModule module=new MachineModule(Feature.WINE);
+        WorkResult initial=module.tick(f.context());
+        assertEquals(WorkResult.State.COOLDOWN,initial.state());
+        assertTrue(initial.message().contains("생산 중 1/2개"),initial.message());
+        Pos ready=original.remaining().get(1);
+        f.blocks.put(ready,new BlockData(ready,"society:wine_keg",Map.of("working","true","mature","false","upgraded","false")));
+        f.dayTime=466*24000L; f.advance(); module.reset();
+        WorkResult morning=module.tick(f.context());
+        assertEquals(WorkResult.State.COOLDOWN,morning.state());
+        assertTrue(morning.message().contains("생산 중 2/2개"),morning.message());
+        assertTrue(module.sleepSafeDeferred(f.context()));
+        assertSame(original,f.profile.wineBatchSchedule); assertEquals(deadlines,f.profile.nextEligibleDay);
+        assertTrue(f.history.isEmpty()); assertEquals(0,f.navigationCalls); assertEquals(0,f.consumed);
+        assertTrue(f.savedOutputs.isEmpty()); assertTrue(f.profile.pendingMachineOutputs.isEmpty());
+    }
+
+    @Test void retainedCooldownMatureCacheCannotStartReadySubsetAfterItsMemberUnloads() {
+        Fixture f=waitingActiveWineRack(); WineBatchSchedule original=f.profile.wineBatchSchedule;
+        Map<String,Long> deadlines=Map.copyOf(f.profile.nextEligibleDay);
+        Pos working=original.remaining().get(0),cachedMature=original.remaining().get(1);
+        MachineModule module=new MachineModule(Feature.WINE);
+        assertEquals(WorkResult.State.COOLDOWN,module.tick(f.context()).state());
+        f.blocks.put(working,new BlockData(working,"society:wine_keg",Map.of("working","true","mature","true","upgraded","false")));
+        f.unloaded.add(cachedMature); f.observeLoads=true; f.observeNeverLoads=true; f.inventory[1]=tomato(2,6);
+        // No reset or date change: the old mature observation remains cached.
+        for (int poll=0;poll<3;poll++) {
+            f.advance(); assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());
+            assertEquals(cachedMature,f.lastDestination); assertFalse(module.sleepSafeDeferred(f.context()));
+            assertTrue(f.history.isEmpty()); assertEquals(0,f.navigationCalls); assertEquals(0,f.consumed);
+            assertSame(original,f.profile.wineBatchSchedule); assertEquals(deadlines,f.profile.nextEligibleDay);
+        }
+        // Reloaded current working state must supersede the old mature cache.
+        f.unloaded.remove(cachedMature);
+        f.blocks.put(cachedMature,new BlockData(cachedMature,"society:wine_keg",Map.of("working","true","mature","false","upgraded","false")));
+        WorkResult stillWorking=module.tick(f.context());
+        assertEquals(WorkResult.State.DEFERRED,stillWorking.state(),"held ingredients do not grant sleep-safe cooldown");
+        assertTrue(stillWorking.message().contains("생산 중 1/2개")); assertTrue(f.history.isEmpty());
+        assertSame(original,f.profile.wineBatchSchedule); assertEquals(deadlines,f.profile.nextEligibleDay);
+        f.blocks.put(cachedMature,new BlockData(cachedMature,"society:wine_keg",Map.of("working","true","mature","true","upgraded","false")));
+        assertEquals(WorkResult.State.IDLE,f.run(module,200).state());
+        assertEquals(2,f.machineClicks()); assertEquals(6,f.consumed);
+        assertEquals(original.remaining(),f.history.stream().filter(a -> a instanceof Action.UseBlock use && use.purpose()==Action.Use.MACHINE)
+            .map(a -> ((Action.UseBlock)a).pos()).toList());
+        assertFalse(f.profile.wineBatchSchedule.active()); assertEquals(465L,f.profile.wineBatchSchedule.latestFeedDay());
+        assertEquals(471,f.profile.wineBatchSchedule.nextDueDay());
+        assertEquals(470L,f.profile.nextEligibleDay.get("wine:9:64:0"),"previously confirmed member stays untouched");
     }
 
     @Test void cleanActiveWineWaitLetsContinuousPreservesFinishThenSleep() {
@@ -2228,7 +2281,8 @@ class LogisticsTest {
         assertEquals(List.of(jar),f.history.stream().filter(a -> a instanceof Action.UseBlock use && use.purpose()==Action.Use.MACHINE)
             .map(a -> ((Action.UseBlock)a).pos()).toList());
         assertSame(original,f.profile.wineBatchSchedule); assertEquals(470L,f.profile.nextEligibleDay.get("wine:9:64:0"));
-        assertFalse(wineModule.sleepSafeDeferred(f.context()),"engine reset revokes the module grant; its existing deferred record owns the grant-time decision");
+        assertTrue(wineModule.sleepSafeDeferred(f.context()),"normal cooldown retains the clean START observation without resetting the waiting module");
+        wineModule.reset(); assertFalse(wineModule.sleepSafeDeferred(f.context()),"an explicit reset still revokes the module grant");
     }
 
     @Test void activeWineOneShotWaitsWithoutCompletingOrStartingOtherFeatures() {
@@ -2241,15 +2295,15 @@ class LogisticsTest {
         assertTrue(f.history.isEmpty()); assertFalse(f.sleeping); assertEquals(0,f.consumed);
     }
 
-    @Test void deferredWineRetriesOnlyRemainingMembersAfterAllAreReadyAndUsesActualFeedDay() {
+    @Test void cooldownWineRetriesOnlyRemainingMembersAfterAllAreReadyAndUsesActualFeedDay() {
         Fixture f=waitingActiveWineRack(); WineBatchSchedule original=f.profile.wineBatchSchedule;
         AutomationEngine engine=isolatedMachineEngine(Feature.WINE); engine.startOnce(f.context(),Feature.WINE);
         engine.tick(f.context()); assertEquals(AutomationEngine.State.WAITING,engine.state());
         Pos working=original.remaining().get(0);
         f.blocks.put(working,new BlockData(working,"society:wine_keg",Map.of("working","true","mature","true","upgraded","false")));
-        f.inventory[1]=tomato(2,6); f.dayTime=466*24000L+1000; f.ticks=1199;
+        f.inventory[1]=tomato(2,6); f.ticks=99;
         engine.tick(f.context()); assertEquals(0,f.machineClicks()); assertSame(original,f.profile.wineBatchSchedule);
-        f.ticks=1200; f.runUntilStopped(engine,150);
+        f.dayTime=466*24000L+1000; f.ticks=100; f.runUntilStopped(engine,150);
         assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status()); assertEquals(6,f.consumed);
         assertEquals(original.remaining(),f.history.stream().filter(a -> a instanceof Action.UseBlock use && use.purpose()==Action.Use.MACHINE)
             .map(a -> ((Action.UseBlock)a).pos()).toList());
@@ -2313,11 +2367,11 @@ class LogisticsTest {
     @Test void wineWaitGrantDoesNotSurviveTickResetScheduleReplacementOrCachedUnloading() {
         Fixture f=waitingActiveWineRack(); MachineModule module=new MachineModule(Feature.WINE);
         WineBatchSchedule original=f.profile.wineBatchSchedule;
-        assertEquals(WorkResult.State.DEFERRED,module.tick(f.context()).state()); assertTrue(module.sleepSafeDeferred(f.context()));
+        assertEquals(WorkResult.State.COOLDOWN,module.tick(f.context()).state()); assertTrue(module.sleepSafeDeferred(f.context()));
         f.profile.wineBatchSchedule=new WineBatchSchedule(original.nextDueDay(),true,original.remaining(),original.latestFeedDay());
         assertFalse(module.sleepSafeDeferred(f.context()),"an equal value is not the same owned schedule object");
         f.profile.wineBatchSchedule=original; module.reset(); assertFalse(module.sleepSafeDeferred(f.context()));
-        assertEquals(WorkResult.State.DEFERRED,module.tick(f.context()).state()); assertTrue(module.sleepSafeDeferred(f.context()));
+        assertEquals(WorkResult.State.COOLDOWN,module.tick(f.context()).state()); assertTrue(module.sleepSafeDeferred(f.context()));
         f.unloaded.add(original.remaining().get(1)); f.advance();
         module.tick(f.context());
         assertFalse(module.sleepSafeDeferred(f.context()),"a cached observation cannot grant safe sleep for a currently unloaded member");
@@ -2389,7 +2443,9 @@ class LogisticsTest {
                 assertNull(f.profile.wineBatchSchedule.latestFeedDay());
                 f.checkpointHook=() -> { }; module.reset(); f.cancel();
                 WineBatchSchedule unconfirmed=f.profile.wineBatchSchedule;
-                assertEquals(WorkResult.State.DEFERRED,module.tick(f.context()).state()); assertEquals(1,f.machineClicks());
+                WorkResult waiting=module.tick(f.context());
+                assertEquals(WorkResult.State.COOLDOWN,waiting.state()); assertTrue(waiting.message().contains("생산 중 1/1개"));
+                assertTrue(module.sleepSafeDeferred(f.context())); assertEquals(1,f.machineClicks());
                 assertSame(unconfirmed,f.profile.wineBatchSchedule); assertNull(unconfirmed.latestFeedDay());
                 assertEquals(List.of(target),unconfirmed.remaining()); assertTrue(f.profile.nextEligibleDay.isEmpty());
                 assertEquals(3,f.consumed,"the failed save never creates a second feed or an invented deadline");

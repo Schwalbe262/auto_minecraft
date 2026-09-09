@@ -511,7 +511,7 @@ public final class MachineModule implements AutomationModule {
         }
         if (c.world().tick()<wineObservationRetry && targets.stream().anyMatch(p -> !c.world().loaded(p)))
             return WorkResult.idle();
-        boolean processing=false;
+        int workingCount=0;
         for (Pos pos:targets) {
             if (!registered.containsKey(pos)) return fail("An unfinished wine batch member is no longer registered; restore or review the rack registration");
             if (c.world().loaded(pos)) wineObservations.put(pos,c.world().block(pos));
@@ -519,21 +519,29 @@ public final class MachineModule implements AutomationModule {
             if (block==null) return ModuleSupport.observe(c,pos,8,"와인 전체 랙 생산 상태 확인");
             if (!block.id().equals(blockId())) return fail("Registered production machine no longer matches its type");
             if (!block.properties().containsKey("working") || !block.properties().containsKey("mature")) return fail("Wine rack state is not synchronized");
-            processing|=block.flag("working") && !block.flag("mature");
+            if (block.flag("working") && !block.flag("mature")) workingCount++;
         }
-        if (processing) {
+        if (schedule.active()) {
+            // Cooldown retains START observations. A cached mature member that
+            // unloaded must not authorize a ready subset when the last loaded
+            // working member finishes; both waiting and resuming require current
+            // loaded evidence for the whole remaining batch.
+            Pos unloaded=targets.stream().filter(pos -> !c.world().loaded(pos)).findFirst().orElse(null);
+            if (unloaded!=null) return wineWaitObservation.observe(c,unloaded,8,"미완료 와인 랙 현재 상태 확인");
+        }
+        if (workingCount>0) {
             if (schedule.active()) {
                 // A restart or another actor can leave an unconfirmed member
                 // working. Do not invent its feed ACK, delete it from remaining,
                 // or visit a ready subset. Wait for ALL remaining members to be
                 // ready again, without blocking unrelated work or clean sleep.
-                // Cached observations can support approach planning, but cannot
-                // grant a clean wait after a remaining member unloads.
-                Pos unloaded=targets.stream().filter(pos -> !c.world().loaded(pos)).findFirst().orElse(null);
-                if (unloaded!=null) return wineWaitObservation.observe(c,unloaded,8,"미완료 와인 랙 현재 상태 확인");
                 if (!cleanWineWaitBoundary(c)) return unfinishedWine();
                 waitingWineRack=schedule;
-                return WorkResult.deferred("미완료 와인 랙 생산 대기 — 남은 통 전체가 준비되면 다시 확인합니다. 재투입·완료 처리는 하지 않았습니다");
+                String waiting="미완료 와인 랙 생산 중 "+workingCount+"/"+targets.size()+"개 — 남은 통 전체가 준비되면 다시 확인합니다. 재투입·완료 처리는 하지 않았습니다";
+                // Only a currently loaded, empty-handed clean boundary is normal
+                // production cooldown. Held goods still need the existing scoped
+                // deferred handling and must not acquire permission to sleep.
+                return sleepSafeDeferred(c) ? WorkResult.cooldown(waiting) : WorkResult.deferred(waiting);
             }
             wineObservations.clear(); wineObservationRetry=c.world().tick()+1200;
             return new WorkResult(WorkResult.State.IDLE,"와인 랙 전체 완료 대기 — 아직 생산 중인 통이 있어 공통 작업을 시작하지 않습니다");
