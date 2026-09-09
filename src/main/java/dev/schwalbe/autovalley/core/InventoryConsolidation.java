@@ -84,6 +84,15 @@ public final class InventoryConsolidation {
             && !after.identity().equals(before.items().get(plan.sourceIndex()).identity());
     }
 
+    /** Structural candidate only. Native code must prove the receiver's exact metadata refresh. */
+    public boolean allowsReceiverMetadataUpdate(int index,Stack after) {
+        if (stage!=Stage.MERGE || !nonparticipant(index) || after==null || after.empty()
+                || (index<9)==(plan.quickMoveIndex()<9)) return false;
+        Stack old=before.items().get(index),source=before.items().get(plan.quickMoveIndex());
+        return !old.empty() && after.count()>old.count() && old.limit()==after.limit() && after.limit()<=64
+            && !old.sameKind(after) && source.sameKind(after);
+    }
+
     private boolean nonparticipant(int index) {
         return stage!=Stage.DONE && index>=0 && index<36
                 && index!=plan.sourceIndex() && index!=plan.scratchHotbar()
@@ -221,9 +230,31 @@ public final class InventoryConsolidation {
      */
     public Confirmation acknowledge(Snapshot after,Set<Integer> verifiedPassiveUpdates,
                                     Set<Integer> verifiedProductionAdditions) {
+        return acknowledge(after,verifiedPassiveUpdates,verifiedProductionAdditions,Set.of());
+    }
+
+    /**
+     * A full native reply may show a receiver initialized/refreshed immediately
+     * before this QUICK_MOVE. The native adapter must reproduce the exact item's
+     * metadata operation at the OLD receiver count, independently of the move.
+     * Only that proven receiver identity is normalized for comparison: its old
+     * count stays unchanged, and validNativeMove must still prove every unit
+     * moved/received. Source, borrowed partners and every legacy overload remain
+     * strict. No ACK is inferred from metadata alone.
+     */
+    public Confirmation acknowledge(Snapshot after,Set<Integer> verifiedPassiveUpdates,
+                                    Set<Integer> verifiedProductionAdditions,Set<Integer> verifiedReceiverMetadataUpdates) {
         if (stage==Stage.DONE || after==null || before.equals(after)) return Confirmation.WAIT;
-        if (verifiedPassiveUpdates==null || verifiedProductionAdditions==null) return Confirmation.WAIT;
+        if (verifiedPassiveUpdates==null || verifiedProductionAdditions==null || verifiedReceiverMetadataUpdates==null)
+            return Confirmation.WAIT;
         List<Stack> comparisonItems=new ArrayList<>(before.items());
+        for (Integer index:verifiedReceiverMetadataUpdates) {
+            if (index==null || index<0 || index>=36 || verifiedPassiveUpdates.contains(index)
+                    || verifiedProductionAdditions.contains(index) || !allowsReceiverMetadataUpdate(index,after.items().get(index)))
+                return Confirmation.WAIT;
+            Stack old=before.items().get(index),now=after.items().get(index);
+            comparisonItems.set(index,new Stack(now.identity(),old.count(),old.limit()));
+        }
         for (Integer index:verifiedPassiveUpdates) {
             if (index==null || index<0 || index>=36) return Confirmation.WAIT;
             if (stage==Stage.SWAP_OUT || stage==Stage.RESTORE) {

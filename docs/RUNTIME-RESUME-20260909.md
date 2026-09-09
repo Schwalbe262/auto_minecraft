@@ -451,3 +451,28 @@ errors or skips. This revision is not installed yet and has no cohort native
 acceptance. The running 99D097 client subsequently reached an inventory merge
 fence during its resumed wine batch; that retained transaction must be understood
 and actual borrowed-item custody resolved before a normal restart.
+
+### Wine receiver initialization during an actual inventory merge
+
+The resumed rack completed another 100 members, leaving 124 unconfirmed, before
+a new inventory fence. Retained full native replies show an initialized wine
+source decreasing from one to zero while another one-item wine receiver becomes
+two items and gains its native initialization metadata. Every other menu slot
+is exact and the cursor is empty. The receiving stack differs from the planner's
+predicted destination; total wine is conserved. Reproducing the installed
+Vinery initialization on a detached receiver at its original count matched the
+observed metadata exactly. This is not evidence of arbitrary vintage mixing.
+
+The fix independently proves that exact native metadata operation at the OLD
+receiver count, then requires the complete native move's quantity conservation.
+Only an existing opposite-region, nonparticipant receiving stack is eligible;
+source, borrowed partners, protected production slots and legacy ACK overloads
+remain strict. Invalid metadata, count loss/inflation, wrong item/quality,
+unrelated edits, no-op replies and overlapping proof sets cannot advance it.
+
+The offline full build passed **1,602 tests / 117 suites**, with zero failures,
+errors or skips, including 15 new receiver regressions. Native installation and
+repeat-race acceptance remain pending. The old failed ticket and its inventory
+fence have not been cleared or relabeled as successful. Recovering the borrowed
+hotbar item, then normally restarting the same instance, is a separate operation;
+extended all-feature stability is not implied by the detached test result.

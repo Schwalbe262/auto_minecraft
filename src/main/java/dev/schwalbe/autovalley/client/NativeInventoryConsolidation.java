@@ -159,12 +159,15 @@ final class NativeInventoryConsolidation {
             for (int index:menuSlots) if (index==slot) { inventorySlot=true; break; }
             if (!inventorySlot && !expectedMenu.get(slot).equals(after.get(slot))) return InventoryConsolidation.Confirmation.WAIT;
         }
-        Set<Integer> passiveUpdates=new HashSet<>();
+        Set<Integer> passiveUpdates=new HashSet<>(),receiverMetadataUpdates=new HashSet<>();
+        var inventoryAfter=inventory(after);
         for (int index=0;index<menuSlots.length;index++) {
             int slot=menuSlots[index];
             if (NativeWineMetadata.passiveChange(expectedMenu.get(slot),after.get(slot),level,wineYear)) passiveUpdates.add(index);
+            else if (index!=protectedHotbar && index!=(protectedHotbar+1)%9
+                && transaction.allowsReceiverMetadataUpdate(index,inventoryAfter.items().get(index))
+                && NativeWineMetadata.receiverChange(expectedMenu.get(slot),after.get(slot),level,wineYear)) receiverMetadataUpdates.add(index);
         }
-        var inventoryAfter=inventory(after);
         // This candidate is an actual full-menu server packet, not a live menu
         // or applied single-slot snapshot. An unrelated pickup may be included
         // in the same packet as the native primitive's result. The core still
@@ -174,7 +177,7 @@ final class NativeInventoryConsolidation {
         // An exact outward SWAP into an EMPTY scratch may also be followed by a
         // distinct pickup in its now-empty source; borrowed-item swaps never qualify.
         var additions=concurrentProductionAdditions(transaction,inventoryAfter,protectedHotbar);
-        var confirmation=transaction.acknowledge(inventoryAfter,passiveUpdates,additions);
+        var confirmation=transaction.acknowledge(inventoryAfter,passiveUpdates,additions,receiverMetadataUpdates);
         if (confirmation!=InventoryConsolidation.Confirmation.WAIT) {
             expectedMenu=after; acknowledgedSequence=acknowledgement.seq();
         }

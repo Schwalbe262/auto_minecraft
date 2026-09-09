@@ -22,6 +22,20 @@ final class NativeWineMetadata {
     private static Method initialize,refresh;
     private NativeWineMetadata() { }
 
+    /** Metadata proof at the original receiver count; never proves an inventory move. */
+    static boolean receiverChange(InventoryConsolidation.Stack before,InventoryConsolidation.Stack after,
+                                  Level level,Integer transactionYear) {
+        InventoryConsolidation.Stack normalized=receiverAtOriginalCount(before,after);
+        return normalized!=null && passiveChange(before,normalized,level,transactionYear);
+    }
+
+    static InventoryConsolidation.Stack receiverAtOriginalCount(InventoryConsolidation.Stack before,
+                                                                 InventoryConsolidation.Stack after) {
+        if (before==null || after==null || before.empty() || after.empty() || after.count()<=before.count()
+                || before.limit()!=after.limit() || after.limit()>64) return null;
+        return new InventoryConsolidation.Stack(after.identity(),before.count(),after.limit());
+    }
+
     static boolean passiveChange(InventoryConsolidation.Stack before,InventoryConsolidation.Stack after,
                                  Level level,Integer transactionYear) {
         if (before.empty() || after.empty() || before.count()!=after.count() || before.limit()!=after.limit()
