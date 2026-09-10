@@ -344,7 +344,16 @@ public final class LoggingModule implements AutomationModule {
                         for (int slot=0;slot<9;slot++) if (slot!=c.profile().hoeHotbarSlot && slot!=c.profile().loggingAxeHotbarSlot && item(c,slot).empty()) { target=slot; break; }
                         if (target>=0) submit(c,new Action.SwapHotbar(sapling.inventoryIndex(),target),Pending.SWAP);
                         else {
-                            if (c.profile().loggingHotbarLease!=null) return fail("임시 단축바에 다른 아이템이 생겼습니다. 원래 아이템을 보존한 채 중지합니다.");
+                            LoggingHotbarLease lease=c.profile().loggingHotbarLease;
+                            if (lease!=null) {
+                                if (lease.stage()!=LoggingHotbarLease.Stage.PARKED || !parked(c,lease) || !plotRestoreBoundary(c))
+                                    return fail("묘목 보충 전 임시 단축바와 원래 아이템을 확인할 수 없습니다. 복원 의무를 보존했습니다.");
+                                // A consumed sapling stack can receive normal logging
+                                // pickups. Restore the exact original through its existing
+                                // checkpoint/ACK path before borrowing again for fresh seeds.
+                                restoreBeforePlot=true; clearCleanupQuiet(); stage=Stage.RESTORE;
+                                return busy("묘목 보충 전 원래 단축바 아이템부터 복원");
+                            }
                             for (int slot=0;slot<9;slot++) if (slot!=c.profile().hoeHotbarSlot && slot!=c.profile().loggingAxeHotbarSlot) { target=slot; break; }
                             String fingerprint=c.world().loggingItemFingerprint(target);
                             if (fingerprint==null || !fingerprint.matches("[0-9a-fA-F]{64}")) return fail("임시 단축바 아이템의 정확한 상태를 확인할 수 없습니다.");
@@ -974,16 +983,15 @@ public final class LoggingModule implements AutomationModule {
         catch (RuntimeException failure) { c.profile().loggingReplantingPlots=before; throw failure; }
     }
     private static Stage nextAfterWaste(Context c) { return LoggingRules.count(c.world(),LoggingRules.LOG)>=6 ? Stage.CRAFT_OPEN : Stage.WOOD; }
-    private static boolean saplingsOrEmpty(ItemData item) { return item.empty() || item.is(LoggingRules.SAPLING); }
     private static boolean parked(Context c,LoggingHotbarLease lease) {
         return lease.original().equals(item(c,lease.sourceIndex()))
             && lease.fingerprint().equals(c.world().loggingItemFingerprint(lease.sourceIndex()))
-            && saplingsOrEmpty(item(c,lease.hotbarSlot()));
+            && LoggingRules.temporaryHotbarItem(item(c,lease.hotbarSlot()));
     }
     private static boolean restored(Context c,LoggingHotbarLease lease) {
         return lease.original().equals(item(c,lease.hotbarSlot()))
             && lease.fingerprint().equals(c.world().loggingItemFingerprint(lease.hotbarSlot()))
-            && saplingsOrEmpty(item(c,lease.sourceIndex()));
+            && LoggingRules.temporaryHotbarItem(item(c,lease.sourceIndex()));
     }
     private static void saveLease(Context c,LoggingHotbarLease lease) {
         LoggingHotbarLease before=c.profile().loggingHotbarLease; c.profile().loggingHotbarLease=lease;

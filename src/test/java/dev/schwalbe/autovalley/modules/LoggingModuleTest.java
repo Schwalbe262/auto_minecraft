@@ -1562,6 +1562,128 @@ class LoggingModuleTest {
         assertTrue(f.events.indexOf("swap:2")<f.events.indexOf("craft:2"));
     }
 
+    @Test void depletedBorrowedSaplingSlotMayContainKnownLoggingPickupsWhenAStaleGoalRestoresIt() {
+        for (String picked:List.of(LoggingRules.LOG,LoggingRules.FIRE_LOG,LoggingRules.TWIG,LoggingRules.BERRY)) {
+            Fixture f=parkedVisibilityFixture(); LoggingHotbarLease lease=f.profile.loggingHotbarLease;
+            List<Pos> bases=f.profile.loggingPlots.get(0).plantingPositions();
+            f.chopGoalTarget=bases.get(3); f.chopGoalFeet=new Pos(3,63,0); f.movementExposesChop=true;
+            f.until(() -> f.pending instanceof Action.SelectHotbar); f.advance();
+            ItemData pickup=item(picked,34); f.inventory[lease.hotbarSlot()]=pickup;
+            f.occludedChopping.addAll(bases); f.chopGoalTarget=null; f.movementExposesChop=false;
+
+            assertEquals(WorkResult.State.BUSY,f.step().state(),picked);
+            f.until(() -> f.pending instanceof Action.SwapHotbar);
+            assertEquals(new Action.SwapHotbar(lease.sourceIndex(),lease.hotbarSlot()),f.pending);
+            assertEquals(LoggingHotbarLease.Stage.RESTORING,f.profile.loggingHotbarLease.stage());
+            assertEquals(lease.original(),f.inventory[lease.sourceIndex()]);
+            assertEquals(lease.fingerprint(),f.loggingItemFingerprint(lease.sourceIndex()));
+            f.advance(); assertEquals(WorkResult.State.BUSY,f.step().state());
+
+            assertNull(f.profile.loggingHotbarLease); assertEquals(lease.original(),f.inventory[lease.hotbarSlot()]);
+            assertEquals(lease.fingerprint(),f.loggingItemFingerprint(lease.hotbarSlot()));
+            assertEquals(pickup,f.inventory[lease.sourceIndex()]);
+            assertEquals(0,f.chops); assertEquals(0,f.plants); assertEquals(0,f.trashed); assertEquals(0,f.crafted);
+            assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+
+    @Test void pickedLogsInFullBorrowedHotbarRestoreBeforeFreshSaplingsAreBorrowedAndPlantingResumes() {
+        Fixture f=parkedPickupReplantFixture(); LoggingHotbarLease first=f.profile.loggingHotbarLease;
+        ItemData pickup=f.inventory[first.hotbarSlot()];
+        f.until(() -> f.pending instanceof Action.SwapHotbar);
+        Action inverse=f.pending; long firstTicket=f.sequence;
+        assertEquals(new Action.SwapHotbar(first.sourceIndex(),first.hotbarSlot()),inverse);
+        assertEquals(LoggingHotbarLease.Stage.RESTORING,f.profile.loggingHotbarLease.stage());
+        for (int i=0;i<1200;i++) { f.ticks++; assertEquals(WorkResult.State.BUSY,f.step().state()); }
+        assertEquals(List.of(inverse),f.actions); assertEquals(firstTicket,f.sequence); assertEquals(0,f.plants);
+        assertEquals(first.original(),f.inventory[first.sourceIndex()]); assertTrue(f.profile.nextEligibleDay.isEmpty());
+
+        f.advance(); assertEquals(WorkResult.State.BUSY,f.step().state());
+        assertNull(f.profile.loggingHotbarLease); assertEquals(first.original(),f.inventory[first.hotbarSlot()]);
+        assertEquals(pickup,f.inventory[first.sourceIndex()]);
+        f.until(() -> f.pending instanceof Action.SwapHotbar);
+        LoggingHotbarLease second=f.profile.loggingHotbarLease;
+        assertEquals(LoggingHotbarLease.Stage.PREPARED,second.stage()); assertEquals(9,second.sourceIndex());
+        assertEquals(first.original(),second.original()); assertEquals(first.fingerprint(),second.fingerprint());
+        assertEquals(new Action.SwapHotbar(9,first.hotbarSlot()),f.pending);
+        assertEquals(pickup,f.inventory[first.sourceIndex()],"The previous protected source is not reused for seed replenishment");
+        assertEquals(0,f.plants); assertEquals(1,f.swaps);
+
+        assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertEquals(first.original(),f.inventory[first.hotbarSlot()]); assertNull(f.profile.loggingHotbarLease);
+        assertEquals(first.fingerprint(),f.loggingItemFingerprint(first.hotbarSlot()));
+        assertEquals(3,f.swaps); assertEquals(4,f.plants); assertEquals(0,f.chops);
+        assertFalse(f.profile.loggingRunActive); assertTrue(f.profile.loggingRemainingPlots.isEmpty());
+        assertTrue(f.profile.loggingReplantingPlots.isEmpty()); assertEquals(11L,f.profile.nextEligibleDay.get(LoggingRules.DUE_KEY));
+    }
+
+    @Test void failedPickupSlotRestorationNeverReplaysOrStartsTheNextSaplingBorrow() {
+        Fixture f=parkedPickupReplantFixture(); LoggingHotbarLease lease=f.profile.loggingHotbarLease;
+        f.until(() -> f.pending instanceof Action.SwapHotbar); Action inverse=f.pending;
+        f.reject("inverse server receipt missing");
+        assertEquals(WorkResult.State.BLOCKED,f.step().state()); f.restart();
+        assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertEquals(List.of(inverse),f.actions); assertEquals(0,f.swaps); assertEquals(0,f.plants);
+        assertEquals(LoggingHotbarLease.Stage.RESTORING,f.profile.loggingHotbarLease.stage());
+        assertEquals(lease.original(),f.inventory[lease.sourceIndex()]); assertEquals(item(LoggingRules.LOG,34),f.inventory[lease.hotbarSlot()]);
+        assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingReplantingPlots.size());
+        assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void pickupSlotReplenishmentCannotRelaxOriginalIdentityUnknownItemsOrRestorationSafety() {
+        for (String unsafe:List.of("original count","fingerprint","foreign","oversized","busy","fence","cursor","airborne","output","save")) {
+            Fixture f=parkedPickupReplantFixture(); LoggingHotbarLease lease=f.profile.loggingHotbarLease;
+            assertEquals(WorkResult.State.BUSY,f.step().state()); // Recover the original PARKED lease.
+            assertEquals(WorkResult.State.BUSY,f.step().state()); // Resume only the durable replant phase.
+            switch (unsafe) {
+                case "original count" -> f.inventory[lease.sourceIndex()]=new ItemData(lease.original().id(),2,0,null,false,3000);
+                case "fingerprint" -> f.fingerprintEpoch++;
+                case "foreign" -> f.inventory[lease.hotbarSlot()]=item("minecraft:diamond",1);
+                case "oversized" -> f.inventory[lease.hotbarSlot()]=item(LoggingRules.LOG,65);
+                case "busy" -> f.forcedNativeBusy=true;
+                case "fence" -> f.nativeFence="unconfirmed native action";
+                case "cursor" -> f.cursor=item(LoggingRules.SAPLING,1);
+                case "airborne" -> f.grounded=false;
+                case "output" -> {
+                    String id="11111111-1111-1111-1111-111111111111";
+                    f.profile.pendingMachineOutputs.put(id,new PendingMachineOutput(id,Feature.PRESERVES,new Pos(30,64,0),1,null,1,PendingMachineOutput.Phase.AWAITING_MACHINE_CONFIRMATION));
+                }
+                case "save" -> f.failNextCheckpoint=true;
+                default -> throw new AssertionError(unsafe);
+            }
+            ItemData[] before=f.inventory.clone();
+            assertEquals(WorkResult.State.BLOCKED,f.finish().state(),unsafe);
+            assertArrayEquals(before,f.inventory,unsafe); assertTrue(f.actions.isEmpty(),unsafe);
+            assertSame(lease,f.profile.loggingHotbarLease,unsafe); assertEquals(0,f.plants);
+            assertEquals(1,f.profile.loggingRemainingPlots.size()); assertEquals(1,f.profile.loggingReplantingPlots.size());
+            assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+
+    @Test void freshProofOfManuallyRestoredOriginalCanRetainKnownLoggingPickupsInTheOldSource() {
+        for (String picked:List.of(LoggingRules.LOG,LoggingRules.FIRE_LOG,LoggingRules.TWIG,LoggingRules.BERRY)) {
+            Fixture f=manuallyRestoredLeaseFixture(LoggingHotbarLease.Stage.PARKED);
+            LoggingHotbarLease lease=f.profile.loggingHotbarLease; ItemData pickup=item(picked,34);
+            f.inventory[lease.sourceIndex()]=pickup; f.authoritativeRestoredLease=lease;
+            ActionOutcome previous=f.outcome;
+            assertEquals(WorkResult.State.BUSY,f.step().state());
+            assertNull(f.profile.loggingHotbarLease); assertEquals(lease.original(),f.inventory[lease.hotbarSlot()]);
+            assertEquals(pickup,f.inventory[lease.sourceIndex()]); assertSame(previous,f.outcome);
+            assertTrue(f.actions.isEmpty()); assertTrue(f.profile.loggingRunActive); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+
+    private static Fixture parkedPickupReplantFixture() {
+        Fixture f=new Fixture(1); f.fillHotbar();
+        ItemData original=new ItemData("society:galaxy_sword",1,0,null,false,3000);
+        f.inventory[12]=original; f.inventory[0]=item(LoggingRules.LOG,34); f.inventory[9]=item(LoggingRules.SAPLING,4);
+        f.profile.loggingHotbarLease=new LoggingHotbarLease(12,0,original,f.loggingItemFingerprint(12),LoggingHotbarLease.Stage.PARKED);
+        f.profile.loggingRunActive=true; Pos corner=f.profile.loggingPlots.get(0).corner();
+        f.profile.loggingRemainingPlots.add(corner); f.profile.loggingReplantingPlots.add(corner);
+        f.setPlot(0,"minecraft:air");
+        return f;
+    }
+
     @Test void parkedOriginalTwigIsExcludedFromWasteAndRestoredInsteadOfDeleted() {
         Fixture f=new Fixture(1); f.fillHotbar(); f.inventory[0]=item(LoggingRules.TWIG,64);
         ItemData original=f.inventory[0];

@@ -66,6 +66,10 @@ public final class LoggingRules {
     public static boolean wood(ItemData item) { return item.is(LOG) || item.is(FIRE_LOG); }
     public static boolean byproduct(ItemData item) { return item.is(BERRY); }
     public static boolean waste(ItemData item) { return item.is(SAPLING) || item.is(TWIG); }
+    /** Narrow custody allowance for natural pickups into the temporary logging hotbar, not disposal permission. */
+    public static boolean temporaryHotbarItem(ItemData item) {
+        return item!=null && (item.empty() || item.count()<=64 && (wood(item) || waste(item) || byproduct(item)));
+    }
     public static boolean stump(BlockData block) { return block!=null && (block.id().equals(LOG) || block.id().equals(CHOPPED_LOG)); }
     /** A coherent 2x2 planting pattern, not proof of a particular generated canopy. */
     public static boolean completePlanting(WorldAccess world,LoggingPlot plot) {

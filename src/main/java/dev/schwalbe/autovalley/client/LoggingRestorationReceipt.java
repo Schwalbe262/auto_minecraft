@@ -27,6 +27,7 @@ final class LoggingRestorationReceipt {
             || !Objects.equals(liveSource,packetSource) || !Objects.equals(liveHotbar,packetHotbar)) return false;
         return lease.original().equals(liveHotbar.item()) && lease.fingerprint().equals(liveHotbar.fingerprint())
             && liveSource.fingerprint()!=null
-            && (liveSource.item().empty() || liveSource.item().is(LoggingRules.SAPLING));
+            && LoggingRules.temporaryHotbarItem(liveSource.item())
+            && (liveSource.item().empty() || !lease.fingerprint().equals(liveSource.fingerprint()));
     }
 }
