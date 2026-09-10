@@ -9,6 +9,143 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class LoggingModuleTest {
+    @Test void completedLoggingStorageNavigationFailureRetainsItsBatchAndRetriesWithoutAnotherF8() {
+        Fixture f=cleanupFixture(); f.add(LoggingRules.FIRE_LOG,2); f.blockedNavigation.add(f.woodPos);
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        long waitingAt=f.ticks;int routes=f.loggingMoves,requests=f.actions.size();
+        assertTrue(f.profile.loggingRunActive);assertTrue(f.profile.loggingRemainingPlots.isEmpty());
+        assertTrue(f.profile.loggingReplantingPlots.isEmpty());assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(2,f.count(LoggingRules.FIRE_LOG));assertFalse(f.module.sleepSafeResourceWait(f.context));
+        f.ticks=waitingAt+1199;assertEquals(WorkResult.State.RESOURCE_WAIT,f.step().state());
+        assertEquals(routes,f.loggingMoves);assertEquals(requests,f.actions.size());
+        f.blockedNavigation.clear();f.ticks++;
+        assertEquals(AutomationModule.ResourceReadiness.READY,f.module.resourceReadiness(f.context));
+        assertEquals(WorkResult.State.IDLE,f.finish().state());assertEquals(2,f.stored(LoggingRules.FIRE_LOG));
+        assertFalse(f.profile.loggingRunActive);assertEquals(11L,f.profile.nextEligibleDay.get(LoggingRules.DUE_KEY));
+        assertEquals(0,f.chops);assertEquals(0,f.plants);
+    }
+    @Test void berriesDeliveryNavigationFailureIsAlsoRetriedWithoutFabricatedDelivery() {
+        Fixture f=cleanupFixture();f.add(LoggingRules.BERRY,8);f.blockedNavigation.add(f.shippingPos);
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        assertEquals(0,f.shipped(LoggingRules.BERRY));assertEquals(8,f.count(LoggingRules.BERRY));
+        f.ticks+=1200;f.blockedNavigation.clear();
+        assertEquals(WorkResult.State.IDLE,f.finish().state());assertEquals(8,f.shipped(LoggingRules.BERRY));
+        assertEquals(0,f.count(LoggingRules.BERRY));assertFalse(f.profile.loggingRunActive);
+    }
+    @Test void eightHoursOfStorageNavigationFailuresKeepNeighboursRunningAndRecoverWithoutAnotherF8() {
+        Fixture f=cleanupFixture();f.continuous();f.add(LoggingRules.FIRE_LOG,3);f.blockedNavigation.add(f.woodPos);
+        int[] other={0},sleeps={0};f.profile.enabled.put(Feature.CRYSTAL_COPY,true);f.profile.enabled.put(Feature.SLEEP,true);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.CRYSTAL_COPY,85,c->{other[0]++;return WorkResult.idle();}),
+            resourceNeighbour(Feature.SLEEP,100,c->{sleeps[0]++;return WorkResult.idle();})));
+        engine.start(f.context);engineUntil(f,engine,()->other[0]>0);
+        assertTrue(engine.running(),engine.status());assertEquals(0,sleeps[0]);int routes=f.loggingMoves;
+        long started=f.ticks;
+        for(int retry=0;retry<480;retry++) {
+            f.ticks+=1201;int previous=other[0];engine.tick(f.context);
+            engineUntil(f,engine,()->other[0]>previous);
+            assertTrue(engine.running(),engine.status());assertTrue(f.profile.loggingRunActive);
+            assertEquals(0,f.stored(LoggingRules.FIRE_LOG));assertEquals(0,sleeps[0]);
+        }
+        assertTrue(f.ticks-started>=8*60*60*20L,"At least eight simulated hours at 20 TPS");
+        assertEquals(routes+480,f.loggingMoves,"Only one fresh route attempt per wait, never a busy loop");
+        f.blockedNavigation.clear();f.ticks+=1201;
+        engineUntil(f,engine,()->!f.profile.loggingRunActive);
+        assertTrue(engine.running(),engine.status());assertEquals(3,f.stored(LoggingRules.FIRE_LOG));
+    }
+    @Test void storageNativeFailureCannotMasqueradeAsTheUnsentNavigationWait() {
+        Fixture f=cleanupFixture();f.add(LoggingRules.FIRE_LOG,2);
+        f.until(()->f.pending instanceof Action.UseBlock);int requests=f.actions.size();
+        f.reject("Registered storage cannot be reached");
+        assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertEquals(AutomationModule.ResourceReadiness.UNSAFE,f.module.resourceReadiness(f.context));
+        f.ticks+=5000;assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertEquals(requests,f.actions.size());assertTrue(f.profile.loggingRunActive);
+    }
+    @Test void uncertainLaunchOrUnconsumedNavigatorDoorReceiptCannotBeResetIntoAWait() {
+        for(String cause:List.of("jump","safety","invalid start","door pending","door failed","door succeeded")) {
+            Fixture f=cleanupFixture();f.add(LoggingRules.FIRE_LOG,2);f.blockedNavigation.add(f.woodPos);
+            switch(cause) {
+                case "jump" -> f.navigationFailure=Navigation.Failure.JUMP_UNCERTAIN;
+                case "safety" -> f.navigationFailure=Navigation.Failure.SAFETY;
+                case "invalid start" -> f.navigationFailure=Navigation.Failure.INVALID_START;
+                case "door pending" -> f.navigationOutcome=new ActionOutcome(ActionOutcome.State.PENDING,"unconsumed door");
+                case "door failed" -> f.navigationOutcome=new ActionOutcome(ActionOutcome.State.FAILED,"unconsumed door");
+                case "door succeeded" -> f.navigationOutcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"unconsumed door");
+            }
+            assertEquals(WorkResult.State.BLOCKED,f.finish().state(),cause);
+            assertEquals(AutomationModule.ResourceReadiness.UNSAFE,f.module.resourceReadiness(f.context));
+            assertTrue(f.profile.loggingRunActive);assertTrue(f.actions.isEmpty());
+        }
+        Fixture proved=cleanupFixture();proved.add(LoggingRules.FIRE_LOG,2);proved.blockedNavigation.add(proved.woodPos);
+        proved.navigationFailure=Navigation.Failure.SAFETY;proved.safeNavigationFailure=true;
+        assertEquals(WorkResult.State.RESOURCE_WAIT,proved.finish().state());assertTrue(proved.actions.isEmpty());
+    }
+    @Test void fullStorageMustReallyCloseBeforeAnotherRoutineCanUseItsRetainedWait() {
+        for(boolean succeeds:List.of(false,true)) {
+            Fixture f=cleanupFixture();f.add(LoggingRules.FIRE_LOG,2);Arrays.fill(f.chests.get(f.woodPos),item(LoggingRules.FIRE_LOG,64));
+            f.until(()->f.pending instanceof Action.CloseContainer);int sent=f.actions.size();
+            assertTrue(f.menu().container());assertEquals(AutomationModule.ResourceReadiness.UNSAFE,f.module.resourceReadiness(f.context));
+            for(int i=0;i<20;i++) {f.ticks++;assertEquals(WorkResult.State.BUSY,f.step().state());}
+            assertEquals(sent,f.actions.size());assertEquals(2,f.count(LoggingRules.FIRE_LOG));
+            if(succeeds)f.advance();else f.reject("late close not confirmed");
+            assertEquals(succeeds?WorkResult.State.RESOURCE_WAIT:WorkResult.State.BLOCKED,f.step().state());
+            assertEquals(succeeds?AutomationModule.ResourceReadiness.WAITING:AutomationModule.ResourceReadiness.UNSAFE,f.module.resourceReadiness(f.context));
+            assertTrue(f.profile.loggingRunActive);assertTrue(f.profile.nextEligibleDay.isEmpty());assertEquals(sent,f.actions.size());
+        }
+    }
+    @Test void missingShippingRegistrationRetainsProductsAndWaitsWithoutSendingAnything() {
+        Fixture f=cleanupFixture();f.add(LoggingRules.BERRY,8);f.profile.pois.removeIf(p->p.kind()==PoiKind.SHIPPING_BIN);
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());assertTrue(f.actions.isEmpty());
+        assertEquals(8,f.count(LoggingRules.BERRY));assertTrue(f.profile.loggingRunActive);
+        f.ticks+=1200;assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());assertTrue(f.actions.isEmpty());
+        assertEquals(8,f.count(LoggingRules.BERRY));
+    }
+    @Test void aMissingAxeWaitsAndResumesOnlyAfterTheCorrectUsableToolIsPresent() {
+        Fixture f=new Fixture(1);f.inventory[2]=ItemData.EMPTY;
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());assertTrue(f.actions.isEmpty());
+        assertTrue(f.profile.loggingRunActive);assertEquals(1,f.profile.loggingRemainingPlots.size());
+        f.inventory[2]=item("minecraft:diamond_pickaxe",1);f.ticks+=1200;
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());assertTrue(f.actions.isEmpty());
+        f.inventory[2]=item(LoggingRules.AXE,1);f.ticks+=1200;
+        assertEquals(WorkResult.State.IDLE,f.finish().state());assertEquals(2,f.chops);assertEquals(4,f.plants);
+    }
+    @Test void unsettledCleanupWithoutBorrowedItemsDefersWithoutPrematureTrashOrCraft() {
+        Fixture f=cleanupFixture();f.add(LoggingRules.TWIG,3);enterCleanup(f);WorkResult result=null;
+        for(int i=1;i<=400;i++) {
+            f.ticks++;f.inventory[10]=item(LoggingRules.LOG,i%2==0?1:2);result=f.step();
+        }
+        assertEquals(WorkResult.State.RESOURCE_WAIT,result.state());assertTrue(f.actions.isEmpty());
+        assertTrue(f.profile.loggingRunActive);assertTrue(f.profile.nextEligibleDay.isEmpty());
+        f.ticks+=1200;assertEquals(WorkResult.State.IDLE,f.finish().state());assertEquals(3,f.trashed);
+    }
+    @Test void aGrantedNavigationWaitStillStopsAtGenuineInventoryOrAuthorityUncertainty() {
+        for(String change:List.of("cursor","menu","busy","fence","airborne","lease","plots","remaining","due","facility")) {
+            Fixture f=cleanupFixture();f.add(LoggingRules.FIRE_LOG,2);f.blockedNavigation.add(f.woodPos);
+            assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());int sent=f.actions.size();
+            switch(change) {
+                case "cursor" -> f.cursor=item(LoggingRules.FIRE_LOG,1);
+                case "menu" -> {f.opened=f.woodPos;f.containerId=1;}
+                case "busy" -> f.forcedNativeBusy=true;
+                case "fence" -> f.nativeFence="real pending receipt";
+                case "airborne" -> f.grounded=false;
+                case "lease" -> f.profile.loggingHotbarLease=new LoggingHotbarLease(9,0,item("minecraft:torch",5),"a".repeat(64),LoggingHotbarLease.Stage.PARKED);
+                case "plots" -> f.profile.loggingPlots.clear();
+                case "remaining" -> f.profile.loggingRemainingPlots.add(f.profile.loggingPlots.get(0).corner());
+                case "due" -> f.profile.nextEligibleDay.put(LoggingRules.DUE_KEY,55L);
+                case "facility" -> f.profile.pois.removeIf(p->p.kind()==PoiKind.WOOD_CHEST);
+            }
+            assertEquals(AutomationModule.ResourceReadiness.UNSAFE,f.module.resourceReadiness(f.context),change);
+            assertEquals(WorkResult.State.BLOCKED,f.step().state(),change);assertEquals(sent,f.actions.size(),change);
+        }
+    }
+    @Test void manualStopRevokesNavigationWaitWithoutErasingTheDurableCleanupObligation() {
+        Fixture f=cleanupFixture();f.add(LoggingRules.FIRE_LOG,2);f.blockedNavigation.add(f.woodPos);
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());f.module.reset();
+        assertEquals(AutomationModule.ResourceReadiness.UNSAFE,f.module.resourceReadiness(f.context));
+        assertTrue(f.profile.loggingRunActive);assertTrue(f.profile.nextEligibleDay.isEmpty());
+        f.blockedNavigation.clear();assertEquals(WorkResult.State.IDLE,f.finish().state());assertEquals(2,f.stored(LoggingRules.FIRE_LOG));
+    }
     @Test void residualThreeDimensionalCoastCannotSelectOrStartMiningUntilTwoQuietTicks() {
         Fixture f=atMiningArrival(false);int routes=f.loggingMoves;
         for(double[] pose:List.of(new double[]{.46,64,.5},new double[]{.43,64,.53},new double[]{.42,64.01,.53},new double[]{.419,64.006,.531})) {
@@ -70,15 +207,16 @@ class LoggingModuleTest {
             f.until(()->f.pending instanceof Action.ChopTree);assertEquals(0,f.chops,changed);
         }
     }
-    @Test void continuouslyMovingAtAnArrivedTargetStopsUnsentAfterOneHundredTicks() {
+    @Test void continuouslyMovingAtAnArrivedTargetDefersUnsentAfterOneHundredTicks() {
         Fixture f=atMiningArrival(false);long start=f.ticks;WorkResult result=null;
         for(int i=0;i<101;i++){
-            f.playerX+=i%2==0?.01:-.01;f.ticks++;result=f.step();if(result.state()==WorkResult.State.BLOCKED)break;
+            f.playerX+=i%2==0?.01:-.01;f.ticks++;result=f.step();if(result.state()!=WorkResult.State.BUSY)break;
             for(int duplicate=0;duplicate<3;duplicate++)assertEquals(WorkResult.State.BUSY,f.step().state());
         }
-        assertNotNull(result);assertEquals(WorkResult.State.BLOCKED,result.state());assertTrue(result.message().contains("이동 잔여속도/정지 확인 대기"));
+        assertNotNull(result);assertEquals(WorkResult.State.RESOURCE_WAIT,result.state());assertTrue(result.message().contains("이동 잔여속도/정지 확인 대기"));
         assertEquals(100,f.ticks-start);assertTrue(f.actions.isEmpty());assertTrue(f.profile.loggingRunActive);
         assertEquals(1,f.profile.loggingRemainingPlots.size());assertTrue(f.profile.nextEligibleDay.isEmpty());assertNull(f.nativeFence);
+        f.ticks+=1200;assertEquals(WorkResult.State.IDLE,f.finish().state());assertEquals(2,f.chops);assertEquals(4,f.plants);
     }
     private static Fixture atMiningArrival(boolean leaf) {
         Fixture f=leaf?leafFixture(1):new Fixture(1);f.until(()->f.loggingMoves>0);
@@ -132,7 +270,8 @@ class LoggingModuleTest {
     @Test void anUnreachableLeafStanceDoesNotSendALeafUseEvenWhenTheLeafItselfIsVisible() {
         Fixture f=leafFixture(1);f.blockLeafStanceMovement=true;
         WorkResult result=f.finish();
-        assertTrue(result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED,result.message());
+        assertEquals(WorkResult.State.RESOURCE_WAIT,result.state(),result.message());
+        assertFalse(f.module.sleepSafeResourceWait(f.context));
         assertTrue(f.leafStanceMoves>0);assertTrue(f.actions.isEmpty());assertEquals(0,f.leavesCleared);assertEquals(0,f.chops);
         assertTrue(f.profile.loggingRunActive);assertEquals(1,f.profile.loggingRemainingPlots.size());
     }
@@ -409,7 +548,9 @@ class LoggingModuleTest {
                 default -> throw new AssertionError(unsafe);
             }
             WorkResult result=f.finish();
-            assertTrue(result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED,unsafe+": "+result);
+            if(unsafe.equals("unloaded")) {
+                assertEquals(WorkResult.State.RESOURCE_WAIT,result.state());assertFalse(f.module.sleepSafeResourceWait(f.context));
+            } else assertTrue(result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED,unsafe+": "+result);
             assertTrue(f.actions.isEmpty(),unsafe); assertEquals(14,f.count(LoggingRules.LOG)); assertEquals(0,f.crafted);
             assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingRemainingPlots.size());
             assertEquals(37L,f.profile.nextEligibleDay.get(LoggingRules.DUE_KEY));
@@ -554,7 +695,8 @@ class LoggingModuleTest {
             f.blockAllChopRays=true;
             if(unknown) f.unloaded.add(f.profile.loggingPlots.get(1).corner());
             else f.treeRejection="connected structure outside registered 2x2";
-            assertEquals(unknown ? WorkResult.State.DEFERRED : WorkResult.State.BLOCKED,f.finish().state());
+            assertEquals(unknown ? WorkResult.State.RESOURCE_WAIT : WorkResult.State.BLOCKED,f.finish().state());
+            if(unknown)assertFalse(f.module.sleepSafeResourceWait(f.context));
             assertFalse(f.actions.stream().anyMatch(a -> a instanceof Action.ChopTree));
             assertTrue(f.profile.loggingRunActive); assertTrue(f.profile.nextEligibleDay.isEmpty());
         }
@@ -876,13 +1018,14 @@ class LoggingModuleTest {
         assertEquals(before,consumers[0]); assertTrue(f.profile.loggingRunActive); assertEquals(2,f.profile.loggingRemainingPlots.size());
     }
 
-    @Test void unloadedPreflightGeometryCannotGrantVisibilityResourceWaitToOtherModules() {
+    @Test void unloadedPreflightGeometryAllowsOnlyDelayedReobservationAndNeverClaimsSafeVisibilityOrSleep() {
         Fixture f=visibilityFixture(); int[] consumers={0}; f.profile.enabled.put(Feature.SHIPPING,true);
         f.unloaded.add(new Pos(-2,64,-2));
         AutomationEngine engine=new AutomationEngine(List.of(f.module,
             resourceNeighbour(Feature.SHIPPING,40,c -> { consumers[0]++; return WorkResult.idle(); })));
-        engine.start(f.context); engineUntil(f,engine,() -> !engine.running());
-        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(0,consumers[0]);
+        engine.start(f.context); engineUntil(f,engine,() -> consumers[0]>0);
+        assertTrue(engine.running(),engine.status());assertEquals(AutomationEngine.State.WAITING,engine.state());
+        assertFalse(f.module.sleepSafeResourceWait(f.context));
         assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.actions.isEmpty());
     }
 
@@ -1359,7 +1502,8 @@ class LoggingModuleTest {
 
     @Test void genericSoilReachCannotReplaceTheDedicatedAllUpFaceGoal() {
         Fixture f=new Fixture(1); f.blockPlantingApproach=true;
-        assertEquals(WorkResult.State.BLOCKED,f.finish().state());
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        assertFalse(f.module.sleepSafeResourceWait(f.context));
         assertEquals(0,f.plants); assertEquals(2,f.chops); assertEquals(0,f.trashed); assertEquals(0,f.crafted);
         assertEquals(1,f.profile.loggingReplantingPlots.size()); assertTrue(f.profile.loggingRunActive);
     }
@@ -1700,11 +1844,12 @@ class LoggingModuleTest {
         assertTrue(f.actions.stream().filter(a -> a instanceof Action.QuickMove).map(a -> (Action.QuickMove)a).allMatch(a -> a.slot()>=27));
     }
 
-    @Test void fullStorageOrMissingShippingRetainsAnActiveCleanupBatchForRetryWithoutRecutting() {
+    @Test void fullStorageRetriesAfterAnAcknowledgedCloseWithoutRecuttingOrManualRestart() {
         Fixture f=new Fixture(1); Arrays.fill(f.chests.get(f.woodPos),item(LoggingRules.FIRE_LOG,64));
-        assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertTrue(f.profile.loggingRunActive);
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state()); assertTrue(f.profile.loggingRunActive);
         assertTrue(f.profile.loggingRemainingPlots.isEmpty()); assertTrue(f.profile.nextEligibleDay.isEmpty());
-        f.chests.get(f.woodPos)[0]=ItemData.EMPTY; f.closeManually(); f.restart();
+        assertFalse(f.menu().container());assertNull(f.pending);
+        f.chests.get(f.woodPos)[0]=ItemData.EMPTY; f.ticks+=1200;
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(2,f.chops);
     }
 
@@ -1737,14 +1882,15 @@ class LoggingModuleTest {
         assertEquals(WorkResult.State.IDLE,f.step().state()); assertTrue(f.observed.isEmpty()); assertTrue(f.actions.isEmpty());
     }
 
-    @Test void retryableObservationFailureDuringDurableReplantStillPausesTheEngine() {
+    @Test void retryableObservationFailureDuringDurableReplantWaitsWithoutPausingTheEngine() {
         Fixture f=new Fixture(1); Pos corner=f.profile.loggingPlots.get(0).corner(); f.setPlot(0,"minecraft:air");
         f.profile.loggingRunActive=true;f.profile.loggingRemainingPlots.add(corner);f.profile.loggingReplantingPlots.add(corner);
         f.unloaded.add(corner);f.retryableObserve=true;
         AutomationEngine engine=new AutomationEngine(List.of(f.module));engine.startOnce(f.context,Feature.LOGGING);
         engine.tick(f.context);f.ticks++;engine.tick(f.context);
-        assertEquals(AutomationEngine.State.PAUSED,engine.state());assertTrue(f.profile.loggingRunActive);
+        assertEquals(AutomationEngine.State.WAITING,engine.state());assertTrue(f.profile.loggingRunActive);
         assertEquals(List.of(corner),f.profile.loggingReplantingPlots);assertTrue(f.actions.isEmpty());
+        assertFalse(f.module.sleepSafeResourceWait(f.context));
     }
 
     @Test void cleanupWaitsForTwentyUnchangedTicksAndUsesTheLateThirtyFourSaplings() {
@@ -1861,7 +2007,8 @@ class LoggingModuleTest {
         boolean grounded=true,forcedNativeBusy; String nativeFence; ItemData cursor=ItemData.EMPTY;
         LoggingHotbarLease authoritativeRestoredLease;
         boolean inventoryRefreshSupported,refreshProvesRestoration=true;
-        final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
+        final Set<Pos> loggingTargets=new HashSet<>(),blockedNavigation=new HashSet<>(); int loggingMoves;
+        Navigation.Failure navigationFailure=Navigation.Failure.NONE;ActionOutcome navigationOutcome;boolean safeNavigationFailure;
         final Map<Pos,Integer> nativeChops=new HashMap<>(); int strokesPerTree=2;
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
         double playerX=.5,playerY=64,playerZ=.5;
@@ -2069,7 +2216,7 @@ class LoggingModuleTest {
         public Result moveTo(Pos pos,double reach,Context c) {
             moves++;
             if(profile.loggingPlots.stream().flatMap(p -> p.plantingPositions().stream()).anyMatch(p -> p.offset(0,-1,0).equals(pos))) plantingReaches.add(reach);
-            return loaded(pos) ? Result.ARRIVED : Result.BLOCKED;
+            return loaded(pos) && !blockedNavigation.contains(pos) ? Result.ARRIVED : Result.BLOCKED;
         }
         public Result moveToLogging(Pos pos,double reach,Context c) {
             assertTrue(profile.loggingRunActive); assertTrue(session.allows(profile,Feature.LOGGING));
@@ -2090,6 +2237,9 @@ class LoggingModuleTest {
             observed.add(pos);unloaded.remove(pos);return Result.MOVING;
         }
         public boolean retryableFailure(){return retryableObserve;}
+        public Navigation.Failure failureKind(){return navigationFailure;}
+        public ActionOutcome pendingInteractionOutcome(Context c){return navigationOutcome;}
+        public boolean safeFailureRetry(Context c){return safeNavigationFailure;}
         public Result moveToLoggingPlanting(List<Pos> targets,Context c) {
             assertTrue(profile.loggingRunActive); assertTrue(session.allows(profile,Feature.LOGGING));
             assertFalse(targets.isEmpty()); assertTrue(targets.size()<=4);

@@ -67,6 +67,7 @@ public final class ClientDiagnostics {
         report.put("recordingActive",runtime.recordingActive());
         report.put("recordingStatus",runtime.recordingStatus());
         report.put("status",runtime.status());
+        report.put("failureHistory",runtime.failureHistory());
         report.put("navigation",runtime.navigationReport());
         report.put("storageSurvey",runtime.storageSurveyReport());
         report.put("pendingShipment",runtime.pendingShipmentReport());

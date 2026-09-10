@@ -5,6 +5,7 @@ import java.util.*;
 public final class AutomationEngine {
     public enum State { OFF, RUNNING, WAITING, PAUSED, COMPLETE, ERROR }
     private final List<AutomationModule> modules;
+    private final EngineFailureHistory failureHistory=new EngineFailureHistory();
     private final Map<AutomationModule,String> blockedThisSweep=new LinkedHashMap<>();
     private record DeferredRetry(int failures,long at,String message,boolean sleepSafe) { }
     private final Map<AutomationModule,DeferredRetry> deferred=new LinkedHashMap<>();
@@ -16,6 +17,8 @@ public final class AutomationEngine {
     private boolean loggingSuspended;
     private long lastTick=Long.MIN_VALUE;
     private AutomationModule active;
+    /** Attribution only; never selects or resumes a module. */
+    private Feature diagnosticFeature;
     private State state=State.OFF;
     private RunMode mode=RunMode.CONTINUOUS;
     private Feature oneShotFeature;
@@ -27,6 +30,9 @@ public final class AutomationEngine {
     public State state() { return state; }
     public boolean running() { return state==State.RUNNING || state==State.WAITING; }
     public String status() { return status; }
+    public List<EngineFailureHistory.Entry> failureHistory() { return failureHistory.snapshot(); }
+    /** Called by connection lifecycle only; ordinary OFF/ON must retain the original failure. */
+    public void clearFailureHistory() { failureHistory.clear(); }
     public RunMode mode() { return mode; }
     /** Last explicitly selected job, retained after completion for the status display. */
     public Feature oneShotFeature() { return oneShotFeature; }
@@ -81,12 +87,15 @@ public final class AutomationEngine {
         return true;
     }
     public void stop(Context c, State next, String reason) {
+        failureHistory.recordStop(c.world().tick(),active!=null ? active.feature()
+            : diagnosticFeature!=null ? diagnosticFeature : oneShotFeature,next,reason);
         c.actions().cancel();
         c.navigation().reset();
         for (AutomationModule module : modules) module.reset();
         blockedThisSweep.clear();
         deferred.clear(); productionCooldowns.clear(); clearResourceWait(); loggingSuspended=false; lastTick=Long.MIN_VALUE;
         active=null;
+        diagnosticFeature=null;
         c.session().oneShotFeature=null;
         c.session().activeMachineOutputId=null;
         state=next;
@@ -94,6 +103,7 @@ public final class AutomationEngine {
     }
     public void tick(Context c) {
         if (!running()) return;
+        diagnosticFeature=null;
         PlayerState player=c.world().player();
         if (!player.connected()) { stop(c,State.PAUSED,"Game disconnected"); return; }
         if (!c.profile().allowBackground && !player.focused()) { stop(c,State.PAUSED,"Game lost focus"); return; }
@@ -117,7 +127,9 @@ public final class AutomationEngine {
             productionCooldowns.keySet().removeIf(module -> !c.profile().enabled(module.feature()));
             if (active!=null && !c.profile().enabled(active.feature())) { stop(c,State.PAUSED,"Feature was disabled"); return; }
             if (active!=null) {
+                diagnosticFeature=active.feature();
                 WorkResult result=active.tick(c);
+                failureHistory.recordWork(c.world().tick(),active.feature(),result);
                 if(result.state()!=WorkResult.State.COOLDOWN)productionCooldowns.remove(active);
                 if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) {
@@ -153,12 +165,15 @@ public final class AutomationEngine {
                 if (retry!=null && c.world().tick()<retry.at()) continue;
                 ProductionCooldown production=productionCooldowns.get(module);
                 if(production!=null && c.world().tick()<production.at())continue;
-                if (module.feature()==Feature.SLEEP && (!blockedThisSweep.isEmpty()
+                if (module.feature()==Feature.SLEEP && (resourceWaiting!=null && !resourceWaiting.sleepSafeResourceWait(c)
+                    || !blockedThisSweep.isEmpty()
                     || deferred.values().stream().anyMatch(wait->!wait.sleepSafe())
                     || productionCooldowns.values().stream().anyMatch(wait->!wait.sleepSafe())
                     || (!deferred.isEmpty() || !productionCooldowns.isEmpty()) && (!resourceBoundary(c) || c.actions().pauseReason()!=null))) continue;
                 if (module.feature()==Feature.PRESERVES && wineBlocked) continue;
+                diagnosticFeature=module.feature();
                 WorkResult result=module.tick(c);
+                failureHistory.recordWork(c.world().tick(),module.feature(),result);
                 if(result.state()!=WorkResult.State.COOLDOWN)productionCooldowns.remove(module);
                 if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) { active=module; state=State.RUNNING; status=result.message(); return; }
@@ -201,7 +216,9 @@ public final class AutomationEngine {
         if (retry!=null && c.world().tick()<retry.at()) { state=State.WAITING; status=retry.message(); return; }
         ProductionCooldown production=productionCooldowns.get(active);
         if(production!=null && c.world().tick()<production.at()) {state=State.WAITING;status=cooldownStatus(c,production);return;}
+        diagnosticFeature=active.feature();
         WorkResult result=active.tick(c);
+        failureHistory.recordWork(c.world().tick(),active.feature(),result);
         if(result.state()!=WorkResult.State.COOLDOWN)productionCooldowns.remove(active);
         if (pauseForActions(c)) return;
         if (result.state()==WorkResult.State.RESOURCE_WAIT && !grantResourceWait(c,active,result)) return;
@@ -227,7 +244,7 @@ public final class AutomationEngine {
         }
         resourceWaiting=module; resourceWaitMessage=result.message(); resourceCheckAt=c.world().tick()+1200;
         c.actions().stopMovement(); c.navigation().reset();
-        // Keep the module's confirmed PLANT/visibility-wait phase, never an action ticket or outcome.
+        // Keep only the module's explicitly revalidated phase, never reset it or manufacture an action outcome.
         return true;
     }
     private boolean refreshLoggingOwnership(Context c) {

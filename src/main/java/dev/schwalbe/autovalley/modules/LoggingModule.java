@@ -19,6 +19,9 @@ public final class LoggingModule implements AutomationModule {
     private LoggingHotbarLease restorationRefreshLease;
     private record PartialCleanup(Profile profile,List<LoggingPlot> plots,List<Pos> remaining,List<Pos> replanting,Long due) { }
     private PartialCleanup partialCleanup;
+    /** Unsent navigation/observation, or unavailable storage after an acknowledged close. */
+    private record LocalRetryWait(PartialCleanup obligations,List<Poi> facilities,Stage resume,long createdAt,long retryAt,String message) { }
+    private LocalRetryWait localRetryWait;
     private Pending pending;
     private long ticket=-1, settleUntil, nextCheckTick=-1, lastTick=-1;
     private long saplingWaitUntil=-1;
@@ -71,6 +74,21 @@ public final class LoggingModule implements AutomationModule {
         // revokes quiet approval, but an uninterrupted stationary next stroke need not sleep.
         sampleMiningPose(c);
         try {
+            if (localRetryWait!=null) {
+                ResourceReadiness readiness=localRetryWaitReadiness(c);
+                if(readiness==ResourceReadiness.UNSAFE) return fail("벌목 재시도 전 미확인 조작·등록 변경을 확인해야 합니다. 미완료 기록은 보존했습니다.");
+                if(readiness==ResourceReadiness.WAITING) return WorkResult.resourceWait(localRetryWait.message());
+                stage=localRetryWait.resume(); localRetryWait=null; approachResult=null;
+                clearMiningQuiet(); clearCleanupQuiet(); observationWindow.clear(); c.navigation().reset();
+                // Rebuild only unsent approach plans. A child with an in-flight
+                // or failed native action could never have entered this wait.
+                if(stage==Stage.WOOD) wood.reset();
+                if(stage==Stage.BERRIES) berries.reset();
+                if(stage==Stage.CHOP || stage==Stage.LEAF_SEARCH || stage==Stage.LEAF_APPROACH) {
+                    choppingApproach=null; leafApproach=null; stage=Stage.PLOT;
+                }
+                return busy("보류했던 이동·지형을 현재 위치에서 새로 확인");
+            }
             if (ticket>=0) {
                 ActionOutcome outcome=c.actions().outcome(ticket);
                 if (!outcome.done()) return busy("서버 응답 확인 중");
@@ -215,7 +233,7 @@ public final class LoggingModule implements AutomationModule {
                 }
                 int axe=c.profile().loggingAxeHotbarSlot;
                 if (axe<0 || axe==c.profile().hoeHotbarSlot || !item(c,axe).is(LoggingRules.AXE)
-                    || item(c,axe).durability()<=1 || !c.world().loggingAxe(axe)) return fail("등록한 사용 가능한 네더라이트 도끼가 필요합니다.");
+                    || item(c,axe).durability()<=1 || !c.world().loggingAxe(axe)) return waitForLocalRetry(c,"등록한 사용 가능한 네더라이트 도끼가 필요합니다.");
                 Pos stump=miningQuietBase==null && stumps.contains(miningQuietTarget)
                     && miningArrivalMatches(c,miningQuietTarget,null) && c.world().canInteract(miningQuietTarget,4)
                     ? miningQuietTarget : choppingTarget(c,stumps);
@@ -244,7 +262,7 @@ public final class LoggingModule implements AutomationModule {
                 }
                 if (status==LoggingApproachSearch.Status.SEARCHING) return busy("밑동 조준을 막는 가까운 가문비나무 잎 확인");
                 if (status==LoggingApproachSearch.Status.UNLOADED || status==LoggingApproachSearch.Status.CHANGED)
-                    return WorkResult.deferred("잎 제거 후보의 지형이 바뀌거나 로드되지 않았습니다. 임의로 제거하지 않습니다.");
+                    return waitForLocalRetry(c,"잎 제거 후보의 지형이 바뀌거나 로드되지 않았습니다. 임의로 제거하지 않습니다.");
                 stage=Stage.CHOP; return busy("제거할 수 있는 잎이 없어 원래 시야 대기로 복귀");
             }
             case LEAF_APPROACH -> {
@@ -257,7 +275,7 @@ public final class LoggingModule implements AutomationModule {
                     && LoggingRules.stump(c.world().block(p)) && c.world().canInteract(p,4))) {
                     clearVisibilitySweep(); stage=Stage.PLOT; return busy("밑동이 보여 잎 제거 없이 원래 벌목 재개");
                 }
-                if (!c.world().loaded(leafTarget)) return WorkResult.deferred("잎 제거 대상 청크를 다시 확인합니다.");
+                if (!c.world().loaded(leafTarget)) return waitForLocalRetry(c,"잎 제거 대상 청크를 다시 확인합니다.");
                 if (!LoggingLeafRules.LEAVES.equals(c.world().block(leafTarget).id())) {
                     clearVisibilitySweep(); stage=Stage.PLOT; return busy("잎 상태가 바뀌어 실제 밑동 시야 재확인");
                 }
@@ -276,7 +294,7 @@ public final class LoggingModule implements AutomationModule {
                 }
                 int axe=c.profile().loggingAxeHotbarSlot;
                 if (axe<0 || axe==c.profile().hoeHotbarSlot || !item(c,axe).is(LoggingRules.AXE)
-                    || item(c,axe).durability()<=1 || !c.world().loggingAxe(axe)) return fail("잎 제거에는 등록한 사용 가능한 도끼가 필요합니다.");
+                    || item(c,axe).durability()<=1 || !c.world().loggingAxe(axe)) return waitForLocalRetry(c,"잎 제거에는 등록한 사용 가능한 도끼가 필요합니다.");
                 if (c.world().player().selectedSlot()!=axe) { submit(c,new Action.SelectHotbar(axe),Pending.SELECT); return busy("잎 제거용 도끼 선택"); }
                 Action.ClearLoggingLeaf action=new Action.ClearLoggingLeaf(leafTarget,leafBase);
                 String rejection=LoggingLeafRules.rejection(action,c);
@@ -383,7 +401,7 @@ public final class LoggingModule implements AutomationModule {
             }
             case CRAFT_OPEN -> {
                 if (table==null) table=ModuleSupport.nearest(c,c.profile().pois(PoiKind.LOGGING_CRAFTING_TABLE)).stream().findFirst().orElse(null);
-                if (table==null) return fail("장작을 제작할 3x3 제작대를 먼저 등록하세요.");
+                if (table==null) return waitForLocalRetry(c,"장작을 제작할 3x3 제작대를 먼저 등록하세요.");
                 if (!approach(c,table.pos(),2.5)) return currentProgress();
                 WorkResult quiet=awaitCleanupQuiet(c); if (quiet!=null) return quiet;
                 submit(c,new Action.UseBlock(table.pos(),Action.Use.OPEN_CRAFTING),Pending.OPEN);
@@ -407,13 +425,15 @@ public final class LoggingModule implements AutomationModule {
             case CRAFT_CLOSE -> { return fail("제작대 닫기 응답을 잃었습니다."); }
             case WOOD -> {
                 WorkResult result=wood.tick(c);
-                if (result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED) return fail(result.message());
+                if (result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED)
+                    return wood.navigationWaitBoundary() || wood.unavailableWaitBoundary() ? waitForLocalRetry(c,result.message()) : fail(result.message());
                 if (result.state()==WorkResult.State.IDLE) { stage=Stage.BERRIES; return busy("장작·남은 원목 보관 완료"); }
                 return busy("장작·남은 원목 보관: "+result.message());
             }
             case BERRIES -> {
                 WorkResult result=berries.tick(c);
-                if (result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED) return fail(result.message());
+                if (result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED)
+                    return berries.navigationWaitBoundary() || berries.unavailableWaitBoundary() ? waitForLocalRetry(c,result.message()) : fail(result.message());
                 if (result.state()==WorkResult.State.IDLE) {
                     if (partialCleanup!=null) {
                         if (!partialCleanupMatches(c) || !plotRestoreBoundary(c) || c.profile().loggingHotbarLease!=null)
@@ -438,9 +458,9 @@ public final class LoggingModule implements AutomationModule {
     private boolean approach(Context c,Pos target,double reach) {
         approachResult=null;
         if (c.world().menu().container() || !c.world().menu().carried().empty()) { fail("벌목 이동 중 메뉴나 커서가 바뀌었습니다."); return false; }
-        if (!c.world().loaded(target)) { approachResult=ModuleSupport.observe(c,target,8,"등록한 벌목 작업 위치 확인"); return false; }
+        if (!c.world().loaded(target)) { approachResult=observeForNavigation(c,ModuleSupport.observe(c,target,8,"등록한 벌목 작업 위치 확인")); return false; }
         Navigation.Result result=c.navigation().moveToLogging(target,reach,c);
-        if (result==Navigation.Result.BLOCKED) { approachResult=ModuleSupport.navigationResult(c,"등록한 벌목 작업 위치에 접근할 수 없습니다."); return false; }
+        if (result==Navigation.Result.BLOCKED) { approachResult=waitForLocalRetry(c,ModuleSupport.navigationFailure(c,"등록한 벌목 작업 위치에 접근할 수 없습니다.")); return false; }
         if (result!=Navigation.Result.ARRIVED || !c.world().canInteract(target,reach)) return false;
         c.actions().stopMovement(); return true;
     }
@@ -456,7 +476,7 @@ public final class LoggingModule implements AutomationModule {
         // Go to the verified standing surface instead, then recheck actual-eye rays.
         Navigation.Result result=c.navigation().moveToLoggingPosition(leafApproach.stance(),.1,c);
         if (result==Navigation.Result.BLOCKED) {
-            approachResult=ModuleSupport.navigationResult(c,"방해 잎을 확인한 벌목 접근 위치에 도달할 수 없습니다."); return false;
+            approachResult=waitForLocalRetry(c,ModuleSupport.navigationFailure(c,"방해 잎을 확인한 벌목 접근 위치에 도달할 수 없습니다.")); return false;
         }
         if (result!=Navigation.Result.ARRIVED) return false;
         c.actions().stopMovement(); return true;
@@ -532,9 +552,9 @@ public final class LoggingModule implements AutomationModule {
         if (state==LoggingApproachSearch.Status.SEARCHING)
             approachResult=busy("등록한 2x2 밑동의 실제 시야가 있는 접근 위치 확인 ("+choppingApproach.checkedStances()+"/"+choppingApproach.candidateCount()+")");
         else if (state==LoggingApproachSearch.Status.UNLOADED)
-            approachResult=WorkResult.deferred("벌목 접근 후보에 로드되지 않은 지형이 있습니다. 시야 불가로 단정하지 않고 미완료 구역을 보존합니다.");
+            approachResult=waitForLocalRetry(c,"벌목 접근 후보에 로드되지 않은 지형이 있습니다. 시야 불가로 단정하지 않고 미완료 구역을 보존합니다.");
         else if (state==LoggingApproachSearch.Status.CHANGED)
-            approachResult=WorkResult.deferred("벌목 밑동 또는 월드 관측이 바뀌었습니다. 미완료 구역을 보존하고 다시 확인합니다.");
+            approachResult=waitForLocalRetry(c,"벌목 밑동 또는 월드 관측이 바뀌었습니다. 미완료 구역을 보존하고 다시 확인합니다.");
         else {
             invisiblePlots.put(plot.corner(),choppingApproach);
             if (c.profile().loggingHotbarLease!=null) {
@@ -595,7 +615,7 @@ public final class LoggingModule implements AutomationModule {
         }
         Navigation.Result result=c.navigation().moveToLoggingPlanting(remaining,c);
         if (result==Navigation.Result.BLOCKED) {
-            fail(ModuleSupport.navigationFailure(c,"남은 2x2 식재 칸의 윗면을 함께 볼 수 있는 위치에 접근할 수 없습니다.")); return false;
+            approachResult=waitForLocalRetry(c,ModuleSupport.navigationFailure(c,"남은 2x2 식재 칸의 윗면을 함께 볼 수 있는 위치에 접근할 수 없습니다.")); return false;
         }
         if (result!=Navigation.Result.ARRIVED || remaining.stream().anyMatch(p -> !c.world().canPlantLoggingSapling(p,3.25))) return false;
         c.actions().stopMovement();
@@ -607,8 +627,50 @@ public final class LoggingModule implements AutomationModule {
     }
     private WorkResult observePlot(Context c,LoggingPlot target) {
         Pos missing=target.plantingPositions().stream().filter(p -> !c.world().loaded(p)).findFirst().orElse(target.corner());
-        if (stage==Stage.START || stage==Stage.WASTE) return observationWindow.observe(c,missing,8,"벌목 구역 "+target.name()+" 관측");
-        return ModuleSupport.observe(c,missing,8,"벌목 구역 "+target.name()+" 관측");
+        WorkResult result=stage==Stage.START || stage==Stage.WASTE
+            ? observationWindow.observe(c,missing,8,"벌목 구역 "+target.name()+" 관측")
+            : ModuleSupport.observe(c,missing,8,"벌목 구역 "+target.name()+" 관측");
+        return observeForNavigation(c,result);
+    }
+    private WorkResult observeForNavigation(Context c,WorkResult result) {
+        return c.profile().loggingRunActive && (result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED)
+            ? waitForLocalRetry(c,result.message()) : result;
+    }
+    private WorkResult waitForLocalRetry(Context c,String reason) {
+        c.actions().stopMovement();
+        if(failure!=null || !plotRestoreBoundary(c) || c.profile().loggingHotbarLease!=null || !navigationRetryBoundary(c))
+            return fail("이동 보류 전 안전한 조작 경계를 확인할 수 없습니다: "+reason);
+        validateRemaining(c);
+        PartialCleanup obligations=new PartialCleanup(c.profile(),List.copyOf(c.profile().loggingPlots),
+            List.copyOf(c.profile().loggingRemainingPlots),List.copyOf(c.profile().loggingReplantingPlots),
+            c.profile().nextEligibleDay.get(LoggingRules.DUE_KEY));
+        String message="벌목 작업 보류 — "+(once(c) ? "이 작업은 대기, " : "다른 루틴은 계속 진행, ")
+            +"1200틱 후 현재 위치에서 재시도: "+reason;
+        localRetryWait=new LocalRetryWait(obligations,loggingFacilities(c),stage,c.world().tick(),
+            Math.addExact(c.world().tick(),VISIBILITY_RETRY_TICKS),message);
+        clearMiningQuiet(); clearCleanupQuiet(); c.navigation().reset();
+        return WorkResult.resourceWait(message);
+    }
+    private static List<Poi> loggingFacilities(Context c) {
+        return c.profile().pois.stream().filter(p -> p.kind()==PoiKind.WOOD_CHEST || p.kind()==PoiKind.SHIPPING_BIN
+            || p.kind()==PoiKind.LOGGING_CRAFTING_TABLE).toList();
+    }
+    private ResourceReadiness localRetryWaitReadiness(Context c) {
+        if(localRetryWait==null || failure!=null || !plotRestoreBoundary(c) || c.profile().loggingHotbarLease!=null || !navigationRetryBoundary(c))
+            return ResourceReadiness.UNSAFE;
+        PartialCleanup obligations=localRetryWait.obligations();
+        if(obligations.profile()!=c.profile() || !obligations.plots().equals(c.profile().loggingPlots)
+            || !obligations.remaining().equals(c.profile().loggingRemainingPlots)
+            || !obligations.replanting().equals(c.profile().loggingReplantingPlots)
+            || !Objects.equals(obligations.due(),c.profile().nextEligibleDay.get(LoggingRules.DUE_KEY))
+            || !localRetryWait.facilities().equals(loggingFacilities(c))) return ResourceReadiness.UNSAFE;
+        return c.world().tick()<localRetryWait.createdAt() || c.world().tick()>=localRetryWait.retryAt()
+            ? ResourceReadiness.READY : ResourceReadiness.WAITING;
+    }
+    private static boolean navigationRetryBoundary(Context c) {
+        Navigation.Failure kind=c.navigation().failureKind();
+        return c.navigation().pendingInteractionOutcome(c)==null && kind!=Navigation.Failure.JUMP_UNCERTAIN
+            && (kind!=Navigation.Failure.SAFETY && kind!=Navigation.Failure.INVALID_START || c.navigation().safeFailureRetry(c));
     }
     private WorkResult currentProgress() { return approachResult!=null ? approachResult : failure==null ? busy("등록한 작업 위치로 이동") : WorkResult.blocked(failure); }
     private static List<ItemSlot> availableSaplings(Context c) {
@@ -683,10 +745,14 @@ public final class LoggingModule implements AutomationModule {
         return busy("가문비나무 묘목 도착 대기 ("+available+"/"+required+"개, "+((saplingWaitUntil-c.world().tick()+19)/20)+"초 남음)");
     }
     @Override public ResourceReadiness resourceReadiness(Context c) {
+        if(localRetryWait!=null) return localRetryWaitReadiness(c);
         ResourceReadiness readiness=retainedResourceReadiness(c);
         // A previously granted one-shot wait must be released by the scheduler
         // BEFORE its module may enter crafting/storage. This query does not start it.
         return readiness==ResourceReadiness.WAITING && partialCleanupReady(c) ? ResourceReadiness.READY : readiness;
+    }
+    @Override public boolean sleepSafeResourceWait(Context c) {
+        return localRetryWait==null && retainedResourceReadiness(c)!=ResourceReadiness.UNSAFE;
     }
     private boolean partialCleanupReady(Context c) {
         return partialCleanup==null && LoggingRules.allowed(c) && plotRestoreBoundary(c) && c.profile().loggingHotbarLease==null
@@ -796,7 +862,7 @@ public final class LoggingModule implements AutomationModule {
         sampleMiningPose(c);
         if(miningQuietTicks>=MINING_QUIET_TICKS)return null;
         if(c.world().tick()-miningQuietSince>=MINING_QUIET_TIMEOUT)
-            return fail("이동 잔여속도/정지 확인 대기가 100틱을 넘었습니다. 새 벌목을 보내지 않고 미완료 구역을 보존합니다.");
+            return waitForLocalRetry(c,"이동 잔여속도/정지 확인 대기가 100틱을 넘었습니다. 새 벌목을 보내지 않고 미완료 구역을 보존합니다.");
         return busy("이동 잔여속도/정지 확인 대기 ("+miningQuietTicks+"/2틱)");
     }
     private boolean miningArrivalMatches(Context c,Pos target,Pos base) {
@@ -831,7 +897,7 @@ public final class LoggingModule implements AutomationModule {
         List<ItemData> snapshot=slots.stream().map(ItemSlot::item).toList();
         if (cleanupWindowStart<0 && !cleanupQuietApproved) cleanupWindowStart=now;
         if (cleanupWindowStart>=0 && now-cleanupWindowStart>=CLEANUP_QUIET_TIMEOUT)
-            return fail("벌목 정리 전 재고가 20초 동안 안정되지 않았습니다. 폐기·복원·제작을 보내지 않고 미완료 작업을 보존합니다.");
+            return waitForLocalRetry(c,"벌목 정리 전 재고가 20초 동안 안정되지 않았습니다. 폐기·복원·제작을 보내지 않고 미완료 작업을 보존합니다.");
         boolean same=snapshot.equals(cleanupInventory);
         boolean consecutive=cleanupSampleTick>=0 && now-cleanupSampleTick==1;
         if (!same || cleanupSampleTick!=now && !consecutive) {
@@ -957,7 +1023,7 @@ public final class LoggingModule implements AutomationModule {
     private WorkResult fail(String text) { failure=text; return WorkResult.blocked(text); }
     @Override public void reset() {
         stage=Stage.START; restoreBeforePlot=false; restorationRefreshRequested=false; partialCleanup=null; pending=null; ticket=-1; actionPos=null; plot=null; table=null; craftingMenu=-1;
-        restorationRefreshLease=null;
+        restorationRefreshLease=null; localRetryWait=null;
         // Scheduler resets must not turn the bounded ALL_GROWN readiness poll into
         // a per-tick scan. Explicit one-shot and durable active resumes bypass it.
         chopStrokes=trashOperations=craftOperations=0; settleUntil=0; saplingWaitUntil=-1; saplingWaitRequired=0; failure=null;
@@ -980,6 +1046,7 @@ public final class LoggingModule implements AutomationModule {
         @Override protected boolean accepts(ItemData item) { return shipping ? LoggingRules.byproduct(item) : LoggingRules.wood(item); }
         @Override protected PoiKind destinationKind() { return shipping ? PoiKind.SHIPPING_BIN : PoiKind.WOOD_CHEST; }
         @Override protected Integer classifier(ItemData item) { return null; }
+        @Override protected boolean deferUnavailableStorage() { return true; }
         @Override protected Navigation.Result approachDestination(Context c,Poi destination) {
             return c.navigation().moveToLogging(destination.pos(),2.5,c);
         }

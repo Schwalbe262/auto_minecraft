@@ -70,6 +70,8 @@ public final class ClientRuntime {
     public boolean running() { return pendingShipmentRecovery!=null || coordinateTravel!=null || engine.running(); }
     /** Bounded local diagnostic data; contains private destination coordinates. */
     public Map<String,Object> navigationReport() { return navigator.diagnostics(); }
+    /** Bounded failures survive manual pause/start within this connection. */
+    public List<EngineFailureHistory.Entry> failureHistory() { return engine.failureHistory(); }
     public boolean recording() { return recorder.recording(); }
     public String recordingStatus() { return recorder.status(); }
     public boolean recordingActive() { return recorder.capturing(); }
@@ -455,6 +457,7 @@ public final class ClientRuntime {
         observations.clear(); PacketObserver.install(current,observations,() -> attackFence,recorder);
         coordinateTravel=null;
         engine.stop(context,AutomationEngine.State.OFF,"OFF — Ctrl+F8 설정 / F8 시작");
+        engine.clearFailureHistory();
         actions.enabled(false); anglesValid=false; savedScheduleHash=scheduleHash();
     }
     private void disconnect() {
@@ -462,6 +465,7 @@ public final class ClientRuntime {
         finishPendingShipment("접속 또는 차원이 변경되었습니다.");
         coordinateTravel=null;
         engine.stop(context,AutomationEngine.State.OFF,"접속 종료 — 자동화 OFF");
+        engine.clearFailureHistory();
         updateBackgroundPause();
         actions.enabled(false); attackFence=false; anglesValid=false;
         harvest.cancelCalibration(); calibrationWasActive=false;
