@@ -1008,11 +1008,23 @@ public final class ValleyScreen extends Screen {
         button(left + half + 6, 54, half, tr("disposal.capture"), () -> captureFeet(PoiKind.DISPOSAL));
         text(79, tr("waypoint.hint"));
         List<SavedEntry> entries = savedEntries();
+        Profile savedOwner = runtime.profile();
         int rows = rowsFrom(94), start = pageStart(entries.size(), rows);
         if (entries.isEmpty()) text(101, tr("saved.empty"));
         for (int i = start; i < Math.min(start + rows, entries.size()); i++) {
             SavedEntry entry = entries.get(i);
             int y = 94 + (i - start) * 23;
+            if (entry.wineLine() != null) {
+                WineProductionLine line = entry.wineLine();
+                Component caption = Component.literal(line.name() + " · ").append(poiName(PoiKind.WINE_KEG))
+                    .append(" " + line.machines().size() + "개 · " + (line.enabled() ? "ON" : "OFF"));
+                button(left, y, panelWidth, clipped(caption, panelWidth - 12), () -> {
+                    if (!WineFacilityListView.current(savedOwner, runtime.profile(), line)) { error("machines.group_changed"); return; }
+                    minecraft.setScreen(new WineLinesScreen(this, line.id()));
+                }).setTooltip(Tooltip.create(caption.copy().append("\n")
+                    .append(Component.literal("독립 와인 생산 구역 · 클릭하여 이 구역 설정 및 와인통 증설 등록"))));
+                continue;
+            }
             if (entry.storage() != null) {
                 StorageListView.Group group = entry.storage();
                 Component caption = storageCaption(group);
@@ -1061,7 +1073,9 @@ public final class ValleyScreen extends Screen {
         pagination(entries.size(), rows);
     }
 
-    private record SavedEntry(String groupId, MachineGroup group, Poi poi, StorageListView.Group storage) { }
+    private record SavedEntry(String groupId, MachineGroup group, Poi poi, StorageListView.Group storage, WineProductionLine wineLine) {
+        SavedEntry(String groupId, MachineGroup group, Poi poi, StorageListView.Group storage) { this(groupId, group, poi, storage, null); }
+    }
 
     private List<SavedEntry> savedEntries() {
         Map<Pos,SavedEntry> membership = new HashMap<>();
@@ -1079,6 +1093,8 @@ public final class ValleyScreen extends Screen {
             group.members().forEach(pos -> membership.put(pos, entry));
         }
         List<SavedEntry> entries = new ArrayList<>(); Set<SavedEntry> emitted = new HashSet<>();
+        for (WineProductionLine line : WineFacilityListView.snapshot(runtime.profile()))
+            entries.add(new SavedEntry(null, null, null, null, line));
         StorageListView.Snapshot storage = StorageListView.snapshot(runtime.profile());
         for (StorageListView.Group group : storage.groups()) entries.add(new SavedEntry(null, null, null, group));
         for (Poi poi : storage.standalonePois()) {
