@@ -25,19 +25,17 @@ public final class FarmRegistrationRules {
         String nextKey=harvestKey(candidate);
         if (previous==null) {
             profile.farms.add(candidate);
-            // A removed field's orphaned name must not defer a newly registered field.
-            profile.nextEligibleDay.remove(nextKey);
+            // Registration is not permission to skip a retained harvest cooldown.
+            // A genuinely new name without a schedule remains eligible for its first pass.
         } else {
             profile.farms.set(index,candidate);
             String oldKey=harvestKey(previous);
-            if (!sameWork(previous,candidate)) {
-                profile.nextEligibleDay.remove(oldKey);
-                profile.nextEligibleDay.remove(nextKey);
-            } else if (!oldKey.equals(nextKey)) {
-                boolean scheduled=profile.nextEligibleDay.containsKey(oldKey);
-                Long due=profile.nextEligibleDay.remove(oldKey);
-                profile.nextEligibleDay.remove(nextKey);
-                if (scheduled) profile.nextEligibleDay.put(nextKey,due);
+            // Bounds and crop edits cannot bring an existing due date forward.
+            // A rename carries the stricter of both keys rather than bypassing either calendar.
+            if (!oldKey.equals(nextKey)) {
+                boolean scheduled=profile.nextEligibleDay.containsKey(oldKey) || profile.nextEligibleDay.containsKey(nextKey);
+                Long oldDue=profile.nextEligibleDay.remove(oldKey),nextDue=profile.nextEligibleDay.get(nextKey);
+                if (scheduled) profile.nextEligibleDay.put(nextKey,laterDue(oldDue,nextDue));
             }
         }
         return () -> {
@@ -48,14 +46,9 @@ public final class FarmRegistrationRules {
 
     private static String harvestKey(Farm farm) { return "harvest:"+farm.name(); }
 
-    /** Reversing A/B without changing covered cells is not a new harvesting region. */
-    static boolean sameWork(Farm before,Farm after) {
-        return Objects.equals(before.cropId(),after.cropId())
-            && sameAxis(before.first().x(),before.second().x(),after.first().x(),after.second().x())
-            && sameAxis(before.first().y(),before.second().y(),after.first().y(),after.second().y())
-            && sameAxis(before.first().z(),before.second().z(),after.first().z(),after.second().z());
-    }
-    private static boolean sameAxis(int a,int b,int c,int d) {
-        return Math.min(a,b)==Math.min(c,d) && Math.max(a,b)==Math.max(c,d);
+    private static Long laterDue(Long first,Long second) {
+        if (first==null) return second;
+        if (second==null) return first;
+        return Math.max(first,second);
     }
 }
