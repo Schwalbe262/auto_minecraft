@@ -46,6 +46,72 @@ class LoggingEngineResumeTest {
         assertFalse(f.profile.loggingRunActive); assertNull(f.profile.loggingHotbarLease);
     }
 
+    @Test void lateRestoreConfirmationKeepsTheSameTicketAndLoggingOwnershipInBothRunModes() {
+        for (boolean once:new boolean[]{false,true}) {
+            Fixture f=new Fixture(item(ItemData.TOMATO,52));
+            if (once) {
+                f.profile.enabled.put(Feature.LOGGING,false);
+                f.engine.startOnce(f.context,Feature.LOGGING);
+            } else f.engine.start(f.context);
+            Action.SwapHotbar swap=f.awaitPendingSwap();
+            long ticket=f.sequence;
+            LoggingHotbarLease lease=f.profile.loggingHotbarLease;
+            assertEquals(LoggingHotbarLease.Stage.RESTORING,lease.stage());
+
+            // The native adapter owns the timeout and receipt; the actual module
+            // must keep its ticket and exclusive custody for an arbitrarily late reply.
+            f.tickWithoutReply(f.profile.interactionTimeoutTicks+1200);
+            assertTrue(f.engine.running(),f.engine.status());
+            assertSame(swap,f.pending); assertEquals(ticket,f.sequence);
+            assertEquals(ActionOutcome.State.PENDING,f.outcome(ticket).state());
+            assertEquals(0,f.swaps); assertEquals(0,f.consumerTicks);
+            assertEquals(lease,f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+            assertEquals(f.original,f.inventory[9]); assertTrue(f.inventory[0].empty());
+            assertTrue(f.events.isEmpty());
+
+            f.confirmSwap(swap);
+            f.runUntil(() -> once ? !f.engine.running() : f.consumerTicks>0);
+            assertEquals(ticket,f.sequence,"Recovery must not submit the swap again");
+            assertEquals(1,f.swaps); assertFalse(f.profile.loggingRunActive); assertNull(f.profile.loggingHotbarLease);
+            if (once) {
+                assertEquals(AutomationEngine.State.COMPLETE,f.engine.state());
+                assertEquals(0,f.consumerTicks); assertEquals(f.original,f.inventory[0]);
+                assertEquals(List.of("restore","restore_saved","logging_finished"),f.events);
+            } else {
+                assertEquals(f.original.count(),f.consumed);
+                assertEquals(List.of("restore","restore_saved","logging_finished","consumer"),f.events);
+            }
+        }
+    }
+
+    @Test void manualStopDuringALongSwapWaitCannotBeUndoneByALateReceiptInEitherRunMode() {
+        for (boolean once:new boolean[]{false,true}) {
+            Fixture f=new Fixture(item(ItemData.TOMATO,52));
+            if (once) f.engine.startOnce(f.context,Feature.LOGGING); else f.engine.start(f.context);
+            Action.SwapHotbar swap=f.awaitPendingSwap();
+            long ticket=f.sequence;
+            f.tickWithoutReply(f.profile.interactionTimeoutTicks+1200);
+            assertTrue(f.engine.running());
+            LoggingHotbarLease lease=f.profile.loggingHotbarLease;
+
+            f.engine.stop(f.context,AutomationEngine.State.PAUSED,"manual F8 OFF");
+            assertEquals(ActionOutcome.State.CANCELLED,f.outcome(ticket).state());
+            // The server can still apply an already-sent request after OFF.
+            // Its inventory receipt does not grant a new run or complete the old ticket.
+            f.confirmSwap(swap);
+            f.tickWithoutReply(1200);
+
+            assertEquals(AutomationEngine.State.PAUSED,f.engine.state());
+            assertEquals("manual F8 OFF",f.engine.status()); assertFalse(f.engine.running());
+            assertEquals(ActionOutcome.State.CANCELLED,f.outcome(ticket).state());
+            assertEquals(ticket,f.sequence); assertNull(f.pending); assertEquals(1,f.swaps);
+            assertEquals(0,f.consumerTicks); assertEquals(0,f.consumed);
+            assertEquals(f.original,f.inventory[0]); assertTrue(f.inventory[9].empty());
+            assertEquals(lease,f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+            assertEquals(List.of("restore"),f.events,"OFF must not checkpoint an automatic logging completion");
+        }
+    }
+
     @Test void missingLoggingImplementationFailsClosedInBothExecutionModes() {
         Fixture f=new Fixture(item(ItemData.TOMATO,52)); f.engine=new AutomationEngine(List.of(f.consumer));
         f.engine.start(f.context); assertEquals(AutomationEngine.State.PAUSED,f.engine.state());
@@ -130,13 +196,24 @@ class LoggingEngineResumeTest {
             engine=new AutomationEngine(List.of(consumer,new LoggingModule()));
         }
         void clearLogging() { profile.loggingRunActive=false; profile.loggingHotbarLease=null; }
+        Action.SwapHotbar awaitPendingSwap() {
+            for (int i=0;i<100 && pending==null;i++) { engine.tick(context); ticks++; }
+            return assertInstanceOf(Action.SwapHotbar.class,pending,engine.status());
+        }
+        void tickWithoutReply(int count) {
+            for (int i=0;i<count;i++) { engine.tick(context); ticks++; }
+        }
+        void confirmSwap(Action.SwapHotbar swap) {
+            ItemData old=inventory[swap.hotbarSlot()]; inventory[swap.hotbarSlot()]=inventory[swap.inventoryIndex()]; inventory[swap.inventoryIndex()]=old;
+            swaps++; events.add("restore");
+            if (pending==swap) {
+                pending=null; outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"exact swap acknowledged");
+            }
+        }
         void runUntil(java.util.function.BooleanSupplier done) {
             for (int i=0;i<100 && !done.getAsBoolean();i++) {
                 engine.tick(context);
-                if (pending instanceof Action.SwapHotbar swap) {
-                    ItemData old=inventory[swap.hotbarSlot()]; inventory[swap.hotbarSlot()]=inventory[swap.inventoryIndex()]; inventory[swap.inventoryIndex()]=old;
-                    swaps++; events.add("restore"); pending=null; outcome=new ActionOutcome(ActionOutcome.State.SUCCEEDED,"exact swap acknowledged");
-                }
+                if (pending instanceof Action.SwapHotbar swap) confirmSwap(swap);
                 ticks++;
             }
             assertTrue(done.getAsBoolean(),engine.status());
@@ -164,7 +241,10 @@ class LoggingEngineResumeTest {
         public ActionOutcome outcome(long ticket) { return outcome; }
         public void move(Movement intent) { throw new AssertionError("Cleanup resume must not navigate"); }
         public void stopMovement() { }
-        public void cancel() { pending=null; }
+        public void cancel() {
+            if (pending!=null) outcome=new ActionOutcome(ActionOutcome.State.CANCELLED,"Cancelled without additional input");
+            pending=null;
+        }
         public Result moveTo(Pos p,double reach,Context c) { throw new AssertionError("Replanted plots must not be recut"); }
         public void reset() { }
     }

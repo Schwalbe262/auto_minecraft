@@ -36,6 +36,13 @@ public final class ServerObservations {
     private static final int MAX_SNAPSHOTS_PER_MENU=8;
     private long sequence;
     private volatile long generation;
+    private Runnable nativeFullMenuObserver;
+    /** One adapter-owned passive observer, called on the client thread before a later packet can evict this proof. */
+    void observeNativeFullMenus(Runnable observer) {
+        Objects.requireNonNull(observer);
+        if (nativeFullMenuObserver!=null) throw new IllegalStateException("Native receipt observer already installed");
+        nativeFullMenuObserver=observer;
+    }
     public record NativeBlockSnapshot(long seq,Pos pos,BlockState state) { }
     public record NativeChopSnapshot(long seq,Pos pos,int chops,int originalState) { }
     private final ArrayDeque<NativeBlockSnapshot> nativeBlocks=new ArrayDeque<>();
@@ -98,6 +105,9 @@ public final class ServerObservations {
         ArrayDeque<NativeMenuSnapshot> history=fullNativeMenuSnapshots.computeIfAbsent(id,ignored -> new ArrayDeque<>());
         history.addLast(nativeSnapshot);
         if (history.size()>MAX_SNAPSHOTS_PER_MENU) history.removeFirst();
+        // Only this overload holds a detached, server-authored native FULL. Markers,
+        // reduced views, single-slot updates and current live menus cannot notify it.
+        if (nativeFullMenuObserver!=null) nativeFullMenuObserver.run();
     }
     public void fullNativeMenu(int id,List<ItemStack> items,ItemStack carried) {
         NativeMenuSnapshot detached=new NativeMenuSnapshot(sequence+1,items,carried);

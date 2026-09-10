@@ -55,7 +55,15 @@ public final class MinecraftActions implements ActionPort {
     private String loggingFailure;
     private long loggingFailureGeneration;
     private final LinkedHashMap<Long,ActionOutcome> outcomes=new LinkedHashMap<>();
-    public MinecraftActions(MinecraftWorld world,ServerObservations observations) { this.world=world; this.observations=observations; }
+    public MinecraftActions(MinecraftWorld world,ServerObservations observations) {
+        this.world=world; this.observations=observations;
+        observations.observeNativeFullMenus(() -> {
+            // Latch proof only. In particular, a cancelled ticket stays cancelled and
+            // an explicit OFF never restarts just because its late reply arrived.
+            if (loggingSwap!=null) loggingSwap.confirmed(observations);
+            if (lateLoggingSwap!=null) lateLoggingSwap.confirmed(observations);
+        });
+    }
     public void context(Context context) { this.context=context; }
     public void enabled(boolean enabled) { if (!enabled) stopMovement(); this.enabled=enabled; }
     public boolean busy() { return pending!=null; }
@@ -77,6 +85,10 @@ public final class MinecraftActions implements ActionPort {
     @Override public boolean supportsInventoryTrash() { return NativeTrashSlot.available(); }
     @Override public String inventoryTrashRejection() { return NativeTrashSlot.preflightRejection(); }
     @Override public String recoveryStatus() {
+        if (loggingSwap!=null && pending instanceof Action.SwapHotbar && context!=null
+            && world.tick()-started>=context.profile().interactionTimeoutTicks)
+            return "단축바 교환 서버 확인 대기 ("+Math.max(0,(world.tick()-started)/20)
+                +"초) — 재클릭 없이 응답이 확인되면 현재 작업을 이어갑니다. F8로 중지 가능";
         if (pending instanceof Action.ConsolidateInventory && consolidationRecovery!=null && consolidationRecovery.recovering())
             return "인벤토리 정리 재확인 중 ("+((consolidationRecovery.remainingTicks(world.tick())+19)/20)
                 +"초 이내) — 같은 클릭을 재전송하지 않고 서버 확인 후 이어갑니다";
@@ -251,8 +263,13 @@ public final class MinecraftActions implements ActionPort {
         if (loggingRecipe!=null) { tickLoggingRecipe(); return; }
         if (loggingSwap!=null) {
             if (loggingSwap.confirmed(observations)) { finish(ActionOutcome.State.SUCCEEDED,"서버가 핫바 교환을 확인했습니다."); return; }
-            if (loggingSwap.generation!=observations.generation() || world.tick()-started>=context.profile().interactionTimeoutTicks)
-                finish(ActionOutcome.State.FAILED,"핫바 교환의 정확한 서버 응답을 기다리고 있습니다.");
+            if (loggingSwap.generation!=observations.generation())
+                finish(ActionOutcome.State.FAILED,"접속이 변경되어 이전 핫바 교환 작업을 보존했습니다.");
+            // A deadline is not evidence that a sent swap failed. Keep this exact
+            // pending ticket and its module phase; a late genuine receipt can finish
+            // it normally. OFF/manual input still cancels through the usual path.
+            // Never replay the click, restart a module, or let another consumer run.
+            stopMovement();
             return;
         }
         if (pending instanceof Action.UseBlock use) {

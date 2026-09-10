@@ -13,6 +13,17 @@ import static org.junit.jupiter.api.Assertions.*;
 class ServerObservationsTest {
     private static ItemData tomato(int count) { return new ItemData(ItemData.TOMATO,count,0,null,false,999); }
 
+    @Test void nativeReceiptObserverCannotBeReplacedOrTriggeredByReducedEvidence() {
+        ServerObservations observations=new ServerObservations();int[] calls={0};
+        assertThrows(NullPointerException.class,() -> observations.observeNativeFullMenus(null));
+        observations.observeNativeFullMenus(() -> calls[0]++);
+        assertThrows(IllegalStateException.class,() -> observations.observeNativeFullMenus(() -> fail("replaced")));
+        observations.menu(0);observations.fullMenu(0);observations.fullMenu(0,List.of(tomato(11)));
+        observations.clear();observations.fullMenu(0,List.of(tomato(13)));
+        assertEquals(0,calls[0],"No native FULL was received; markers and reconnect are not proof");
+        assertThrows(IllegalStateException.class,() -> observations.observeNativeFullMenus(() -> fail("replaced after reconnect")));
+    }
+
     @Test void incompleteSingleSlotEvidenceCannotAdvanceOrOverwriteAnyAcknowledgement() {
         ServerObservations observations=new ServerObservations();
         observations.fullMenu(0,List.of(tomato(10))); long before=observations.sequence();

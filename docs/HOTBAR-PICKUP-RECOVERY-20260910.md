@@ -1,0 +1,47 @@
+# Hotbar pickup receipt stabilization — 2026-09-10
+
+## Observed stop
+
+The running Society client remained connected; automation had stopped on a late
+hotbar-swap acknowledgement fence. This was not a client crash. A retained raw
+server FULL inventory reply proved that the borrowed sword moved to the correct
+inventory slot with its complete native fingerprint and count unchanged. The
+saplings moved to the hotbar with the same native identity, but increased from
+11 to 13 during pickup. Concurrent twig and log pickups were also present.
+The old exact-count predicate rejected the completed exchange.
+
+The retained earlier stair-navigation failure was historical, not the evidence
+for this stop. No navigation rule was weakened for this incident.
+
+## Changes
+
+- Recognize pickup growth at one swap endpoint only when the distinct other
+  item is relocated exactly, including native metadata, count and stack limit.
+  Reject quantity loss, changed metadata/limit, ambiguous identical partners,
+  growth at both endpoints, invalid menu shape and non-inventory endpoints.
+  Other slots do not prove or invalidate this two-endpoint operation, as with
+  the existing exact-swap predicate. Their changes authorize no other action.
+- Require the same connection generation, a later raw FULL reply for the exact
+  menu and an empty packet cursor. Existing exact and native wine-metadata
+  confirmation paths remain intact.
+- Latch genuine confirmation when native FULL packets are recorded, before
+  subsequent packets can evict it from the eight-snapshot history. This callback
+  records proof only; it does not send input, complete cancelled tickets or start
+  automation. Reduced/marker/single-slot evidence cannot trigger it.
+- A nominal swap response timeout now keeps the same pending ticket and module
+  phase instead of failing/resetting the whole routine. Movement stops while
+  waiting; a genuine late reply completes that original request normally. No
+  click replay, automatic reconnect or restart-from-scratch is used.
+- F8, manual takeover, settings interruption and disconnect retain their normal
+  cancellation authority. A late reply cannot turn an explicit OFF back ON.
+
+## Verification
+
+`gradle --offline test build`: **2,082 tests / 153 suites**, zero failures,
+errors or skips. Added endpoint-growth and adversarial receipt tests, proof-latch
+tests, non-native observation rejection, and actual logging-module/engine tests
+for long pending waits and cancellation in continuous and one-shot modes.
+
+These tests and the retained real server reply establish the specific fix. They
+do not establish multi-hour stability of all production, navigation and logging
+paths. Live installation and post-restart results will be recorded separately.
