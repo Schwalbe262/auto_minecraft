@@ -29,6 +29,10 @@ This build also contains the previously committed fixed-six-day wine pass and st
 
 ## Deployment checkpoint
 
-The existing Society instance was normally stopped after a planned pause, with no pending machine-output obligations or borrowed logging hotbar lease recorded. The old mod JAR was backed up locally, the verified new artifact was installed, and the same modpack was relaunched with its existing connection workflow. Server reconnection and live routine checks were still in progress at this documentation checkpoint.
+The existing Society instance was normally stopped after a planned pause, with no pending machine-output obligations or borrowed logging hotbar lease recorded. The old mod JAR was backed up locally, the verified new artifact was installed, and the same modpack was relaunched with its existing connection workflow. Server reconnection was confirmed through fresh native diagnostics.
+
+The live orchard one-shot completed successfully on game day 552 and persisted the next inspection day as 553, with the existing enabled switch, one patch and eight registered fruits preserved. All eight were then immature (native ages zero through five), so this run correctly sent no harvest clicks. The resulting normal closed menu and empty cursor were independently observed after completion. This is a live inspection/scheduling smoke test, not proof of a live ripe-fruit harvest/storage cycle; those action paths passed the regression suite above. No fruit was force-ripened or marked harvested to make the test pass.
+
+Continuous automation was then resumed and a fresh native observation confirmed it connected and running an ordinary hoe right-click harvest. Fruit registrations, commodity stores and feature toggles matched the local pre-update backup exactly; the installed JAR matched the verified artifact hash. This short live check does not establish multi-hour stability or a complete live six-day wine cycle.
 
 Private profiles, traces, registration coordinates, server/account identifiers and launch credentials are not included.
