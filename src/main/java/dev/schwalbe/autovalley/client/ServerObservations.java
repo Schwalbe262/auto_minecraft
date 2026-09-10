@@ -44,8 +44,11 @@ public final class ServerObservations {
         nativeFullMenuObserver=observer;
     }
     public record NativeBlockSnapshot(long seq,Pos pos,BlockState state) { }
+    /** Reduced from an actual block-entity packet before application; never from a live predicted entity. */
+    public record NativeSnowPlantSnapshot(long seq,Pos pos,boolean spruceSapling) { }
     public record NativeChopSnapshot(long seq,Pos pos,int chops,int originalState) { }
     private final ArrayDeque<NativeBlockSnapshot> nativeBlocks=new ArrayDeque<>();
+    private final ArrayDeque<NativeSnowPlantSnapshot> nativeSnowPlants=new ArrayDeque<>();
     private final ArrayDeque<NativeChopSnapshot> nativeChops=new ArrayDeque<>();
     private final NativeDestroyPermits loggingPermits=new NativeDestroyPermits();
     private final Map<Integer,Long> menus=new HashMap<>();
@@ -66,6 +69,14 @@ public final class ServerObservations {
         if (nativeBlocks.size()>4096) nativeBlocks.removeFirst();
     }
     public List<NativeBlockSnapshot> nativeBlocksSince(long before) { return nativeBlocks.stream().filter(s -> s.seq()>before).toList(); }
+    public void snowPlant(Pos pos,boolean spruceSapling) {
+        Objects.requireNonNull(pos);
+        nativeSnowPlants.addLast(new NativeSnowPlantSnapshot(++sequence,pos,spruceSapling));
+        if(nativeSnowPlants.size()>1024)nativeSnowPlants.removeFirst();
+    }
+    public List<NativeSnowPlantSnapshot> nativeSnowPlantsSince(long before) {
+        return nativeSnowPlants.stream().filter(s -> s.seq()>before).toList();
+    }
     public void chop(Pos pos,int chops,int originalState) {
         if (chops<0 || chops>1024 || originalState<0) return;
         nativeChops.addLast(new NativeChopSnapshot(++sequence,pos,chops,originalState));
@@ -160,5 +171,5 @@ public final class ServerObservations {
     }
     public boolean menuSince(int id,long before) { return menus.getOrDefault(id,0L)>before || menus.getOrDefault(-2,0L)>before; }
     public boolean blockSince(Pos pos,long before) { return blocks.getOrDefault(pos,0L)>before; }
-    public void clear() { sequence=0; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); nativeSlots.clear(); nativeBlocks.clear(); nativeChops.clear(); loggingPermits.clear(); }
+    public void clear() { sequence=0; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); nativeSlots.clear(); nativeBlocks.clear(); nativeSnowPlants.clear(); nativeChops.clear(); loggingPermits.clear(); }
 }

@@ -77,9 +77,14 @@ public final class LoggingRules {
             || "minecraft:void_air".equals(block.id())
             || "minecraft:snow".equals(block.id()) && block.properties()!=null && "1".equals(block.properties().get("layers")));
     }
+    /** Native world observation of the exact contained spruce plant; never a placement receipt or replaceable cell. */
+    public static boolean plantedSapling(BlockData block) {
+        return block!=null && (SAPLING.equals(block.id()) || "snowrealmagic:snow".equals(block.id())
+            && block.properties()!=null && SAPLING.equals(block.properties().get("loggingContainedPlant")));
+    }
     /** A coherent 2x2 planting pattern, not proof of a particular generated canopy. */
     public static boolean completePlanting(WorldAccess world,LoggingPlot plot) {
-        return plot.plantingPositions().stream().allMatch(p -> world.loaded(p) && world.block(p).id().equals(SAPLING))
+        return plot.plantingPositions().stream().allMatch(p -> world.loaded(p) && plantedSapling(world.block(p)))
             || plot.plantingPositions().stream().allMatch(p -> world.loaded(p) && world.block(p).id().equals(LOG));
     }
     public static boolean partiallyGrown(WorldAccess world,LoggingPlot plot) {

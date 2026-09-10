@@ -186,11 +186,13 @@ final class NativeLoggingActions {
         if (planting) {
             // Placement is a world postcondition, not an inventory transfer. Concurrent
             // falling-tree pickups may coalesce away the transient held-count decrement.
-            // Only raw server block replies enter this proof; client prediction does not.
+            // Only raw server block/BE replies enter this proof; client prediction does not.
             return plantingConfirmed(started,original.isAir(),singleSnowLayer(original),!held.isEmpty() && held.is(Items.SPRUCE_SAPLING),
                 generation,observations.generation(),beforeSequence,target,
                 observations.nativeBlocksSince(beforeSequence).stream().map(s -> new PlantBlockAck(s.seq(),s.pos(),
-                    s.state().is(Blocks.SPRUCE_SAPLING) || s.state().is(Blocks.SPRUCE_LOG))).toList());
+                    s.state().is(Blocks.SPRUCE_SAPLING) || s.state().is(Blocks.SPRUCE_LOG),
+                    NativeSnowPlanting.singleLayerWrapper(s.state()))).toList(),
+                observations.nativeSnowPlantsSince(beforeSequence).stream().map(s -> new PlantSnowAck(s.seq(),s.pos(),s.spruceSapling())).toList());
         }
         for (var ack:observations.nativeChopsSince(beforeSequence)) {
             Integer before=beforeChops.get(ack.pos());
@@ -200,7 +202,10 @@ final class NativeLoggingActions {
             && (s.state().isAir() && !beforeStates.get(s.pos()).isAir() || beforeStates.get(s.pos()).is(Blocks.SPRUCE_LOG)
                 && LoggingRules.CHOPPED_LOG.equals(BuiltInRegistries.BLOCK.getKey(s.state().getBlock()).toString())));
     }
-    record PlantBlockAck(long sequence,Pos pos,boolean planted) { }
+    record PlantBlockAck(long sequence,Pos pos,boolean planted,boolean snowWrapper) {
+        PlantBlockAck(long sequence,Pos pos,boolean planted) { this(sequence,pos,planted,false); }
+    }
+    record PlantSnowAck(long sequence,Pos pos,boolean spruceSapling) { }
     record LeafBlockAck(long sequence,Pos pos,boolean air) { }
     /** Latest exact-target raw server AIR only; no tree-chop, inventory or client prediction proof. */
     static boolean leafClearedConfirmed(boolean started,boolean originalSpruceLeaf,boolean axeHeld,
@@ -220,15 +225,46 @@ final class NativeLoggingActions {
     /** Reduced raw-block proof, kept pure so stale/latest/connection guards can be tested without a running registry. */
     static boolean plantingConfirmed(boolean started,boolean originalAir,boolean originalSingleSnowLayer,boolean saplingHeld,
             long generation,long currentGeneration,long beforeSequence,Pos target,List<PlantBlockAck> replies) {
+        return plantingConfirmed(started,originalAir,originalSingleSnowLayer,saplingHeld,generation,currentGeneration,
+            beforeSequence,target,replies,List.of());
+    }
+    static boolean plantingConfirmed(boolean started,boolean originalAir,boolean originalSingleSnowLayer,boolean saplingHeld,
+            long generation,long currentGeneration,long beforeSequence,Pos target,List<PlantBlockAck> replies,List<PlantSnowAck> snowReplies) {
         if (!started || (!originalAir && !originalSingleSnowLayer) || !saplingHeld
-            || generation!=currentGeneration || target==null || replies==null) return false;
+            || generation!=currentGeneration || target==null || replies==null || snowReplies==null) return false;
         PlantBlockAck latest=null;
+        Set<Long> targetSequences=new HashSet<>();
         for (PlantBlockAck reply:replies) {
             if (reply==null || reply.pos()==null) return false;
-            if (reply.sequence()>beforeSequence && target.equals(reply.pos())
-                && (latest==null || reply.sequence()>latest.sequence())) latest=reply;
+            if (reply.sequence()>beforeSequence && target.equals(reply.pos())) {
+                if (!targetSequences.add(reply.sequence())) return false;
+                if (latest==null || reply.sequence()>latest.sequence()) latest=reply;
+            }
         }
-        return latest!=null && latest.planted();
+        if (latest==null) return false;
+        if (latest.planted()) return true;
+        if (!latest.snowWrapper()) return false;
+        // Prediction settlement may repeat an identical wrapper BLOCK after its
+        // BE packet. Keep that continuous wrapper incarnation, but never carry
+        // its BE proof across an intervening AIR/foreign/multilayer block.
+        long barrier=beforeSequence;
+        for (PlantBlockAck reply:replies)
+            if (target.equals(reply.pos()) && !reply.snowWrapper() && reply.sequence()<latest.sequence())
+                barrier=Math.max(barrier,reply.sequence());
+        long wrapperStart=latest.sequence();
+        for (PlantBlockAck reply:replies)
+            if (target.equals(reply.pos()) && reply.snowWrapper() && reply.sequence()>barrier)
+                wrapperStart=Math.min(wrapperStart,reply.sequence());
+        PlantSnowAck latestSnow=null;
+        targetSequences.clear();
+        for (PlantSnowAck reply:snowReplies) {
+            if (reply==null || reply.pos()==null) return false;
+            if (reply.sequence()>wrapperStart && target.equals(reply.pos())) {
+                if (!targetSequences.add(reply.sequence())) return false;
+                if (latestSnow==null || reply.sequence()>latestSnow.sequence()) latestSnow=reply;
+            }
+        }
+        return latestSnow!=null && latestSnow.spruceSapling();
     }
     void abort(Minecraft mc,ServerObservations observations) {
         if (!planting && started && !aborted && generation==observations.generation() && mc.getConnection()!=null) {

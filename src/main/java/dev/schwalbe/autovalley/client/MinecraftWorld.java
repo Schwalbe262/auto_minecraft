@@ -83,6 +83,9 @@ public final class MinecraftWorld implements WorldAccess {
         state.getValues().forEach((key,value) -> properties.put(key.getName(),value.toString().toLowerCase(Locale.ROOT)));
         var entity=mc.level.getBlockEntity(bp);
         String blockId=BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+        // Keep the real snow wrapper identity: occupied is not an empty-cell or mining permission.
+        if (NativeSnowPlanting.containedSpruceSapling(state,entity))
+            properties.put("loggingContainedPlant",LoggingRules.SAPLING);
         if (entity instanceof Container || entity instanceof MenuProvider
                 || NativeSmartShippingInventory.expectedSlots(blockId,entity)==SmartShippingRules.STORAGE_SLOTS)
             properties.put("container","true");

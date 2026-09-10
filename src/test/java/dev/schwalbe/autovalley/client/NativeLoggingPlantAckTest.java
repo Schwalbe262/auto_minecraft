@@ -79,4 +79,58 @@ class NativeLoggingPlantAckTest {
             List.of(ack(522,TARGET,true),ack(523,TARGET,false))))
             assertFalse(NativeLoggingActions.plantingConfirmed(true,false,true,true,1,1,520,TARGET,replies));
     }
+
+    private static NativeLoggingActions.PlantBlockAck wrapper(long seq) {
+        return new NativeLoggingActions.PlantBlockAck(seq,TARGET,false,true);
+    }
+    private static NativeLoggingActions.PlantSnowAck snow(long seq,boolean planted) {
+        return new NativeLoggingActions.PlantSnowAck(seq,TARGET,planted);
+    }
+    private static boolean snowConfirmed(List<NativeLoggingActions.PlantBlockAck> blocks,List<NativeLoggingActions.PlantSnowAck> entities) {
+        return NativeLoggingActions.plantingConfirmed(true,false,true,true,1,1,520,TARGET,blocks,entities);
+    }
+
+    @Test void realSnowMagicWrapperNeedsFreshExactServerBlockAndContainedSaplingPacket() {
+        assertTrue(snowConfirmed(List.of(wrapper(522)),List.of(snow(523,true))));
+        assertFalse(snowConfirmed(List.of(wrapper(522)),List.of()));
+        assertFalse(snowConfirmed(List.of(),List.of(snow(523,true))));
+        assertFalse(snowConfirmed(List.of(wrapper(522)),List.of(snow(523,false))));
+        assertFalse(snowConfirmed(List.of(wrapper(519)),List.of(snow(523,true))));
+        assertFalse(snowConfirmed(List.of(wrapper(522)),List.of(snow(520,true))));
+        assertFalse(snowConfirmed(List.of(wrapper(522)),List.of(snow(522,true))));
+        assertFalse(snowConfirmed(List.of(wrapper(522)),List.of(new NativeLoggingActions.PlantSnowAck(523,TARGET.offset(0,1,0),true))));
+    }
+
+    @Test void predictionSettlementMayRepeatAnIdenticalWrapperAfterItsFreshEntityPacket() {
+        assertTrue(snowConfirmed(List.of(wrapper(522),wrapper(524)),List.of(snow(523,true))));
+        assertTrue(snowConfirmed(List.of(wrapper(524),wrapper(522)),List.of(snow(523,true))));
+        assertFalse(snowConfirmed(List.of(wrapper(522),wrapper(524)),List.of(snow(523,true),snow(525,false))));
+    }
+
+    @Test void anyInterveningAirForeignOrMultilayerBlockBreaksTheWrapperProof() {
+        assertFalse(snowConfirmed(List.of(wrapper(522),ack(524,TARGET,false)),List.of(snow(523,true))));
+        assertFalse(snowConfirmed(List.of(wrapper(522),ack(524,TARGET,false),wrapper(526)),List.of(snow(523,true))));
+        assertFalse(snowConfirmed(List.of(wrapper(522),ack(524,TARGET,false),wrapper(526)),List.of(snow(525,true))));
+        assertTrue(snowConfirmed(List.of(wrapper(522),ack(524,TARGET,false),wrapper(526)),List.of(snow(523,true),snow(527,true))));
+        assertTrue(snowConfirmed(List.of(wrapper(522),ack(524,TARGET,true)),List.of(snow(523,false))));
+        assertFalse(snowConfirmed(List.of(ack(524,TARGET,true),wrapper(526)),List.of(snow(523,true))));
+    }
+
+    @Test void nativeWrapperRepliesRetainDispatchConnectionAndLatestNegativeGuards() {
+        var blocks=List.of(wrapper(522));var entities=List.of(snow(523,true));
+        assertFalse(NativeLoggingActions.plantingConfirmed(false,false,true,true,1,1,520,TARGET,blocks,entities));
+        assertFalse(NativeLoggingActions.plantingConfirmed(true,false,false,true,1,1,520,TARGET,blocks,entities));
+        assertFalse(NativeLoggingActions.plantingConfirmed(true,false,true,false,1,1,520,TARGET,blocks,entities));
+        assertFalse(NativeLoggingActions.plantingConfirmed(true,false,true,true,1,2,520,TARGET,blocks,entities));
+        assertFalse(snowConfirmed(blocks,List.of(snow(525,false),snow(523,true))));
+        assertTrue(snowConfirmed(blocks,List.of(snow(525,true),snow(523,false))));
+    }
+
+    @Test void malformedOrDuplicateExactTargetEvidenceCannotConfirmWrapperPlanting() {
+        assertFalse(snowConfirmed(List.of(wrapper(522)),null));
+        assertFalse(snowConfirmed(List.of(wrapper(522)),Arrays.asList((NativeLoggingActions.PlantSnowAck)null)));
+        assertFalse(snowConfirmed(List.of(wrapper(522)),List.of(new NativeLoggingActions.PlantSnowAck(523,null,true))));
+        assertFalse(snowConfirmed(List.of(wrapper(522),wrapper(522)),List.of(snow(523,true))));
+        assertFalse(snowConfirmed(List.of(wrapper(522)),List.of(snow(523,true),snow(523,false))));
+    }
 }

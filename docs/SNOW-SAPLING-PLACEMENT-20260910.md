@@ -14,4 +14,20 @@ The installed mapped Minecraft 1.20.1 implementation was inspected locally: `Sno
 
 ## Automated verification
 
-Full offline `test build` passed **2,382 tests**, with zero failures/errors. This includes 17 additional tests for one-layer classification, blocked thicker/foreign cells, all-four-cell material reservation, no completion before the final server reply, snow/air native hit geometry, exact native replacement destination, and navigation without terrain mutation. Previous obstruction regressions now explicitly use nonreplaceable two-layer snow. Native block-placement behavior itself still requires live verification; pure tests are not a claim of a completed in-game planting run.
+The initial offline `test build` passed **2,382 tests**, with zero failures/errors. This included 17 additional tests for one-layer classification, blocked thicker/foreign cells, all-four-cell material reservation, no completion before the final server reply, snow/air native hit geometry, exact native replacement destination, and navigation without terrain mutation. Previous obstruction regressions now explicitly use nonreplaceable two-layer snow.
+
+## Installed mod compatibility discovered in the first live test
+
+The first live run successfully dispatched ordinary sapling placement on snow, but the installed SnowRealMagic 10.7.0 preserves the snow as `snowrealmagic:snow` containing the plant in a block entity. The plain sapling/log block-only acknowledgement therefore timed out. This was a real test failure, not a successful planting acceptance result.
+
+The follow-up fix recognizes only the exact installed snow block/entity type and contained spruce sapling. Current-world observations retain the original snow block ID and expose a narrow occupancy property; they never make a wrapper replaceable or fabricate an in-flight acknowledgement. Packet evidence is reduced from the actual vanilla block-entity update before application. Completion requires a fresh exact-target snow wrapper block plus its contained-sapling packet, with connection, ordering, negative-update and intervening-block invalidation checks. A duplicate identical wrapper update after the entity packet does not erase valid evidence, but changing away from the wrapper does. Existing vanilla sapling/log confirmation remains unchanged.
+
+The installed Kiwi `ModBlockEntity` implementation uses ordinary `ClientboundBlockEntityDataPacket`. SnowRealMagic encodes default contained states with `Block`, or non-default states with `State`; these fields are parsed strictly without treating unrelated or malformed contents as spruce.
+
+## Follow-up verification and deployment
+
+- The final offline `test build` passed **2,399 tests**, with zero failures, errors or skipped tests. The 17 follow-up tests cover the installed contained-state schema, packet ordering and invalidation, bounded observation history, wrapped-sapling occupancy, remaining-cell reservation and restart behavior.
+- Installed JAR SHA-256: `5D6BD0B909D7E9C85E8CBF23CFBB86D0A145075A0F0F1BC38F1BF31A6903BDD7`. The same modpack instance was normally closed, updated and restarted; no parallel game instance was launched. Previous JAR and profile backups are retained locally.
+- Reconnected to the same server/profile and resumed the existing continuous routine. Passive observations confirmed the logging hotbar lease was restored normally and other crop/storage automation continued without a retained action failure.
+- **Live direct-planting acceptance remains incomplete.** During the first-test failure and follow-up build/restart, the single planted sapling at `(647,75,1597)` became a spruce log while the other three cells remained snow. The existing partial-growth safeguard correctly defers that unfinished 2x2 and prevents a new logging planting pass. This is not evidence that the follow-up wrapper acknowledgement has passed a live test. No obligation, custody field or failed-action fence was cleared by a helper, and that tree was not automatically removed. Clearing this one prematurely grown tree is required before the normal routine can perform the remaining live snow-planting check.
+- No wine production code, user-configured wine interval or wine due-date was edited.

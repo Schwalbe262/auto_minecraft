@@ -61,6 +61,46 @@ class LoggingModuleTest {
         f.advance(); assertEquals(WorkResult.State.IDLE,f.finish().state());
         assertEquals(4,f.plants); assertEquals(0,f.chops); assertFalse(f.profile.loggingRunActive);
     }
+    @Test void snowRealMagicNativeResultsCountAsFourPlantsOnlyAfterTheirIndividualReceipts() {
+        Fixture f=new Fixture(1); f.setPlot(0,"minecraft:snow"); f.add(LoggingRules.SAPLING,4); f.wrapSnowPlants=true;
+        f.until(() -> f.plants==3 && f.pending instanceof Action.PlantSapling);
+        int sent=f.actions.size();
+        for(int i=0;i<200;i++) {
+            f.ticks++; assertEquals(WorkResult.State.BUSY,f.step().state());
+            assertEquals(3,f.plants); assertEquals(sent,f.actions.size());
+            assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingReplantingPlots.size());
+            assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+        f.advance(); assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertEquals(4,f.plants); assertEquals(0,f.chops); assertEquals(0,f.leavesCleared);
+        assertTrue(f.profile.loggingPlots.get(0).plantingPositions().stream().allMatch(p -> f.id(p).equals("snowrealmagic:snow")));
+        assertTrue(LoggingRules.completePlanting(f,f.profile.loggingPlots.get(0))); assertFalse(f.profile.loggingRunActive);
+    }
+    @Test void restartObservesTheExistingContainedSaplingAndReservesOnlyItsThreeMissingNeighbours() {
+        Fixture f=new Fixture(1); f.setPlot(0,"minecraft:snow"); Pos corner=f.profile.loggingPlots.get(0).corner();
+        f.blocks.put(corner,"snowrealmagic:snow"); f.containedPlants.put(corner,LoggingRules.SAPLING);
+        f.profile.loggingRunActive=true; f.profile.loggingRemainingPlots.add(corner); f.profile.loggingReplantingPlots.add(corner);
+        f.add(LoggingRules.SAPLING,2); f.restart();
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state()); assertTrue(f.actions.isEmpty());
+        assertEquals(AutomationModule.ResourceReadiness.WAITING,f.module.resourceReadiness(f.context));
+        f.add(LoggingRules.SAPLING,1); f.ticks+=1200;
+        assertEquals(AutomationModule.ResourceReadiness.READY,f.module.resourceReadiness(f.context));
+        assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(3,f.plants); assertEquals(0,f.chops);
+        assertTrue(f.actions.stream().filter(a -> a instanceof Action.PlantSapling)
+            .noneMatch(a -> ((Action.PlantSapling)a).pos().equals(corner)));
+        assertTrue(LoggingRules.completePlanting(f,f.profile.loggingPlots.get(0))); assertFalse(f.profile.loggingRunActive);
+    }
+    @Test void unprovenOrForeignSnowContentsRemainObstructionsAndDoNotClearReplantingObligations() {
+        for(String inner:List.of("","minecraft:oak_sapling",LoggingRules.LOG)) {
+            Fixture f=new Fixture(1); f.setPlot(0,LoggingRules.SAPLING); Pos corner=f.profile.loggingPlots.get(0).corner();
+            f.blocks.put(corner,"snowrealmagic:snow"); if(!inner.isEmpty()) f.containedPlants.put(corner,inner);
+            f.profile.loggingRunActive=true; f.profile.loggingRemainingPlots.add(corner); f.profile.loggingReplantingPlots.add(corner);
+            assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state(),inner); assertTrue(f.actions.isEmpty());
+            assertFalse(LoggingRules.completePlanting(f,f.profile.loggingPlots.get(0)));
+            assertTrue(f.profile.loggingRunActive); assertEquals(List.of(corner),f.profile.loggingReplantingPlots);
+            assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
     @Test void transientForeignPlotBlockPreservesTheEntireBatchAndResumesAfterBoundedRetry() {
         Fixture f=new Fixture(6); f.continuous(); f.profile.loggingRunActive=true;
         List<Pos> remaining=f.profile.loggingPlots.stream().map(LoggingPlot::corner).toList();
@@ -2228,6 +2268,7 @@ class LoggingModuleTest {
         Context context;
         final ItemData[] inventory=new ItemData[36]; final Map<Pos,String> blocks=new HashMap<>(); final Set<Pos> unloaded=new HashSet<>();
         final Map<Pos,String> snowLayers=new HashMap<>();
+        final Map<Pos,String> containedPlants=new HashMap<>(); boolean wrapSnowPlants;
         final Map<Pos,ItemData[]> chests=new LinkedHashMap<>(); final Pos tablePos=new Pos(10,64,0),woodPos=new Pos(12,64,0),shippingPos=new Pos(14,64,0);
         final List<Action> actions=new ArrayList<>(); final List<String> events=new ArrayList<>();
         final List<Double> plantingReaches=new ArrayList<>();
@@ -2322,10 +2363,13 @@ class LoggingModuleTest {
                 assertTrue(LoggingRules.replaceablePlantingCell(block(plant.pos()))); assertTrue(inventory[selected].is(LoggingRules.SAPLING));
                 assertTrue(profile.loggingReplantingPlots.stream().anyMatch(p -> profile.loggingPlots.stream()
                     .anyMatch(plot -> plot.corner().equals(p) && plot.plantingPositions().contains(plant.pos()))));
-                remove(selected,1); blocks.put(plant.pos(),LoggingRules.SAPLING); confirmed=1; events.add("plant:"+(++plants));
+                boolean wrapped=wrapSnowPlants && id(plant.pos()).equals("minecraft:snow");
+                remove(selected,1); blocks.put(plant.pos(),wrapped ? "snowrealmagic:snow" : LoggingRules.SAPLING);
+                if(wrapped) containedPlants.put(plant.pos(),LoggingRules.SAPLING);
+                confirmed=1; events.add("plant:"+(++plants));
             } else if(action instanceof Action.TrashLogging trash) {
                 assertEquals(trash.expected(),inventory[trash.inventoryIndex()]);
-                assertTrue(profile.loggingPlots.stream().flatMap(p -> p.plantingPositions().stream()).allMatch(p -> id(p).equals(LoggingRules.SAPLING) || id(p).equals(LoggingRules.LOG)));
+                assertTrue(profile.loggingPlots.stream().flatMap(p -> p.plantingPositions().stream()).allMatch(p -> LoggingRules.plantedSapling(block(p)) || id(p).equals(LoggingRules.LOG)));
                 assertTrue(LoggingRules.waste(trash.expected()));
                 if(trash.expected().is(LoggingRules.SAPLING)) assertTrue(count(LoggingRules.SAPLING)-trash.expected().count()>=profile.loggingSaplingReserve);
                 confirmed=trash.expected().count(); inventory[trash.inventoryIndex()]=ItemData.EMPTY; trashed+=confirmed; events.add("trash:"+trash.expected().id());
@@ -2383,7 +2427,9 @@ class LoggingModuleTest {
         public PlayerState player() { return new PlayerState(playerX,playerY,playerZ,0,0,grounded,false,20,20,selected,true,true); }
         public BlockData block(Pos pos) {
             if(rejectUnloadedBlockReads) assertTrue(loaded(pos),"An unknown cell must be observed before reading its block");
-            return new BlockData(pos,id(pos),id(pos).equals("minecraft:snow") ? Map.of("layers",snowLayers.getOrDefault(pos,"1")) : Map.of());
+            Map<String,String> properties=id(pos).equals("minecraft:snow") ? Map.of("layers",snowLayers.getOrDefault(pos,"1"))
+                : id(pos).equals("snowrealmagic:snow") && containedPlants.containsKey(pos) ? Map.of("loggingContainedPlant",containedPlants.get(pos)) : Map.of();
+            return new BlockData(pos,id(pos),properties);
         }
         public boolean loaded(Pos pos) { return !unloaded.contains(pos); }
         public boolean canStand(Pos pos) { return true; }

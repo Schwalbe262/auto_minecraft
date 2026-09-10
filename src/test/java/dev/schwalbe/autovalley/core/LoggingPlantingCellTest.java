@@ -30,4 +30,18 @@ class LoggingPlantingCellTest {
         assertFalse(LoggingRules.replaceablePlantingCell(null));
         assertFalse(LoggingRules.replaceablePlantingCell(new BlockData(CELL,null,Map.of())));
     }
+
+    @Test void onlyTheExactNativeObservedSnowWrapperCountsAsAnExistingSpruceSapling() {
+        BlockData wrapped=new BlockData(CELL,"snowrealmagic:snow",Map.of("loggingContainedPlant",LoggingRules.SAPLING));
+        assertTrue(LoggingRules.plantedSapling(wrapped));
+        assertFalse(LoggingRules.replaceablePlantingCell(wrapped),"An existing contained plant may never be planted over");
+        assertTrue(LoggingRules.plantedSapling(new BlockData(CELL,LoggingRules.SAPLING,Map.of())));
+        for(String inner:List.of("minecraft:air","minecraft:oak_sapling",LoggingRules.LOG,"unknown",""))
+            assertFalse(LoggingRules.plantedSapling(new BlockData(CELL,"snowrealmagic:snow",Map.of("loggingContainedPlant",inner))),inner);
+        assertFalse(LoggingRules.plantedSapling(new BlockData(CELL,"snowrealmagic:snow",Map.of())));
+        assertFalse(LoggingRules.plantedSapling(new BlockData(CELL,"snowrealmagic:snow",null)));
+        for(String id:List.of("minecraft:snow","minecraft:air","minecraft:snow_block","foreign:snow"))
+            assertFalse(LoggingRules.plantedSapling(new BlockData(CELL,id,Map.of("loggingContainedPlant",LoggingRules.SAPLING))),id);
+        assertFalse(LoggingRules.plantedSapling(null));
+    }
 }

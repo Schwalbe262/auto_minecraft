@@ -9,7 +9,7 @@ import dev.schwalbe.autovalley.core.ItemData;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 
-/** Passively observes vanilla/installed TreeChop replies; never adds a server channel. */
+/** Passively observes vanilla/installed TreeChop and SnowRealMagic replies; never adds a server channel. */
 public final class PacketObserver extends ChannelDuplexHandler {
     private final ServerObservations observations;
     private final BooleanSupplier blockAttacks;
@@ -40,6 +40,10 @@ public final class PacketObserver extends ChannelDuplexHandler {
         ItemStack changedSlot=message instanceof ClientboundContainerSetSlotPacket packet
             ? new ServerObservations.NativeMenuSnapshot(0,List.of(packet.getItem()),ItemStack.EMPTY).items().get(0) : null;
         var chop=message instanceof ClientboundCustomPayloadPacket packet ? NativeLoggingPackets.chop(packet) : null;
+        // Parse a detached boolean from the server packet before its mutable NBT
+        // can be applied to a predicted/live block entity. Unrelated types are not proof.
+        Boolean snowPlant=message instanceof ClientboundBlockEntityDataPacket packet
+            ? NativeSnowPlanting.packetPlant(packet.getType(),packet.getTag()) : null;
         // The vanilla listener enqueues application first; our confirmation follows on the same main thread.
         super.channelRead(ctx,message);
         if (message instanceof ClientboundContainerSetSlotPacket packet) later(() -> {
@@ -60,6 +64,8 @@ public final class PacketObserver extends ChannelDuplexHandler {
             later(() -> packet.runUpdates((pos,state) -> {
                 var observed=MinecraftWorld.pos(pos); observations.block(observed,state); recorder.blockUpdate(recordingEpoch,observed);
             }));
+        else if (message instanceof ClientboundBlockEntityDataPacket packet)
+            later(() -> observations.snowPlant(MinecraftWorld.pos(packet.getPos()),Boolean.TRUE.equals(snowPlant)));
         if (chop!=null) later(() -> observations.chop(chop.pos(),chop.chops(),chop.originalState()));
     }
     private void later(Runnable observation) {
