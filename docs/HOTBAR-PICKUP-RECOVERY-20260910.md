@@ -91,3 +91,19 @@ loop into another request or inverse swap; manual OFF still revokes continuation
 Combined verification: **2,101 tests / 155 suites**, zero failures/errors/skips.
 Final artifact SHA-256:
 `5E7002F0325024C638742661BDE8AFCE57E3EC35EFF34100A126B9DDC8800044`.
+
+## Vacant native slot normalization
+
+The next live attempt sent exactly one refresh and received the real FULL
+successfully. A further inspection established that the sword matched all three
+fingerprints (saved, current and server). Only the empty source slot differed:
+the shared native EMPTY sentinel and the observer's detached zero-count AIR
+serialized differently despite both projecting to no item. Vacant endpoints now
+normalize to one empty representation; occupied fingerprints remain exact.
+
+The final regression run passed **2,102 tests / 155 suites**, zero failures,
+errors or skips. An initial new-test method declaration typo was corrected before
+this successful run; no production rule was relaxed to fix compilation.
+
+Deployment artifact SHA-256:
+`A88A2B221CFA463CBE93EA490775E7DD892A5D31F8EAC4BFC5132932D352FE97`.

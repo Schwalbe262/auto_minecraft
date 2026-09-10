@@ -19,6 +19,14 @@ class LoggingRestorationReceiptTest {
     @Test void exactCurrentCustodyAndNewRawFullCanResolvePreparedOrParkedLeases(){
         for(var stage:LoggingHotbarLease.Stage.values())assertTrue(proof(LEASE.withStage(stage),5,101,true,EMPTY,ORIGINAL,EMPTY,ORIGINAL));
     }
+    @Test void nativeEmptyAndDetachedZeroCountAirHaveTheSameVacantCustody() {
+        var live=new LoggingRestorationReceipt.Endpoint(ItemData.EMPTY,"native-empty-serialization");
+        var raw=new LoggingRestorationReceipt.Endpoint(ItemData.EMPTY,"detached-air-serialization");
+        assertEquals(live,raw);
+        assertTrue(proof(LEASE,5,101,true,live,ORIGINAL,raw,ORIGINAL));
+        var occupied=new LoggingRestorationReceipt.Endpoint(item(LoggingRules.SAPLING,1),"native-empty-serialization");
+        assertNotEquals(live,occupied);
+    }
     @Test void saplingsMayRemainAtTheSourceOnlyWithExactLiveAndPacketAgreement(){
         var saplings=new LoggingRestorationReceipt.Endpoint(item(LoggingRules.SAPLING,9),"saplings-9");
         assertTrue(proof(LEASE,5,101,true,saplings,ORIGINAL,saplings,ORIGINAL));
