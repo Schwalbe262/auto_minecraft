@@ -45,3 +45,23 @@ for long pending waits and cancellation in continuous and one-shot modes.
 These tests and the retained real server reply establish the specific fix. They
 do not establish multi-hour stability of all production, navigation and logging
 paths. Live installation and post-restart results will be recorded separately.
+
+## Manual restoration custody
+
+The player subsequently returned the borrowed item to its original hotbar slot
+while the old PREPARED lease still existed. A separate recovery path now clears
+that custody obligation only after the latest raw native inventory FULL confirms
+both current endpoints, the exact saved original fingerprint/count, and an empty
+cursor. Same-connection proof must follow the last automatic swap or manual slot
+input. A new connection needs its own real FULL; old-generation snapshots cannot
+be carried over. Older matching views cannot override a newer differing FULL.
+
+No pending/late action or failure can be bypassed by this query. It sends no input,
+does not change a cancelled/failed outcome, and does not mark logging complete.
+Checkpoint failure rolls back the lease. The previous no-observed-swap/no-replay
+regression remains unchanged with an unknown adapter defaulting to no proof.
+
+Final combined `test build`: **2,094 tests / 154 suites**, zero failures/errors/skips.
+
+Artifact SHA-256:
+`7841D85E6DB1CEFCC7298DDB87026881A6A86F0FAC428D8AFB244020A59E50EF`.

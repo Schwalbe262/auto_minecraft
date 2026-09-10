@@ -1500,6 +1500,70 @@ class LoggingModuleTest {
         assertEquals(WorkResult.State.BLOCKED,f.step().state()); assertEquals(sent,f.actions.size());
     }
 
+    @Test void serverProvedManualRestorationSettlesPreparedAndParkedCustodyWithoutReplayingTheSwap() {
+        for (LoggingHotbarLease.Stage stage:List.of(LoggingHotbarLease.Stage.PREPARED,LoggingHotbarLease.Stage.PARKED)) {
+            for (int saplings:new int[]{0,4}) {
+                Fixture f=manuallyRestoredLeaseFixture(stage); LoggingHotbarLease lease=f.profile.loggingHotbarLease;
+                f.inventory[lease.sourceIndex()]=item(LoggingRules.SAPLING,saplings);
+                f.profile.loggingSaplingReserve=saplings;
+                f.authoritativeRestoredLease=lease;
+                ActionOutcome cancelled=f.outcome;
+
+                assertEquals(WorkResult.State.BUSY,f.step().state());
+                assertNull(f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+                assertTrue(f.actions.isEmpty()); assertSame(cancelled,f.outcome);
+                assertTrue(f.profile.nextEligibleDay.isEmpty(),"Custody proof is not logging completion");
+                assertEquals(List.of("checkpoint:active"),f.events);
+
+                assertEquals(WorkResult.State.IDLE,f.finish().state());
+                assertFalse(f.profile.loggingRunActive); assertEquals(0,f.swaps); assertTrue(f.actions.isEmpty());
+                assertEquals(lease.original(),f.inventory[lease.hotbarSlot()]);
+                assertEquals(saplings,f.count(LoggingRules.SAPLING)); assertSame(cancelled,f.outcome);
+            }
+        }
+    }
+
+    @Test void physicalManualRestorationWithoutServerProofLeavesPreparedAndParkedLeasesUnchanged() {
+        for (LoggingHotbarLease.Stage stage:List.of(LoggingHotbarLease.Stage.PREPARED,LoggingHotbarLease.Stage.PARKED)) {
+            Fixture f=manuallyRestoredLeaseFixture(stage); LoggingHotbarLease lease=f.profile.loggingHotbarLease;
+            assertEquals(WorkResult.State.BLOCKED,f.step().state());
+            assertSame(lease,f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+            assertTrue(f.actions.isEmpty()); assertTrue(f.events.isEmpty()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+
+    @Test void serverRestorationProofCannotOverrideChangedLiveOriginalFingerprintOrForeignSourceItem() {
+        for (int changed=0;changed<3;changed++) {
+            Fixture f=manuallyRestoredLeaseFixture(LoggingHotbarLease.Stage.PREPARED);
+            LoggingHotbarLease lease=f.profile.loggingHotbarLease; f.authoritativeRestoredLease=lease;
+            if (changed==0) f.inventory[lease.hotbarSlot()]=item("minecraft:torch",54);
+            else if (changed==1) f.fingerprintEpoch++;
+            else f.inventory[lease.sourceIndex()]=item("minecraft:diamond",1);
+
+            assertEquals(WorkResult.State.BLOCKED,f.step().state());
+            assertSame(lease,f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+            assertTrue(f.actions.isEmpty()); assertTrue(f.events.isEmpty()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+
+    @Test void failedManualRestorationCheckpointPreservesTheLeaseAndCancelledAction() {
+        Fixture f=manuallyRestoredLeaseFixture(LoggingHotbarLease.Stage.PREPARED);
+        LoggingHotbarLease lease=f.profile.loggingHotbarLease; f.authoritativeRestoredLease=lease;
+        ActionOutcome cancelled=f.outcome; f.failNextCheckpoint=true;
+
+        assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertSame(lease,f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+        assertTrue(f.actions.isEmpty()); assertTrue(f.events.isEmpty()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertSame(cancelled,f.outcome);
+    }
+
+    private static Fixture manuallyRestoredLeaseFixture(LoggingHotbarLease.Stage stage) {
+        Fixture f=cleanupFixture(); f.inventory[0]=item("minecraft:torch",55);
+        f.profile.loggingHotbarLease=new LoggingHotbarLease(9,0,f.inventory[0],f.loggingItemFingerprint(0),stage);
+        f.outcome=new ActionOutcome(ActionOutcome.State.CANCELLED,"old borrow cancelled");
+        return f;
+    }
+
     @Test void reconnectAfterBorrowAcknowledgementUsesParkedEvidenceAndEventuallyRestoresTheItem() {
         Fixture f=new Fixture(1); f.fillHotbar(); ItemData original=f.inventory[0];
         f.until(() -> f.pending instanceof Action.SwapHotbar && f.profile.loggingHotbarLease!=null);
@@ -1705,6 +1769,7 @@ class LoggingModuleTest {
         final Set<Pos> leafProofStances=new HashSet<>(),rejectedActualLeafStances=new HashSet<>(),rejectedPredictedLeafStances=new HashSet<>();
         final Map<Pos,Pos> leafAtStance=new HashMap<>();final List<Pos> leafStanceVisits=new ArrayList<>();
         boolean grounded=true,forcedNativeBusy; String nativeFence; ItemData cursor=ItemData.EMPTY;
+        LoggingHotbarLease authoritativeRestoredLease;
         final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
         final Map<Pos,Integer> nativeChops=new HashMap<>(); int strokesPerTree=2;
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
@@ -1895,6 +1960,9 @@ class LoggingModuleTest {
         public boolean mayPlace(int index,ItemData item) { return opened!=null && !opened.equals(tablePos) && index<chests.get(opened).length; }
         public boolean busy() { return pending!=null || forcedNativeBusy; }
         public String pauseReason() { return nativeFence; }
+        public boolean loggingHotbarRestored(LoggingHotbarLease lease) {
+            return authoritativeRestoredLease!=null ? authoritativeRestoredLease.equals(lease) : ActionPort.super.loggingHotbarRestored(lease);
+        }
         public boolean supportsInventoryTrash() { return true; }
         public long submit(Action action) { assertNull(pending); actions.add(action); pending=action; outcome=new ActionOutcome(ActionOutcome.State.PENDING,""); return ++sequence; }
         public ActionOutcome outcome(long ticket) { return outcome; }

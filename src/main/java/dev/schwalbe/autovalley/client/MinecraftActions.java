@@ -52,6 +52,7 @@ public final class MinecraftActions implements ActionPort {
     private NativeLoggingActions loggingAction,lateLoggingAction;
     private NativeLoggingRecipe loggingRecipe,lateLoggingRecipe;
     private NativeLoggingSwap loggingSwap,lateLoggingSwap;
+    private long lastHotbarSwapGeneration=-1,lastHotbarSwapSequence=-1;
     private String loggingFailure;
     private long loggingFailureGeneration;
     private final LinkedHashMap<Long,ActionOutcome> outcomes=new LinkedHashMap<>();
@@ -84,6 +85,45 @@ public final class MinecraftActions implements ActionPort {
     @Override public boolean supportsMovingHarvest() { return true; }
     @Override public boolean supportsInventoryTrash() { return NativeTrashSlot.available(); }
     @Override public String inventoryTrashRejection() { return NativeTrashSlot.preflightRejection(); }
+    /** A manual slot/key event invalidates older custody views, without changing a ticket or lease. */
+    public void manualHotbarCustodyInteraction() {
+        lastHotbarSwapGeneration=observations.generation();lastHotbarSwapSequence=observations.sequence();
+    }
+    @Override public boolean loggingHotbarRestored(LoggingHotbarLease lease) {
+        // This query cannot settle an outstanding operation. The ordinary start/action
+        // fences must already have established that no possibly-sent request remains.
+        if (context==null || context.profile().loggingHotbarLease!=lease || pending!=null
+            || lateLoggingSwap!=null || lateLoggingAction!=null || lateLoggingRecipe!=null
+            || lateInventoryReply!=null || lateTrashReply!=null || loggingFailure!=null
+            || consolidationFailure!=null || trashFailure!=null || mc.player==null || mc.level==null
+            || mc.player.containerMenu!=mc.player.inventoryMenu || mc.player.inventoryMenu.containerId!=0
+            || mc.player.inventoryMenu.slots.size()!=46 || !mc.player.inventoryMenu.getCarried().isEmpty()
+            || lease==null || lease.sourceIndex()<9 || lease.sourceIndex()>35 || lease.hotbarSlot()<0 || lease.hotbarSlot()>8)
+            return false;
+        var slots=mc.player.inventoryMenu.slots;
+        var sources=slots.stream().filter(s->s.container==mc.player.getInventory() && s.getContainerSlot()==lease.sourceIndex()).toList();
+        var destinations=slots.stream().filter(s->s.container==mc.player.getInventory() && s.getContainerSlot()==lease.hotbarSlot()).toList();
+        if (sources.size()!=1 || destinations.size()!=1) return false;
+        int source=sources.get(0).index,destination=destinations.get(0).index;
+        if (source!=lease.sourceIndex() || destination!=36+lease.hotbarSlot()) return false;
+        var liveSource=restorationEndpoint(sources.get(0).getItem());
+        var liveHotbar=restorationEndpoint(destinations.get(0).getItem());
+        // Current custody differs from historical click completion: a newer FULL
+        // invalidates an older matching view, even if the live menu predicts it again.
+        var full=LoggingRestorationReceipt.latest(observations.fullNativeMenuSnapshotsSince(0,-1));
+        if (full==null || !full.carried().isEmpty()) return false;
+        var items=full.items();if(items.size()!=46)return false;
+        return LoggingRestorationReceipt.proves(lease,observations.generation(),lastHotbarSwapGeneration,lastHotbarSwapSequence,
+            full.seq(),true,liveSource,liveHotbar,restorationEndpoint(items.get(source)),restorationEndpoint(items.get(destination)));
+    }
+    private static LoggingRestorationReceipt.Endpoint restorationEndpoint(net.minecraft.world.item.ItemStack item) {
+        try {
+            String raw=item.save(new net.minecraft.nbt.CompoundTag()).toString();
+            String fingerprint=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            return new LoggingRestorationReceipt.Endpoint(MinecraftWorld.item(item),fingerprint);
+        } catch (java.security.NoSuchAlgorithmException unavailable) { return null; }
+    }
     @Override public String recoveryStatus() {
         if (loggingSwap!=null && pending instanceof Action.SwapHotbar && context!=null
             && world.tick()-started>=context.profile().interactionTimeoutTicks)
@@ -208,6 +248,7 @@ public final class MinecraftActions implements ActionPort {
             // an unrelated suspended logging queue. Do not use the generic
             // "some inventory changed" fallback for production ingredients.
             loggingSwap=new NativeLoggingSwap(mc.player,swap,observations);
+            lastHotbarSwapGeneration=loggingSwap.generation;lastHotbarSwapSequence=loggingSwap.beforeSequence;
             confirmedClick(mc.player.inventoryMenu.containerId,source,swap.hotbarSlot(),ClickType.SWAP);
         } else if (action instanceof Action.QuickMove transfer) {
             confirmedClick(transfer.containerId(),transfer.slot(),0,ClickType.QUICK_MOVE);

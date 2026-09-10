@@ -912,6 +912,10 @@ public final class LoggingModule implements AutomationModule {
         if (lease.stage()==LoggingHotbarLease.Stage.RESTORING) {
             if (!restored(c,lease)) throw new IllegalStateException("단축바 복원 요청의 결과가 불명확합니다. 같은 교환을 재전송하지 않습니다.");
             saveLease(c,null);
+        } else if (restored(c,lease) && c.actions().loggingHotbarRestored(lease)) {
+            // Manual restoration can precede a missed PARKED checkpoint. Clear
+            // only this proved custody obligation; never replay or acknowledge the old swap.
+            saveLease(c,null);
         } else if (parked(c,lease)) {
             if (lease.stage()==LoggingHotbarLease.Stage.PREPARED) saveLease(c,lease.withStage(LoggingHotbarLease.Stage.PARKED));
         } else throw new IllegalStateException("임시 단축바 교환의 결과가 불명확합니다. 원래 아이템을 확인하세요.");

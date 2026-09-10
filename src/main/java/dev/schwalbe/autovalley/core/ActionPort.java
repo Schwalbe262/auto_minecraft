@@ -14,6 +14,12 @@ public interface ActionPort {
     default String pauseReason() { return null; }
     /** Explicit manual resume may clear an already-resolved failure, never a late-ACK fence. */
     default String startRejection() { return pauseReason(); }
+    /**
+     * Read-only server proof of current restored custody for this exact lease, with no unresolved action.
+     * The native FULL must follow same-connection swap dispatch/manual slot input and match the live endpoints.
+     * This settles only the borrowed slot, never an old action outcome or permission to restart.
+     */
+    default boolean loggingHotbarRestored(LoggingHotbarLease lease) { return false; }
     /** Informational bounded same-ticket recovery; null does not clear any action fence. */
     default String recoveryStatus() { return null; }
     /** Target-scoped unconfirmed artisan use; does not stop unrelated automation. */

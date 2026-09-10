@@ -242,6 +242,7 @@ public final class ClientRuntime {
     }
     /** A manual slot/key event can take over an automation-owned menu while OFF. */
     public void manualStockContainerInteraction() {
+        actions.manualHotbarCustodyInteraction();
         if(mc.player!=null)manualTomatoStock.interaction(context,world.menu(),actions.ownedContainerPosition());
     }
     public void openSettings() { pause("설정 중"); mc.setScreen(new ValleyScreen()); }
