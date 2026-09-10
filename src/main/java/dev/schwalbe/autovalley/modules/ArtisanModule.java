@@ -9,6 +9,9 @@ public final class ArtisanModule implements AutomationModule {
     private enum Pending { CLOSE, OPEN_SCAN, OPEN_FETCH, WITHDRAW, SWAP, SELECT, USE }
     private enum Equipment { READY, PENDING, NO_SLOT }
     private final Feature feature;
+    private final HotbarWorkspace workspace;
+    private WorkResult finishing;
+    private boolean finishingSleepSafe;
     private Stage stage=Stage.START,afterClose;
     private Pending pending;
     private long ticket=-1,verifySince,settledSince=-1,dispatchDay=Long.MIN_VALUE;
@@ -33,6 +36,7 @@ public final class ArtisanModule implements AutomationModule {
         if (feature!=Feature.SEED_MAKER && feature!=Feature.CRYSTAL_COPY)
             throw new IllegalArgumentException("Artisan feature must be SEED_MAKER or CRYSTAL_COPY");
         this.feature=feature;
+        this.workspace=new HotbarWorkspace(feature);
     }
     @Override public Feature feature() { return feature; }
     @Override public int priority() { return feature==Feature.SEED_MAKER ? 72 : 74; }
@@ -45,9 +49,30 @@ public final class ArtisanModule implements AutomationModule {
 
     @Override public WorkResult tick(Context c) {
         sleepSafeDefer=false;
-        try { return advance(c); }
+        try {
+            if(c.profile().workHotbarLease!=null && !workspace.owns(c))
+                return WorkResult.blocked("다른 작업의 임시 단축바 복원이 먼저 필요합니다");
+            if(workspace.owns(c) && c.session().workHotbarOwner!=feature) {
+                WorkResult recovered=workspace.restore(c);
+                return recovered==null ? WorkResult.busy("이전 단축바 복원 완료 — 가공 상태 재확인") : recovered;
+            }
+            WorkResult waiting=workspace.pending(c);
+            if(waiting!=null)return waiting;
+            if(finishing!=null)return finishWorkspace(c);
+            WorkResult result=advance(c);
+            if(result.state()!=WorkResult.State.BUSY && workspace.owns(c)) {
+                finishing=result;finishingSleepSafe=sleepSafeDefer;
+                return finishWorkspace(c);
+            }
+            return result;
+        }
         catch (RuntimeException failure) { return fail("가공 상태를 안전하게 저장·확인하지 못했습니다: "+failure.getClass().getSimpleName()
             +(failure instanceof IllegalStateException ? " — "+failure.getMessage() : "")); }
+    }
+    private WorkResult finishWorkspace(Context c) {
+        WorkResult restored=workspace.restore(c);if(restored!=null)return restored;
+        WorkResult result=finishing;finishing=null;sleepSafeDefer=finishingSleepSafe;finishingSleepSafe=false;
+        return result;
     }
     private WorkResult advance(Context c) {
         if (ticket>=0) {
@@ -283,7 +308,7 @@ public final class ArtisanModule implements AutomationModule {
             if (unsafe!=null) return fail(unsafe);
             return deferClean(c,"미확정 기계는 재클릭하지 않았습니다. 나머지 가공 작업과 보유품 정리를 마치고 보류합니다");
         }
-        reset();return WorkResult.idle();
+        resetJob();return WorkResult.idle();
     }
 
     private String phaseLabel() {
@@ -375,12 +400,12 @@ public final class ArtisanModule implements AutomationModule {
         return Equipment.READY;
     }
     private WorkResult deferHotbarShortage(Context c) {
-        // This branch has sent neither a slot change nor a machine use. A free
-        // main-inventory cell does not authorize borrowing a player's hotbar item.
-        // Only the typed preflight shortage may take the clean feature retry path.
         if (pending!=null || uncertaintySkipRejection(c)!=null)
             return fail("단축바 빈칸 대기 전에 미확인 조작·메뉴·빌린 슬롯을 확인해야 합니다");
-        return deferClean(c,status("작업용 단축바에 빈칸 1개가 필요합니다. 도구·음식·블록은 이동하지 않고 이 작업만 보류합니다"));
+        WorkResult prepared=workspace.prepare(c);
+        if(prepared.state()==WorkResult.State.DEFERRED)
+            return deferClean(c,status("단축바에 빈칸 1개를 준비할 수 없습니다. "+prepared.message()));
+        return prepared;
     }
     private int chooseHotbar(Context c,boolean forFeeding) {
         if (forFeeding) {
@@ -409,7 +434,7 @@ public final class ArtisanModule implements AutomationModule {
         String detailed=message;
         if (!uncertainJobs.isEmpty()) detailed+=" — "+String.join(" / ",uncertainJobs.entrySet().stream()
             .map(e->e.getKey()+": "+String.join("; ",e.getValue())).toList());
-        c.actions().stopMovement();reset();sleepSafeDefer=true;return WorkResult.deferred(detailed);
+        c.actions().stopMovement();resetJob();sleepSafeDefer=true;return WorkResult.deferred(detailed);
     }
     /** A target-scoped sent-use uncertainty never grants a skip across a global unsafe boundary. */
     private String uncertaintySkipRejection(Context c) {
@@ -430,14 +455,17 @@ public final class ArtisanModule implements AutomationModule {
     @Override public boolean sleepSafeDeferred(Context c) {
         return sleepSafeDefer && ticket<0 && !c.actions().busy() && c.actions().pauseReason()==null
             && c.world().player().onGround() && c.world().menu()!=null && !c.world().menu().container()
-            && c.world().menu().carried().empty() && c.profile().loggingHotbarLease==null && !MachineOutputLedger.hasPending(c);
+            && c.world().menu().carried().empty() && c.profile().loggingHotbarLease==null && c.profile().workHotbarLease==null && !MachineOutputLedger.hasPending(c);
     }
     private WorkResult deferAfterCleanup(Context c,String message) {
         c.actions().stopMovement();deferredAfterCleanup=message;stage=Stage.OUTPUT;
         return WorkResult.busy(status("보유 완성품·재료 정리 후 보류"));
     }
-    private WorkResult fail(String message) { reset();return WorkResult.blocked(message); }
+    private WorkResult fail(String message) { resetJob();return WorkResult.blocked(message); }
     @Override public void reset() {
+        workspace.reset();finishing=null;finishingSleepSafe=false;resetJob();
+    }
+    private void resetJob() {
         sleepSafeDefer=false;
         if (outputStorage!=null) outputStorage.reset();if (inputReturn!=null) inputReturn.reset();
         stage=Stage.START;pending=null;ticket=-1;job=null;recipe=null;inputStore=null;jobs=List.of();machines=List.of();sources=List.of();

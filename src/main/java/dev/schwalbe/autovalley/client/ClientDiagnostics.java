@@ -68,6 +68,9 @@ public final class ClientDiagnostics {
         report.put("recordingStatus",runtime.recordingStatus());
         report.put("status",runtime.status());
         report.put("failureHistory",runtime.failureHistory());
+        var workLease=runtime.profile().workHotbarLease;
+        report.put("workHotbar",workLease==null ? Map.of() : Map.of("owner",workLease.owner().name(),
+            "stage",workLease.stage().name(),"hotbarSlot",workLease.hotbarSlot(),"parkedInventorySlot",workLease.sourceIndex()));
         report.put("navigation",runtime.navigationReport());
         report.put("storageSurvey",runtime.storageSurveyReport());
         report.put("pendingShipment",runtime.pendingShipmentReport());

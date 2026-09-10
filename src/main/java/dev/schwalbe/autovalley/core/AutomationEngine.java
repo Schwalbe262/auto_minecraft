@@ -19,6 +19,7 @@ public final class AutomationEngine {
     private AutomationModule active;
     /** Attribution only; never selects or resumes a module. */
     private Feature diagnosticFeature;
+    private HotbarWorkspace hotbarRecovery;
     private State state=State.OFF;
     private RunMode mode=RunMode.CONTINUOUS;
     private Feature oneShotFeature;
@@ -49,7 +50,9 @@ public final class AutomationEngine {
         AutomationModule selected=modules.stream().filter(module -> module.feature()==feature).findFirst().orElse(null);
         if (selected==null) { stop(c,State.PAUSED,"Selected one-shot job is unavailable"); return; }
         active=selected;
-        c.session().oneShotFeature=feature;
+        // An interrupted work slot is restored before entering a read-only or
+        // unrelated one-shot's permissions; no ordinary module runs meanwhile.
+        c.session().oneShotFeature=hotbarRecovery==null ? feature : null;
         status="Starting one-shot " + feature;
     }
     private boolean begin(Context c) {
@@ -63,6 +66,14 @@ public final class AutomationEngine {
         try { MachineOutputLedger.reconcile(c); }
         catch (RuntimeException e) { stop(c,State.ERROR,"Could not save machine output verification; no work started"); return false; }
         if (MachineOutputLedger.hasPending(c)) { status=pendingOutputMessage(c); return false; }
+        if(c.profile().workHotbarLease!=null) {
+            HotbarLease lease=c.profile().workHotbarLease;
+            if(!lease.valid() || c.profile().loggingHotbarLease!=null) {
+                status="임시 단축바 복원 기록을 먼저 확인해야 합니다.";return false;
+            }
+            hotbarRecovery=new HotbarWorkspace(lease.owner());
+            state=State.RUNNING;status="이전 작업의 단축바부터 복원합니다.";return true;
+        }
         AutomationModule logging=null;
         if (c.profile().loggingRunActive) {
             if (mode==RunMode.ONCE && oneShotFeature!=Feature.LOGGING
@@ -96,6 +107,8 @@ public final class AutomationEngine {
         deferred.clear(); productionCooldowns.clear(); clearResourceWait(); loggingSuspended=false; lastTick=Long.MIN_VALUE;
         active=null;
         diagnosticFeature=null;
+        hotbarRecovery=null;
+        c.session().workHotbarOwner=null;
         c.session().oneShotFeature=null;
         c.session().activeMachineOutputId=null;
         state=next;
@@ -116,6 +129,23 @@ public final class AutomationEngine {
         if(productionCooldowns.entrySet().removeIf(entry->entry.getValue().day()!=Math.floorDiv(c.world().dayTime(),24000L)))retryAt=0;
         if (c.world().tick()<retryAt) return;
         try {
+            if(hotbarRecovery!=null) {
+                WorkResult restored=hotbarRecovery.restore(c);
+                if(restored==null) {
+                    hotbarRecovery=null;
+                    // Re-enter the ordinary explicit start checks after custody
+                    // is settled, retaining the operator's selected run mode.
+                    if(mode==RunMode.ONCE)startOnce(c,oneShotFeature);else start(c);
+                } else if(restored.state()==WorkResult.State.BUSY) {
+                    state=State.RUNNING;status=restored.message();
+                } else stop(c,State.PAUSED,restored.message());
+                return;
+            }
+            if(c.profile().workHotbarLease!=null && (active==null
+                || active.feature()!=c.profile().workHotbarLease.owner()
+                || c.session().workHotbarOwner!=c.profile().workHotbarLease.owner())) {
+                stop(c,State.PAUSED,"임시 단축바 복원 전 다른 작업을 시작하지 않았습니다.");return;
+            }
             MachineOutputLedger.reconcile(c);
             if (MachineOutputLedger.hasPending(c) && (active==null || !MachineOutputLedger.ownsActive(c,active.feature()))) {
                 stop(c,State.PAUSED,pendingOutputMessage(c)); return;
@@ -130,6 +160,7 @@ public final class AutomationEngine {
                 diagnosticFeature=active.feature();
                 WorkResult result=active.tick(c);
                 failureHistory.recordWork(c.world().tick(),active.feature(),result);
+                if(pauseForWorkHotbar(c,active,result))return;
                 if(result.state()!=WorkResult.State.COOLDOWN)productionCooldowns.remove(active);
                 if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) {
@@ -174,6 +205,7 @@ public final class AutomationEngine {
                 diagnosticFeature=module.feature();
                 WorkResult result=module.tick(c);
                 failureHistory.recordWork(c.world().tick(),module.feature(),result);
+                if(pauseForWorkHotbar(c,module,result))return;
                 if(result.state()!=WorkResult.State.COOLDOWN)productionCooldowns.remove(module);
                 if (pauseForActions(c)) return;
                 if (result.state()==WorkResult.State.BUSY) { active=module; state=State.RUNNING; status=result.message(); return; }
@@ -219,6 +251,7 @@ public final class AutomationEngine {
         diagnosticFeature=active.feature();
         WorkResult result=active.tick(c);
         failureHistory.recordWork(c.world().tick(),active.feature(),result);
+        if(pauseForWorkHotbar(c,active,result))return;
         if(result.state()!=WorkResult.State.COOLDOWN)productionCooldowns.remove(active);
         if (pauseForActions(c)) return;
         if (result.state()==WorkResult.State.RESOURCE_WAIT && !grantResourceWait(c,active,result)) return;
@@ -304,7 +337,7 @@ public final class AutomationEngine {
     private static boolean resourceBoundary(Context c) {
         return c.world().player().onGround() && !c.actions().busy() && c.world().menu()!=null
             && !c.world().menu().container() && c.world().menu().carried().empty()
-            && c.profile().loggingHotbarLease==null && !MachineOutputLedger.hasPending(c);
+            && c.profile().loggingHotbarLease==null && c.profile().workHotbarLease==null && !MachineOutputLedger.hasPending(c);
     }
     private void clearResourceWait() { resourceWaiting=null; resourceWaitMessage=null; resourceCheckAt=0; }
     private void suspendDisabledLoggingAtYield(Context c,AutomationModule module) {
@@ -326,7 +359,7 @@ public final class AutomationEngine {
                 && resourceWaiting.resourceReadiness(c)!=AutomationModule.ResourceReadiness.UNSAFE;
         if (!c.world().player().onGround() || c.actions().busy() || c.world().menu()==null || c.world().menu().container()
             || !c.world().menu().carried().empty() || c.profile().loggingRunActive && !loggingAllowsOtherRetry
-            || c.profile().loggingHotbarLease!=null || MachineOutputLedger.hasPending(c)) {
+            || c.profile().loggingHotbarLease!=null || c.profile().workHotbarLease!=null || MachineOutputLedger.hasPending(c)) {
             stop(c,State.PAUSED,"미완료 조작 또는 독점 작업을 보존하고 중지했습니다: "+result.message()); return false;
         }
         DeferredRetry old=deferred.get(module);
@@ -377,6 +410,13 @@ public final class AutomationEngine {
         if (result.state()==WorkResult.State.RESOURCE_WAIT && resourceWaiting==module) return false;
         stop(c,State.PAUSED,"미완료 벌목을 보존하고 중지했습니다: "+result.message());
         return true;
+    }
+    private boolean pauseForWorkHotbar(Context c,AutomationModule module,WorkResult result) {
+        HotbarLease lease=c.profile().workHotbarLease;
+        if(lease==null)return false;
+        if(result.state()==WorkResult.State.BUSY && module.feature()==lease.owner()
+            && c.session().workHotbarOwner==lease.owner())return false;
+        stop(c,State.PAUSED,"임시 단축바 복원을 보존하고 중지했습니다: "+result.message());return true;
     }
     private static String unfinishedLoggingMessage() {
         return "미완료 벌목이 있습니다. 벌목을 다시 실행하거나 활성화해 먼저 마무리하세요.";
