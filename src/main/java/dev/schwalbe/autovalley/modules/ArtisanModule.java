@@ -6,7 +6,7 @@ import java.util.*;
 /** One bounded service pass over registered artisan jobs; native actions own every inventory mutation. */
 public final class ArtisanModule implements AutomationModule {
     private enum Stage { START, JOB, TARGET, CHOOSE, SOURCE, SNAPSHOT, FETCH_SOURCE, FETCH, APPROACH, EQUIP, VERIFY, PICKUP, OUTPUT, RETURN_INPUT }
-    private enum Pending { CLOSE, OPEN_SCAN, OPEN_FETCH, WITHDRAW, SWAP, SELECT, USE }
+    private enum Pending { CLOSE, OPEN_SCAN, OPEN_FETCH, WITHDRAW, SWAP, CLEAR_OUTPUT, SELECT, USE }
     private enum Equipment { READY, PENDING, NO_SLOT }
     private final Feature feature;
     private final HotbarWorkspace workspace;
@@ -40,6 +40,7 @@ public final class ArtisanModule implements AutomationModule {
     }
     @Override public Feature feature() { return feature; }
     @Override public int priority() { return feature==Feature.SEED_MAKER ? 72 : 74; }
+    private boolean collectOnly() { return feature==Feature.CRYSTAL_COPY; }
     private Pos target() { return machines.get(machineIndex); }
     private static long day(Context c) { return Math.floorDiv(c.world().dayTime(),24000L); }
     private String status(String phase) {
@@ -96,6 +97,7 @@ public final class ArtisanModule implements AutomationModule {
                     snapshot(c);stage=Stage.FETCH;
                 }
                 case SWAP,SELECT -> stage=Stage.EQUIP;
+                case CLEAR_OUTPUT -> stage=Stage.CHOOSE;
                 case USE -> {
                     cycleAdvanced=result.proof()==ActionOutcome.Proof.ARTISAN_CYCLE_ADVANCED;
                     verifySince=c.world().tick();stage=Stage.VERIFY;
@@ -120,20 +122,25 @@ public final class ArtisanModule implements AutomationModule {
                 if (nav==Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"등록한 가공 기계에 접근할 수 없습니다");
                 if (nav!=Navigation.Result.ARRIVED) return WorkResult.busy(status("기계로 이동"));
                 BlockData block=machine(c);
-                if (block.flag("working")) {
+                if (block.flag("working") || collectOnly() && !block.flag("mature")) {
                     schedule(c,1);machineIndex++;break;
                 }
                 stage=Stage.CHOOSE;
             }
             case CHOOSE -> {
+                if (collectOnly()) {
+                    // The player supplies each original. Carried crystals and legacy
+                    // jade jobs never authorize feeding or replacing that original.
+                    grade=-1;feeding=false;
+                    if (chooseHotbar(c,false)<0) return deferHotbarShortage(c);
+                    stage=Stage.APPROACH;break;
+                }
                 grade=carriedGrade(c);
                 boolean emptyHandCollection=grade<0 && recipe.sameInputAndOutput() && machine(c).flag("mature");
                 // Check capacity before surveying or withdrawing ingredients. Recheck
                 // again in EQUIP before dispatch; no tool is borrowed to create it.
                 if (chooseHotbar(c,!emptyHandCollection)<0) return deferHotbarShortage(c);
                 if (grade>=0) { feeding=true;stage=Stage.APPROACH;break; }
-                // A crystalarium already contains its seed crystal. Empty-hand
-                // collection can bootstrap the first refill without any source trip.
                 if (emptyHandCollection) {
                     feeding=false;stage=Stage.APPROACH;break;
                 }
@@ -199,7 +206,7 @@ public final class ArtisanModule implements AutomationModule {
                 c.actions().stopMovement();
                 if (c.world().menu().container() || !c.world().menu().carried().empty()) return fail("가공 전 상자와 커서를 비우세요");
                 BlockData block=machine(c);
-                if (block.flag("working")) { schedule(c,1);machineIndex++;stage=Stage.TARGET;break; }
+                if (block.flag("working") || collectOnly() && !block.flag("mature")) { schedule(c,1);machineIndex++;stage=Stage.TARGET;break; }
                 if (feeding && ingredient(c,grade)==null) { stage=Stage.CHOOSE;break; }
                 Equipment equipment=equip(c);
                 if (equipment==Equipment.NO_SLOT) return deferHotbarShortage(c);
@@ -238,9 +245,9 @@ public final class ArtisanModule implements AutomationModule {
                     ? feeding && block.flag("mature") && !block.flag("working")
                     : !block.flag("mature") && block.flag("working")==feeding;
                 if (stateConfirmed && inputConfirmed) {
-                    if (feeding) {
+                    if (feeding || collectOnly()) {
                         if (dispatchDay==Long.MIN_VALUE) return fail("가공 전송 날짜가 없어 다음 확인일을 저장할 수 없습니다");
-                        scheduleAt(c,Math.addExact(dispatchDay,recipe.cycleDays()));stockReady=false;scanPasses=0;
+                        scheduleAt(c,Math.addExact(dispatchDay,collectOnly() ? 1 : recipe.cycleDays()));stockReady=false;scanPasses=0;
                     }
                     stage=collected ? Stage.PICKUP : Stage.TARGET;
                     if (!collected) machineIndex++;
@@ -249,7 +256,7 @@ public final class ArtisanModule implements AutomationModule {
             }
             case PICKUP -> {
                 if (outputCount(c)>=expectedOutput) {
-                    if (feeding) { machineIndex++;stage=Stage.TARGET; }
+                    if (feeding || collectOnly()) { machineIndex++;stage=Stage.TARGET; }
                     else stage=Stage.CHOOSE;
                     break;
                 }
@@ -265,15 +272,15 @@ public final class ArtisanModule implements AutomationModule {
                 stage=Stage.RETURN_INPUT;
             }
             case RETURN_INPUT -> {
-                if (!recipe.sameInputAndOutput()) {
+                if (!collectOnly() && !recipe.sameInputAndOutput()) {
                     WorkResult result=inputReturn.tick(c);
                     if (result.state()!=WorkResult.State.IDLE) return result;
                 }
                 if (deferredAfterCleanup!=null) return deferClean(c,deferredAfterCleanup);
                 jobIndex++;stage=Stage.JOB;
-                String bonusId=recipe.separateBonusOutputId();
-                if (bonusId!=null && ModuleSupport.count(c,i -> i.is(bonusId))>0)
-                    return WorkResult.busy(status("보너스 비취는 인벤토리에 남겨 둡니다 — 이 작업은 자동 보관·판매하지 않습니다"));
+                if (collectOnly() && ModuleSupport.count(c,i -> CrystalCollection.accepts(i)
+                        && !CrystalCollection.BASE_OUTPUT_IDS.contains(i.id()) && !CrystalCollection.outputIds(c.profile(),job).contains(i.id()))>0)
+                    return WorkResult.busy(status("미등록 결정 보너스는 인벤토리에 남겨 둡니다 — 이 작업은 자동 보관·판매하지 않습니다"));
             }
         }
         return WorkResult.busy(status(phaseLabel()));
@@ -285,21 +292,23 @@ public final class ArtisanModule implements AutomationModule {
         // reserve another multi-tick 0/0 pass that starves every later module.
         while (jobIndex<jobs.size()) {
             job=jobs.get(jobIndex);recipe=job.recipe();
-            inputStore=CommodityStorageRules.store(c.profile(),job.inputStoreId());
+            inputStore=collectOnly() ? null : CommodityStorageRules.store(c.profile(),job.inputStoreId());
             CommodityStore output=CommodityStorageRules.store(c.profile(),job.outputStoreId());
-            if (inputStore==null || output==null || !inputStore.items().contains(recipe.inputId()) || !output.items().contains(recipe.outputId()))
+            Set<String> outputs=collectOnly() ? CrystalCollection.outputIds(c.profile(),job) : Set.of(recipe.outputId());
+            if (output==null || outputs.isEmpty() || !collectOnly() && (inputStore==null
+                    || !inputStore.items().contains(recipe.inputId()) || !output.items().contains(recipe.outputId())))
                 return fail("가공 작업의 입력·출력 품목 저장고를 등록하세요");
             boolean due=job.machines().stream().anyMatch(p -> eligible(c,p));
             boolean held=c.world().inventory().stream().map(ItemSlot::item)
-                .anyMatch(item -> item.is(recipe.inputId()) || item.is(recipe.outputId()));
+                .anyMatch(item -> collectOnly() ? !item.empty() && outputs.contains(item.id()) : item.is(recipe.inputId()) || item.is(recipe.outputId()));
             if (!due && !held) { jobIndex++;continue; }
             if (due && Math.floorMod(c.world().dayTime(),24000)<240)
                 return WorkResult.busy(status("아침 기계 상태 갱신 대기"));
             machines=job.machines().stream().filter(p -> eligible(c,p))
                 .sorted(Comparator.comparingDouble(p -> c.world().player().distance(p))).toList();
             machineIndex=0;scanPasses=0;stockReady=false;stock.clear();stockDay=-1;
-            outputStorage=new CommodityStorageModule(feature,job.outputStoreId(),Set.of(recipe.outputId()));
-            inputReturn=new CommodityStorageModule(feature,job.inputStoreId(),Set.of(recipe.inputId()));
+            outputStorage=new CommodityStorageModule(feature,job.outputStoreId(),outputs);
+            inputReturn=collectOnly() ? null : new CommodityStorageModule(feature,job.inputStoreId(),Set.of(recipe.inputId()));
             stage=machines.isEmpty() ? Stage.OUTPUT : Stage.TARGET;
             return WorkResult.busy(status(phaseLabel()));
         }
@@ -321,7 +330,8 @@ public final class ArtisanModule implements AutomationModule {
             default -> "등록한 배치 처리 중";
         };
     }
-    private boolean eligible(Context c,Pos p) { return day(c)>=c.profile().nextEligibleDay.getOrDefault(job.scheduleKey(p),Long.MIN_VALUE); }
+    private String scheduleKey(Pos p) { return collectOnly() ? CrystalCollection.scheduleKey(job,p) : job.scheduleKey(p); }
+    private boolean eligible(Context c,Pos p) { return day(c)>=c.profile().nextEligibleDay.getOrDefault(scheduleKey(p),Long.MIN_VALUE); }
     private BlockData machine(Context c) {
         if (!c.world().loaded(target())) throw new IllegalStateException("Machine is not loaded");
         BlockData block=c.world().block(target());
@@ -334,7 +344,7 @@ public final class ArtisanModule implements AutomationModule {
         scheduleAt(c,Math.addExact(day(c),days));
     }
     private void scheduleAt(Context c,long nextDay) {
-        String key=job.scheduleKey(target());Long prior=c.profile().nextEligibleDay.put(key,nextDay);
+        String key=scheduleKey(target());Long prior=c.profile().nextEligibleDay.put(key,nextDay);
         try { c.checkpoint().run(); }
         catch (RuntimeException failure) {
             if (prior==null) c.profile().nextEligibleDay.remove(key);else c.profile().nextEligibleDay.put(key,prior);
@@ -345,7 +355,8 @@ public final class ArtisanModule implements AutomationModule {
         return item!=null && item.is(recipe.inputId()) && item.quality()==selectedGrade && selectedGrade>=0 && selectedGrade<=3;
     }
     private int inputCount(Context c,int selectedGrade) { return ModuleSupport.count(c,i -> input(i,selectedGrade)); }
-    private int outputCount(Context c) { return ModuleSupport.count(c,i -> i.is(recipe.outputId())); }
+    private int outputCount(Context c) { return ModuleSupport.count(c,i -> collectOnly()
+        ? !i.empty() && CrystalCollection.BASE_OUTPUT_IDS.contains(i.id()) : i.is(recipe.outputId())); }
     private int emptySlots(Context c) { return 36-(int)c.world().inventory().stream().filter(s -> !s.item().empty()).count(); }
     private ItemSlot ingredient(Context c,int selectedGrade) {
         return c.world().inventory().stream().filter(s -> s.inventoryIndex()>=0 && s.inventoryIndex()<36
@@ -402,10 +413,27 @@ public final class ArtisanModule implements AutomationModule {
     private WorkResult deferHotbarShortage(Context c) {
         if (pending!=null || uncertaintySkipRejection(c)!=null)
             return fail("단축바 빈칸 대기 전에 미확인 조작·메뉴·빌린 슬롯을 확인해야 합니다");
+        if (clearCollectedWorkingSlot(c))
+            return WorkResult.busy(status("회수한 결정을 일반 인벤토리 빈칸으로 옮기고 빈손 재준비"));
         WorkResult prepared=workspace.prepare(c);
         if(prepared.state()==WorkResult.State.DEFERRED)
             return deferClean(c,status("단축바에 빈칸 1개를 준비할 수 없습니다. "+prepared.message()));
         return prepared;
+    }
+    /** A pickup may occupy the one leased empty hand. Only that slot's known crystal can move. */
+    private boolean clearCollectedWorkingSlot(Context c) {
+        if (!collectOnly() || feeding || !workspace.owns(c)) return false;
+        HotbarLease lease=c.profile().workHotbarLease;
+        if (lease.stage()!=HotbarLease.Stage.PARKED || !c.actions().workHotbarParked(lease)) return false;
+        ItemSlot collected=c.world().inventory().stream().filter(s -> s.player() && s.inventoryIndex()==lease.hotbarSlot())
+            .findFirst().orElse(null);
+        if (collected==null || !CrystalCollection.accepts(collected.item())) return false;
+        ItemSlot empty=c.world().inventory().stream().filter(s -> s.player() && s.inventoryIndex()>=9 && s.inventoryIndex()<36
+            && s.inventoryIndex()!=lease.sourceIndex() && s.item().empty()).findFirst().orElse(null);
+        if (empty==null) return false;
+        c.actions().stopMovement();
+        submit(c,new Action.SwapHotbar(empty.inventoryIndex(),lease.hotbarSlot()),Pending.CLEAR_OUTPUT);
+        return true;
     }
     private int chooseHotbar(Context c,boolean forFeeding) {
         if (forFeeding) {

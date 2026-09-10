@@ -74,7 +74,9 @@ public final class WorkHotbarLeasePolicy {
         for(ArtisanJob job:c.profile().artisanJobs.values()) {
             if(job==null)continue;ArtisanRecipe recipe=ArtisanRecipe.find(job.recipeId());
             if(recipe==null || recipe.feature()!=lease.owner())continue;
-            for(String id:List.of(job.inputStoreId(),job.outputStoreId())) {
+            List<String> stores=recipe.feature()==Feature.CRYSTAL_COPY
+                ? List.of(job.outputStoreId()) : List.of(job.inputStoreId(),job.outputStoreId());
+            for(String id:stores) {
                 CommodityStore store=CommodityStorageRules.store(c.profile(),id);
                 if(store!=null && store.containers().contains(pos))return true;
             }
@@ -88,7 +90,8 @@ public final class WorkHotbarLeasePolicy {
         if(profile.artisanJobs==null)return false;
         for(ArtisanJob job:profile.artisanJobs.values()) {
             if(job==null)continue;ArtisanRecipe recipe=ArtisanRecipe.find(job.recipeId());
-            if(recipe!=null && recipe.feature()==owner && (item.is(recipe.inputId()) || item.is(recipe.outputId())))return true;
+            if(recipe!=null && recipe.feature()==owner && (owner==Feature.CRYSTAL_COPY
+                ? CrystalCollection.accepts(item) : item.is(recipe.inputId()) || item.is(recipe.outputId())))return true;
         }
         return false;
     }

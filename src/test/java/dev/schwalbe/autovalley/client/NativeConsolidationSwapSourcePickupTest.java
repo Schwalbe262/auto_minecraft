@@ -58,10 +58,24 @@ class NativeConsolidationSwapSourcePickupTest {
         assertEquals(WAIT,f.tx.acknowledge(new Snapshot(f.items),Set.of(),Set.of(19)));
     }
     @Test void arbitraryItemsAndProtectedSlotsCannotGetNativePickupAuthority() {
-        Fixture f=new Fixture(false);f.reply();f.items.set(19,item("minecraft:diamond",1));
+        Fixture f=new Fixture(false);f.reply();f.items.set(19,item("minecraft:torch",1));
         assertTrue(f.classify().isEmpty());assertEquals(WAIT,f.acknowledge());
         f.items.set(19,wine(1));
         assertTrue(NativeInventoryConsolidation.concurrentProductionAdditions(f.tx,new Snapshot(f.items),19).isEmpty());
+    }
+    @Test void actualCrystalOutputsCannotHideAMissingSwapOrReplaceTheBorrowedScratchOriginal() {
+        for(String id:CrystalCollection.OUTPUT_IDS) {
+            Stack output=item(id,2);
+            Fixture exact=new Fixture(false);exact.reply();exact.items.set(19,output);
+            assertEquals(Set.of(19),exact.classify(),id);assertEquals(NEXT,exact.acknowledge(),id);
+            assertEquals(output,exact.tx.expectedLive().items().get(19),id);
+            Fixture missing=new Fixture(false);missing.items.set(19,output);
+            assertEquals(WAIT,missing.acknowledge(),"Output recognition cannot supply a missing outward SWAP: "+id);
+            Fixture borrowed=new Fixture(true);borrowed.reply();borrowed.items.set(19,output);
+            assertTrue(borrowed.classify().isEmpty(),id);assertEquals(WAIT,borrowed.acknowledge(),id);
+            Fixture protectedSlot=new Fixture(false);protectedSlot.reply();protectedSlot.items.set(19,output);
+            assertTrue(NativeInventoryConsolidation.concurrentProductionAdditions(protectedSlot.tx,new Snapshot(protectedSlot.items),19).isEmpty(),id);
+        }
     }
     @Test void otherUnexpectedChangesMustStillBeRejected() {
         Fixture f=new Fixture(false);f.reply();f.items.set(20,tomato(49));

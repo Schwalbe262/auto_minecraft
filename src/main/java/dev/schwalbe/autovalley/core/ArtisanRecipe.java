@@ -9,7 +9,11 @@ public record ArtisanRecipe(String id, Feature feature, String machineId, String
         "society:seed_maker", "society:ancient_fruit", 3, "society:ancient_fruit_seed", 1, 1);
     public static final ArtisanRecipe JADE_CRYSTAL = new ArtisanRecipe("jade_crystal", Feature.CRYSTAL_COPY,
         "society:crystalarium", "society:jade", 1, "society:jade", 2, 5);
-    public static final List<ArtisanRecipe> SUPPORTED = List.of(ANCIENT_SEED, JADE_CRYSTAL);
+    /** Collection-only job descriptor: air denotes no automatic ingredient or single fixed output. */
+    public static final ArtisanRecipe CRYSTAL_COLLECTION = new ArtisanRecipe("crystal_collection", Feature.CRYSTAL_COPY,
+        CrystalCollection.MACHINE_ID, "minecraft:air", 1, "minecraft:air", 2, 1);
+    // jade_crystal remains readable for old profiles/receipts, but CRYSTAL_COPY always uses collection-only rules.
+    public static final List<ArtisanRecipe> SUPPORTED = List.of(ANCIENT_SEED, JADE_CRYSTAL, CRYSTAL_COLLECTION);
 
     public ArtisanRecipe {
         if (id==null || id.isBlank() || feature==null || machineId==null || inputId==null || outputId==null

@@ -24,7 +24,7 @@ class WorkHotbarLeasePolicyTest {
         f.items.set(2,JADE);assertNull(SafetyPolicy.rejection(new Action.SwapHotbar(2,1),f.context));
         for(Action wrong:List.of(new Action.SwapHotbar(9,1),new Action.SwapHotbar(10,2),new Action.SwapHotbar(0,1)))
             assertNotNull(SafetyPolicy.rejection(wrong,f.context));
-        f.items.set(10,item("minecraft:diamond",1));assertNotNull(SafetyPolicy.rejection(new Action.SwapHotbar(10,1),f.context));
+        f.items.set(10,item("minecraft:bread",1));assertNotNull(SafetyPolicy.rejection(new Action.SwapHotbar(10,1),f.context));
     }
     @Test void restorationWorksWhenOwnerIsOffOrJobRemovedButOnlyFromExactParkedCustody() {
         Fixture f=new Fixture();f.stage(HotbarLease.Stage.RESTORING);f.items.set(1,JADE);
@@ -53,15 +53,17 @@ class WorkHotbarLeasePolicyTest {
                 new Action.ThrowRotten(0,9,INPUT),new Action.ConsolidateInventory(null,false),new Action.CraftFireLogs(INPUT)))
             assertNotNull(SafetyPolicy.rejection(forbidden,f.context));
     }
-    @Test void aContainerWithdrawalCannotMergeIntoTheParkedOriginalEvenWhenItIsAnOwnerIngredient() {
+    @Test void custodyStillGuardsMergingButCannotGrantCrystalOriginalWithdrawal() {
         Fixture f=new Fixture();f.original(JADE);f.open=true;f.stored=JADE;
         assertNotNull(SafetyPolicy.rejection(new Action.QuickMove(1,0),f.context));
-        f.original(ORIGINAL);assertNull(SafetyPolicy.rejection(new Action.QuickMove(1,0),f.context));
+        f.original(ORIGINAL);assertNull(WorkHotbarLeasePolicy.rejection(new Action.QuickMove(1,0),f.context));
+        assertFalse(CommodityStorageRules.withdrawalAllowed(f.context,INPUT,JADE));
+        assertFalse(CommodityStorageRules.withdrawalAllowed(f.context,OUTPUT,JADE));
     }
     @Test void onlyOwnConfiguredContainersAndMachinePurposeAreAdmittedWhileOtherFeaturesAreEnabled() {
         Fixture f=new Fixture();f.items.set(1,JADE);f.profile.enabled.put(Feature.SEED_MAKER,true);f.session.oneShotFeature=null;
         f.profile.artisanJobs.put("seed",new ArtisanJob("seed",ArtisanRecipe.ANCIENT_SEED.id(),List.of(OTHER_MACHINE),"seed_in","seed_out"));
-        assertTrue(WorkHotbarLeasePolicy.containerAllowed(f.context,INPUT));assertTrue(WorkHotbarLeasePolicy.containerAllowed(f.context,OUTPUT));
+        assertFalse(WorkHotbarLeasePolicy.containerAllowed(f.context,INPUT));assertTrue(WorkHotbarLeasePolicy.containerAllowed(f.context,OUTPUT));
         assertFalse(WorkHotbarLeasePolicy.containerAllowed(f.context,new Pos(99,64,99)));
         assertNull(WorkHotbarLeasePolicy.rejection(new Action.UseBlock(MACHINE,Action.Use.ARTISAN),f.context));
         assertNotNull(WorkHotbarLeasePolicy.rejection(new Action.UseBlock(OTHER_MACHINE,Action.Use.ARTISAN),f.context));
@@ -91,6 +93,49 @@ class WorkHotbarLeasePolicyTest {
         Fixture f=new Fixture();HotbarLease lease=f.profile.workHotbarLease;f.profile.workHotbarLease=null;f.session.workHotbarOwner=null;
         assertNull(SafetyPolicy.rejection(new Action.SwapHotbar(10,2),f.context));
         assertFalse(f.workHotbarRestored(lease));assertFalse(f.workHotbarParked(lease));
+    }
+
+    @Test void allExactCrystalOutputsAreWorkingItemsWithoutGrantingUnrelatedOwnersOrUnknownIds() {
+        assertEquals(112,CrystalCollection.OUTPUT_IDS.size());
+        for(ArtisanRecipe recipe:List.of(ArtisanRecipe.JADE_CRYSTAL,ArtisanRecipe.CRYSTAL_COLLECTION)) {
+            Fixture f=new Fixture();f.profile.artisanJobs.put("jade",new ArtisanJob("jade",recipe.id(),List.of(MACHINE),"in","out"));
+            for(String id:CrystalCollection.OUTPUT_IDS) {
+                ItemData output=item(id,64);f.items.set(10,output);
+                assertTrue(WorkHotbarLeasePolicy.workingItem(f.profile,Feature.CRYSTAL_COPY,output),id);
+                assertNull(WorkHotbarLeasePolicy.rejection(new Action.SwapHotbar(10,1),f.context),id);
+                assertFalse(WorkHotbarLeasePolicy.workingItem(f.profile,Feature.SEED_MAKER,output),id);
+            }
+            for(String id:List.of("minecraft:bread","society:pristine_torch","other:ruby","society:ruby_extra"))
+                assertFalse(WorkHotbarLeasePolicy.workingItem(f.profile,Feature.CRYSTAL_COPY,item(id,1)),id);
+            assertFalse(WorkHotbarLeasePolicy.workingItem(f.profile,Feature.CRYSTAL_COPY,item("society:ruby",65)));
+            f.profile.artisanJobs.clear();
+            assertFalse(WorkHotbarLeasePolicy.workingItem(f.profile,Feature.CRYSTAL_COPY,JADE));
+        }
+    }
+
+    @Test void collectionOnlyLeaseMayOpenOnlyOutputWhileSeedLeaseRetainsBothConfiguredStores() {
+        for(ArtisanRecipe recipe:List.of(ArtisanRecipe.JADE_CRYSTAL,ArtisanRecipe.CRYSTAL_COLLECTION,ArtisanRecipe.ANCIENT_SEED)) {
+            Fixture f=new Fixture();f.profile.artisanJobs.clear();
+            f.profile.artisanJobs.put("job",new ArtisanJob("job",recipe.id(),List.of(MACHINE),"in","out"));
+            f.profile.workHotbarLease=new HotbarLease(recipe.feature(),9,1,ORIGINAL,HASH,HotbarLease.Stage.PARKED);
+            f.session.workHotbarOwner=recipe.feature();
+            assertEquals(recipe.feature()==Feature.SEED_MAKER,WorkHotbarLeasePolicy.containerAllowed(f.context,INPUT),recipe.id());
+            assertTrue(WorkHotbarLeasePolicy.containerAllowed(f.context,OUTPUT),recipe.id());
+            assertFalse(WorkHotbarLeasePolicy.containerAllowed(f.context,new Pos(99,64,99)),recipe.id());
+        }
+    }
+
+    @Test void aCollectedCrystalCanVacateTheLeasedHotbarIntoAnEmptyMainSlotWithoutTouchingOriginalCustody() {
+        for(String id:CrystalCollection.OUTPUT_IDS) {
+            Fixture f=new Fixture();f.profile.loggingAxeHotbarSlot=2;f.items.set(1,item(id,2));
+            assertNull(SafetyPolicy.rejection(new Action.SwapHotbar(10,1),f.context),id);
+            assertNotNull(SafetyPolicy.rejection(new Action.SwapHotbar(9,1),f.context),id);
+            assertNotNull(SafetyPolicy.rejection(new Action.SwapHotbar(0,1),f.context),id);
+            assertNotNull(SafetyPolicy.rejection(new Action.SwapHotbar(f.profile.loggingAxeHotbarSlot,1),f.context),id);
+            f.items.set(10,item("minecraft:bread",1));
+            assertNotNull(SafetyPolicy.rejection(new Action.SwapHotbar(10,1),f.context),id);
+            assertEquals(ORIGINAL,f.items.get(9),id);
+        }
     }
     private static final class Fixture implements WorldAccess,ActionPort,Navigation {
         final Profile profile=new Profile();final SessionState session=new SessionState();

@@ -177,6 +177,42 @@ class HotbarWorkspaceTest {
         }
     }
 
+    @Test void everyCrystalOutputIsExcludedFromBorrowingForLegacyAndCollectionOnlyJobs() {
+        assertEquals(112,CrystalCollection.OUTPUT_IDS.size());
+        for(ArtisanRecipe recipe:List.of(ArtisanRecipe.JADE_CRYSTAL,ArtisanRecipe.CRYSTAL_COLLECTION)) {
+            for(String id:CrystalCollection.OUTPUT_IDS) {
+                Fixture f=new Fixture();
+                f.profile.artisanJobs.put("job",new ArtisanJob("job",recipe.id(),List.of(new Pos(10,64,0)),"input","output"));
+                f.put(1,item(id,8),"b".repeat(64));ItemData[] before=f.items.clone();
+                HotbarWorkspace workspace=new HotbarWorkspace(OWNER);
+                assertTrue(workspace.canPrepare(f.context),id);
+                assertEquals(WorkResult.State.BUSY,workspace.prepare(f.context).state(),id);
+                assertEquals(3,f.profile.workHotbarLease.hotbarSlot(),id);
+                assertEquals(item("minecraft:bread",8),f.profile.workHotbarLease.original(),id);
+                assertArrayEquals(before,f.items,"An accepted parking request is not a slot ACK: "+id);
+            }
+        }
+    }
+
+    @Test void crystalOnlyHotbarDefersAndNonJadePickupStillRequiresExactRestorationProof() {
+        Fixture full=new Fixture();
+        for(int i=1;i<9;i++)if(i!=full.profile.loggingAxeHotbarSlot)
+            full.put(i,item(i%2==0?"society:ruby":"society:pristine_quartz",4),"b".repeat(64));
+        HotbarWorkspace unavailable=new HotbarWorkspace(OWNER);
+        assertFalse(unavailable.canPrepare(full.context));
+        assertEquals(WorkResult.State.DEFERRED,unavailable.prepare(full.context).state());
+        assertNull(full.profile.workHotbarLease);assertTrue(full.history.isEmpty());
+
+        Fixture f=new Fixture();HotbarWorkspace workspace=f.park();
+        ItemData ruby=item("society:ruby",2);f.put(1,ruby,"b".repeat(64));f.parkedProof=true;
+        assertEquals(WorkResult.State.BUSY,workspace.restore(f.context).state());
+        f.succeedSwap();HotbarLease restoring=f.profile.workHotbarLease;
+        assertEquals(WorkResult.State.BLOCKED,workspace.restore(f.context).state());
+        assertSame(restoring,f.profile.workHotbarLease);
+        workspace.reset();f.restoredProof=true;assertNull(workspace.restore(f.context));
+        assertEquals(ORIGINAL,f.items[1]);assertEquals(ruby,f.items[9]);assertEquals(2,f.history.size());
+    }
+
     private static final class Fixture implements WorldAccess,ActionPort,Navigation {
         final Profile profile=new Profile();final SessionState session=new SessionState();
         final ItemData[] items=new ItemData[36];final String[] fingerprints=new String[36];
@@ -211,7 +247,7 @@ class HotbarWorkspaceTest {
         boolean exactAt(int index,HotbarLease lease){return lease.original().equals(items[index]) && lease.fingerprint().equals(fingerprints[index]);}
         boolean workingOrEmpty(int index,HotbarLease lease){
             String id=items[index].id();return items[index].empty() || lease.owner()==Feature.STARFRUIT && FruitRules.ITEM.equals(id)
-                || lease.owner()==Feature.CRYSTAL_COPY && (ArtisanRecipe.JADE_CRYSTAL.inputId().equals(id) || "society:pristine_jade".equals(id))
+                || lease.owner()==Feature.CRYSTAL_COPY && CrystalCollection.OUTPUT_IDS.contains(id)
                 || lease.owner()==Feature.SEED_MAKER && (ArtisanRecipe.ANCIENT_SEED.inputId().equals(id) || ArtisanRecipe.ANCIENT_SEED.outputId().equals(id));
         }
         public boolean workHotbarParked(HotbarLease lease){return parkedProof && !busy() && Objects.equals(profile.workHotbarLease,lease)

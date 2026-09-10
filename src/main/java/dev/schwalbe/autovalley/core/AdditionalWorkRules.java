@@ -43,7 +43,9 @@ public final class AdditionalWorkRules {
                 || job.machines().isEmpty() || job.machines().size()>4096)throw new IllegalArgumentException("Invalid artisan job");
             ArtisanRecipe recipe=ArtisanRecipe.find(job.recipeId());
             CommodityStore input=CommodityStorageRules.store(p,job.inputStoreId()),output=CommodityStorageRules.store(p,job.outputStoreId());
-            if(recipe==null || input==null || output==null || !input.items().contains(recipe.inputId()) || !output.items().contains(recipe.outputId()))
+            boolean collection=recipe!=null && recipe.feature()==Feature.CRYSTAL_COPY;
+            if(recipe==null || output==null || (collection ? CrystalCollection.outputIds(p,job).isEmpty()
+                : input==null || !input.items().contains(recipe.inputId()) || !output.items().contains(recipe.outputId())))
                 throw new IllegalArgumentException("Artisan input/output store does not accept the recipe");
             for(Pos pos:job.machines())if(!CoordinateDestinationRules.validPosition(pos) || !machines.add(pos))
                 throw new IllegalArgumentException("Artisan machines need unambiguous ownership");

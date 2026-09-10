@@ -117,6 +117,9 @@ public final class HotbarWorkspace {
     private Set<String> workingItems(Context c) {
         Set<String> items=new HashSet<>();
         if(owner==Feature.STARFRUIT)items.add(FruitRules.ITEM);
+        // Any manually seeded crystal can arrive while this slot is borrowed.
+        // Parking one would let a same-ID pickup change the original's custody.
+        if(owner==Feature.CRYSTAL_COPY)items.addAll(CrystalCollection.OUTPUT_IDS);
         if(c.profile().artisanJobs!=null) for(ArtisanJob job:c.profile().artisanJobs.values()) {
             if(job==null || job.recipe().feature()!=owner)continue;
             ArtisanRecipe recipe=job.recipe();items.add(recipe.inputId());items.add(recipe.outputId());

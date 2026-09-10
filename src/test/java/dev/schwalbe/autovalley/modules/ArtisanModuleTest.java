@@ -96,7 +96,8 @@ class ArtisanModuleTest {
         assertEquals(AutomationEngine.State.COMPLETE,engine.state());assertTrue(f.history.isEmpty());assertTrue(f.navigationTargets.isEmpty());
     }
     private static void coolJob(Fixture f,String id,long due) {
-        ArtisanJob job=f.profile.artisanJobs.get(id);for(Pos pos:job.machines())f.profile.nextEligibleDay.put(job.scheduleKey(pos),due);
+        ArtisanJob job=f.profile.artisanJobs.get(id);for(Pos pos:job.machines())f.profile.nextEligibleDay.put(
+            job.recipe().feature()==Feature.CRYSTAL_COPY ? CrystalCollection.scheduleKey(job,pos) : job.scheduleKey(pos),due);
     }
 
     @Test void seedMakerCollectsFourOldSeedsRefillsOnceAndReturnsOnlyUnusedFruit() {
@@ -148,11 +149,11 @@ class ArtisanModuleTest {
         Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);f.inventory[1]=item(f.recipe.inputId(),1,0);f.upgraded=true;f.emitBonus=true;
         f.machineStates.replaceAll((p,b)->f.state(p,true,false));
         assertEquals(WorkResult.State.IDLE,f.run(new ArtisanModule(f.recipe.feature()),300).state());
-        assertEquals(1,f.consumed);assertEquals(2,f.stored(f.output,f.recipe.outputId()));
+        assertEquals(0,f.consumed);assertEquals(3,f.stored(f.output,f.recipe.outputId()));
         assertEquals(1,Arrays.stream(f.inventory).filter(i->i.is("society:pristine_jade")).mapToInt(ItemData::count).sum());
         assertEquals(0,f.stored(f.output,"society:pristine_jade"));assertEquals(0,f.stored(f.input,"society:pristine_jade"));
-        assertTrue(f.statuses.stream().anyMatch(s->s.contains("보너스 비취")&&s.contains("자동 보관·판매하지 않습니다")));
-        assertEquals(1,f.uses);assertEquals(List.of(440L),List.copyOf(f.profile.nextEligibleDay.values()));
+        assertTrue(f.statuses.stream().anyMatch(s->s.contains("결정 보너스")&&s.contains("자동 보관·판매하지 않습니다")));
+        assertEquals(1,f.uses);assertEquals(List.of(436L),List.copyOf(f.profile.nextEligibleDay.values()));
     }
     @Test void serverRejectionOfADifferentPartialRecipeYieldsAndNeverRetriesTheTarget() {
         Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.inventory[1]=item(f.recipe.inputId(),6,0);f.foreignRecipeReject=true;
@@ -163,13 +164,78 @@ class ArtisanModuleTest {
         assertEquals(WorkResult.State.DEFERRED,f.run(new ArtisanModule(f.recipe.feature()),300).state());
         assertEquals(1,f.uses);assertTrue(f.profile.nextEligibleDay.isEmpty());
     }
-    @Test void emptyInventoryCrystalCollectionBootstrapsRefillAndStoresOnlyItsNetSurplus() {
+    @Test void emptyInventoryCrystalCollectionStoresEveryOutputWithoutRefilling() {
         Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,3);
         WorkResult result=f.run(new ArtisanModule(f.recipe.feature()),500);
-        assertEquals(WorkResult.State.IDLE,result.state(),result.message());assertEquals(4,f.uses);
-        assertEquals(3,f.consumed);assertEquals(3,f.stored(f.output,f.recipe.outputId()));assertEquals(0,f.withdrawals);
+        assertEquals(WorkResult.State.IDLE,result.state(),result.message());assertEquals(3,f.uses);
+        assertEquals(0,f.consumed);assertEquals(6,f.stored(f.output,f.recipe.outputId()));assertEquals(0,f.withdrawals);
         assertEquals(0,f.opens.getOrDefault(f.input,0));assertEquals(3,f.profile.nextEligibleDay.size());
-        assertTrue(f.profile.nextEligibleDay.values().stream().allMatch(d -> d==440));
+        assertTrue(f.profile.nextEligibleDay.values().stream().allMatch(d -> d==436));
+        assertEquals(List.of(0,0,0),f.handCounts);
+        assertTrue(f.machineStates.values().stream().noneMatch(b->b.flag("working")||b.flag("mature")));
+    }
+    @Test void genericCrystalJobCollectsDifferentManualOriginalsWithoutAnInputStoreOrJadeDeadline() {
+        Fixture f=new Fixture(ArtisanRecipe.CRYSTAL_COLLECTION,3);
+        f.profile.commodityStores.remove("input");
+        f.profile.commodityStores.put("output",new CommodityStore("output","Minerals",CrystalCollection.BASE_OUTPUT_IDS,List.of(f.output)));
+        List<Pos> machines=List.copyOf(f.machineStates.keySet());
+        List<String> originals=List.of("minecraft:diamond","society:ruby","society:spinel");
+        for(int i=0;i<machines.size();i++)f.crystalOriginals.put(machines.get(i),originals.get(i));
+        ArtisanJob job=f.profile.artisanJobs.get("job");
+        for(Pos pos:machines)f.profile.nextEligibleDay.put(job.scheduleKey(pos),500L);
+        f.inventory[1]=item("society:jade",7,0);
+        WorkResult result=f.run(new ArtisanModule(Feature.CRYSTAL_COPY),600);
+        assertEquals(WorkResult.State.IDLE,result.state(),result.message());assertEquals(3,f.uses);
+        assertEquals(List.of(0,0,0),f.handCounts);assertEquals(0,f.consumed);assertEquals(0,f.withdrawals);
+        assertFalse(f.navigationTargets.contains(f.input));assertEquals(7,f.stored(f.output,"society:jade"));
+        for(String original:originals)assertEquals(2,f.stored(f.output,original),original);
+        for(Pos pos:machines){assertEquals(500L,f.profile.nextEligibleDay.get(job.scheduleKey(pos)));
+            assertEquals(436L,f.profile.nextEligibleDay.get(CrystalCollection.scheduleKey(job,pos)));}
+    }
+    @Test void legacyJadeJobAlsoCollectsNonJadeOriginalWithoutChangingIt() {
+        Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);Pos machine=f.machineStates.keySet().iterator().next();
+        f.crystalOriginals.put(machine,"minecraft:emerald");f.inventory[1]=item("society:jade",4,0);
+        f.profile.commodityStores.put("output",new CommodityStore("output","Emerald",Set.of("minecraft:emerald"),List.of(f.output)));
+        f.profile.commodityStores.remove("input");
+        assertEquals(WorkResult.State.IDLE,f.run(new ArtisanModule(Feature.CRYSTAL_COPY),300).state());
+        assertEquals(List.of(0),f.handCounts);assertEquals(0,f.consumed);assertEquals(0,f.withdrawals);
+        assertEquals(2,f.stored(f.output,"minecraft:emerald"));assertEquals(4,f.inventory[1].count());
+        assertEquals(0,f.stored(f.output,"society:jade"));
+    }
+    @Test void crystalWorkingAndEmptyMachinesAreInspectedDailyWithoutAnyRefill() {
+        Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,3);List<Pos> machines=List.copyOf(f.machineStates.keySet());
+        f.machineStates.put(machines.get(0),f.state(machines.get(0),false,true));
+        f.machineStates.put(machines.get(1),f.state(machines.get(1),false,false));
+        f.inventory[1]=item("society:jade",20,0);ArtisanModule module=new ArtisanModule(Feature.CRYSTAL_COPY);
+        assertEquals(WorkResult.State.IDLE,f.run(module,400).state());assertEquals(1,f.uses);
+        assertEquals(0,f.machineUses(machines.get(0)));assertEquals(0,f.machineUses(machines.get(1)));
+        assertTrue(f.profile.nextEligibleDay.values().stream().allMatch(d->d==436L));
+        int visits=f.navigationTargets.size();assertEquals(WorkResult.State.IDLE,module.tick(f.context()).state());
+        assertEquals(visits,f.navigationTargets.size());
+        f.dayTime+=24000;f.machineStates.put(machines.get(0),f.state(machines.get(0),true,false));module.reset();
+        assertEquals(WorkResult.State.IDLE,f.run(module,400).state());assertEquals(2,f.uses);
+        assertEquals(0,f.consumed);assertEquals(0,f.withdrawals);assertEquals(24,f.stored(f.output,"society:jade"));
+        assertTrue(f.profile.nextEligibleDay.values().stream().allMatch(d->d==437L));
+    }
+    @Test void crystalStorageUsesOnlyTheRegisteredSupportedOutputIntersectionIncludingOptionalBonus() {
+        Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);Pos machine=f.machineStates.keySet().iterator().next();
+        f.upgraded=true;f.emitBonus=true;f.crystalOriginals.put(machine,"minecraft:diamond");
+        f.machineStates.put(machine,f.state(machine,true,false));
+        f.profile.commodityStores.put("output",new CommodityStore("output","Mixed",Set.of("minecraft:diamond","society:pristine_diamond","minecraft:egg"),List.of(f.output)));
+        f.inventory[6]=item("minecraft:egg",5,0);f.inventory[7]=item("society:pristine_jade",1,0);
+        assertEquals(WorkResult.State.IDLE,f.run(new ArtisanModule(Feature.CRYSTAL_COPY),300).state());
+        assertEquals(2,f.stored(f.output,"minecraft:diamond"));assertEquals(1,f.stored(f.output,"society:pristine_diamond"));
+        assertEquals(0,f.stored(f.output,"minecraft:egg"));assertEquals(5,f.inventory[6].count());
+        assertEquals(1,f.inventory[7].count());assertEquals(0,f.stored(f.output,"society:pristine_jade"));
+    }
+    @Test void pristineBonusAloneCannotSatisfyTheTwoBaseCrystalPickupGate() {
+        Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);f.upgraded=true;f.emitBonus=true;f.bonusCount=2;f.ordinaryOutputCount=0;
+        f.machineStates.replaceAll((p,b)->f.state(p,true,false));
+        f.profile.commodityStores.put("output",new CommodityStore("output","Crystals",Set.of("society:jade","society:pristine_jade"),List.of(f.output)));
+        WorkResult result=f.run(new ArtisanModule(Feature.CRYSTAL_COPY),400);
+        assertEquals(WorkResult.State.DEFERRED,result.state(),result.message());assertEquals(1,f.uses);
+        assertEquals(0,f.stored(f.output,"society:jade"));assertEquals(2,f.stored(f.output,"society:pristine_jade"));
+        assertEquals(List.of(436L),List.copyOf(f.profile.nextEligibleDay.values()));
     }
     @Test void crystalCollectionWithNineNonJobHotbarItemsDefersBeforeAnyActionOrCheckpoint() {
         Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);fillNonJobHotbar(f);f.failCheckpoint=true;
@@ -239,9 +305,9 @@ class ArtisanModuleTest {
         // A later inventory observation supplies capacity; the module itself never moves the old hotbar item.
         ItemData old=f.inventory[1];f.inventory[10]=old;f.inventory[1]=ItemData.EMPTY;
         for(int i=0;i<2600 && f.stored(f.output,f.recipe.outputId())==0;i++){engine.tick(c);f.now++;}
-        assertTrue(engine.running(),engine.status());assertEquals(2,f.uses);assertEquals(1,f.consumed);
-        assertEquals(1,f.stored(f.output,f.recipe.outputId()));assertEquals(old,f.inventory[10]);
-        assertEquals(List.of(440L),List.copyOf(f.profile.nextEligibleDay.values()));
+        assertTrue(engine.running(),engine.status());assertEquals(1,f.uses);assertEquals(0,f.consumed);
+        assertEquals(2,f.stored(f.output,f.recipe.outputId()));assertEquals(old,f.inventory[10]);
+        assertEquals(List.of(436L),List.copyOf(f.profile.nextEligibleDay.values()));
     }
     @Test void oneShotHotbarWaitNeverRestartsAfterManualOffAndExplicitResumeUsesTheNewFreeSlot() {
         for(ArtisanRecipe recipe:List.of(ArtisanRecipe.JADE_CRYSTAL,ArtisanRecipe.ANCIENT_SEED)) {
@@ -257,7 +323,7 @@ class ArtisanModuleTest {
             engine.startOnce(c,recipe.feature());
             for(int i=0;i<200 && engine.running();i++){engine.tick(c);f.now++;}
             assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());assertEquals(old,f.inventory[10]);
-            assertEquals(recipe.sameInputAndOutput()?2:1,f.uses);assertEquals(recipe.inputCount(),f.consumed);
+            assertEquals(1,f.uses);assertEquals(recipe.feature()==Feature.CRYSTAL_COPY?0:recipe.inputCount(),f.consumed);
             assertEquals(1,f.profile.nextEligibleDay.size());
         }
     }
@@ -275,9 +341,9 @@ class ArtisanModuleTest {
             assertEquals(WorkResult.State.IDLE,result.state(),result.message());
             assertArrayEquals(originalHotbar,Arrays.copyOf(f.inventory,9));
             assertNull(f.profile.workHotbarLease);assertNull(f.session.workHotbarOwner);
-            assertEquals(recipe.sameInputAndOutput()?4:3,f.uses);
-            assertEquals(recipe.inputCount()*3,f.consumed);assertEquals(3,f.profile.nextEligibleDay.size());
-            assertEquals(3,f.stored(f.output,recipe.outputId()));
+            assertEquals(3,f.uses);
+            assertEquals(recipe.feature()==Feature.CRYSTAL_COPY?0:recipe.inputCount()*3,f.consumed);assertEquals(3,f.profile.nextEligibleDay.size());
+            assertEquals(recipe.feature()==Feature.CRYSTAL_COPY?6:3,f.stored(f.output,recipe.outputId()));
             assertTrue(f.history.stream().filter(Action.SwapHotbar.class::isInstance).count()>=2);
         }
     }
@@ -288,13 +354,29 @@ class ArtisanModuleTest {
         assertEquals(WorkResult.State.DEFERRED,f.run(new ArtisanModule(f.recipe.feature()),100).state());
         assertArrayEquals(original,f.inventory);assertTrue(f.history.isEmpty());assertNull(f.profile.workHotbarLease);
     }
+    @Test void collectedCrystalCannotFreeTheWorkingHandUntilItsOwnEvacuationSwapIsAcknowledged() {
+        Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,3);fillNonJobHotbar(f);f.workspaceProofs=true;f.holdClear=true;
+        ItemData[] originalHotbar=Arrays.copyOf(f.inventory,9);ArtisanModule module=new ArtisanModule(Feature.CRYSTAL_COPY);
+        for(int i=0;i<120;i++){assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());f.now++;}
+        assertEquals(1,f.uses);assertNotNull(f.profile.workHotbarLease);
+        Action.SwapHotbar sent=(Action.SwapHotbar)f.history.get(f.history.size()-1);
+        assertEquals(f.profile.workHotbarLease.hotbarSlot(),sent.hotbarSlot());
+        assertTrue(sent.inventoryIndex()>=9);assertNotEquals(f.profile.workHotbarLease.sourceIndex(),sent.inventoryIndex());
+        assertEquals(f.profile.workHotbarLease.original(),f.inventory[f.profile.workHotbarLease.sourceIndex()]);
+        int calls=f.history.size();for(int i=0;i<30;i++){assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());f.now++;}
+        assertEquals(calls,f.history.size());assertEquals(1,f.uses);
+        f.holdClear=false;f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"collected-output evacuation acknowledged"));
+        assertEquals(WorkResult.State.IDLE,f.run(module,600).state());assertEquals(3,f.uses);
+        assertEquals(List.of(0,0,0),f.handCounts);assertEquals(0,f.consumed);assertEquals(6,f.stored(f.output,"society:jade"));
+        assertArrayEquals(originalHotbar,Arrays.copyOf(f.inventory,9));assertNull(f.profile.workHotbarLease);
+    }
     @Test void parkingProjectionCannotStartCrystalUseUntilTheSameSwapReceiptSucceeds() {
         Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);fillNonJobHotbar(f);f.workspaceProofs=true;f.holdPark=true;
         ArtisanModule module=new ArtisanModule(f.recipe.feature());
         for(int i=0;i<60;i++){assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());f.now++;}
         assertEquals(HotbarLease.Stage.PREPARED,f.profile.workHotbarLease.stage());assertEquals(1,f.history.size());assertEquals(0,f.uses);
         f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"park acknowledged"));f.holdPark=false;
-        assertEquals(WorkResult.State.IDLE,f.run(module,300).state());assertEquals(2,f.uses);assertNull(f.profile.workHotbarLease);
+        assertEquals(WorkResult.State.IDLE,f.run(module,300).state());assertEquals(1,f.uses);assertNull(f.profile.workHotbarLease);
     }
     @Test void anotherModuleCannotStartBeforeTheOriginalHotbarRestorationReceipt() {
         Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);fillNonJobHotbar(f);f.workspaceProofs=true;f.holdRestore=true;
@@ -550,18 +632,18 @@ class ArtisanModuleTest {
             f.dayTime=436L*24000+100;f.holdUse=false;
             f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"native working and selected-slot confirmation"));
             assertEquals(WorkResult.State.IDLE,f.run(module,300).state());
-            assertEquals(List.of(435L+recipe.cycleDays()),List.copyOf(f.profile.nextEligibleDay.values()));assertEquals(1,f.uses);
+            assertEquals(List.of(435L+(recipe.feature()==Feature.CRYSTAL_COPY?1:recipe.cycleDays())),List.copyOf(f.profile.nextEligibleDay.values()));assertEquals(1,f.uses);
         }
     }
-    @Test void anAlreadyDueConfirmedBatchAllowsReinspectionButWorkingStateStillForbidsAnotherUse() {
+    @Test void anAlreadyDueCrystalCollectionAllowsReinspectionButIdleStateForbidsAnotherUse() {
         Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);f.dayTime=435L*24000+23900;
         f.inventory[1]=item(f.recipe.inputId(),1,0);f.holdUse=true;ArtisanModule module=new ArtisanModule(f.recipe.feature());f.awaitUse(module);
         f.dayTime=441L*24000+5000;f.holdUse=false;
         f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"native working and selected-slot confirmation"));
         assertEquals(WorkResult.State.IDLE,f.run(module,300).state());
-        assertEquals(List.of(440L),List.copyOf(f.profile.nextEligibleDay.values()));
+        assertEquals(List.of(436L),List.copyOf(f.profile.nextEligibleDay.values()));
         assertEquals(WorkResult.State.IDLE,f.run(new ArtisanModule(f.recipe.feature()),200).state());
-        assertEquals(1,f.uses);assertEquals(List.of(442L),List.copyOf(f.profile.nextEligibleDay.values()),"working reinspection remains based on the current day");
+        assertEquals(1,f.uses);assertEquals(List.of(442L),List.copyOf(f.profile.nextEligibleDay.values()),"idle reinspection remains based on the current day");
     }
     @Test void midnightFailedOrStillPendingAckCannotCreateAScheduleFromDispatchDay() {
         Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.dayTime=435L*24000+23900;
@@ -598,8 +680,8 @@ class ArtisanModuleTest {
         f.outcomes.put(f.lastTicket,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"ordinary success without cycle proof"));
         assertEquals(WorkResult.State.BLOCKED,f.run(module,300).state());assertEquals(1,f.uses);assertTrue(f.profile.nextEligibleDay.isEmpty());
     }
-    @Test void nativeAdvancedSeedAndJadeProceedToTheNextTargetWithoutReusingTheCompletedOne() {
-        for(ArtisanRecipe recipe:List.of(ArtisanRecipe.ANCIENT_SEED,ArtisanRecipe.JADE_CRYSTAL)) {
+    @Test void nativeAdvancedSeedProceedsToTheNextTargetWithoutReusingTheCompletedOne() {
+        for(ArtisanRecipe recipe:List.of(ArtisanRecipe.ANCIENT_SEED)) {
             Fixture f=new Fixture(recipe,2);f.inventory[1]=item(recipe.inputId(),recipe.inputCount()*4,0);f.dayTime=435L*24000+23900;f.holdUse=true;
             ArtisanModule module=new ArtisanModule(recipe.feature());f.awaitUse(module);Pos first=List.copyOf(f.machineStates.keySet()).get(0),second=List.copyOf(f.machineStates.keySet()).get(1);
             f.dayTime=(435L+recipe.cycleDays())*24000+5000;f.machineStates.put(first,f.state(first,true,false));f.holdUse=false;
@@ -670,6 +752,7 @@ class ArtisanModuleTest {
         final SessionState session=new SessionState();
         final Pos input=new Pos(1,64,0),output=new Pos(2,64,0);
         final Map<Pos,ItemData[]> chests=new LinkedHashMap<>();final Map<Pos,BlockData> machineStates=new LinkedHashMap<>();
+        final Map<Pos,String> crystalOriginals=new LinkedHashMap<>();
         final List<Action> history=new ArrayList<>();final Map<Long,ActionOutcome> outcomes=new HashMap<>();
         final Map<Pos,Integer> opens=new HashMap<>();final List<Integer> usedGrades=new ArrayList<>(),handCounts=new ArrayList<>();
         final List<Delayed> delayed=new ArrayList<>();
@@ -678,9 +761,10 @@ class ArtisanModuleTest {
         final Map<Pos,String> uncertainTargets=new LinkedHashMap<>();final Set<Pos> failUncertainUses=new HashSet<>();
         long now=100,dayTime=435L*24000+5000,lastTicket;int selected=1,menuId,uses,consumed,withdrawals,pickupDelay,sleepUses;
         int seedConsumption=-1;
+        int ordinaryOutputCount=-1,bonusCount=1;
         boolean holdUse,suppressMutation,failCheckpoint,wrongOpen,uncertainArtisan,navigationBlocked,sleeping,grounded=true,upgraded,emitBonus,foreignRecipeReject,actionBusy;Pos opened;
         ItemData cursor=ItemData.EMPTY;String actionFence;
-        boolean workspaceProofs,holdPark,holdRestore;
+        boolean workspaceProofs,holdPark,holdRestore,holdClear;
         Fixture(ArtisanRecipe recipe,int count) {
             this.recipe=recipe;Arrays.fill(inventory,ItemData.EMPTY);inventory[0]=new ItemData("minecraft:golden_hoe",1,0,null,true,99);
             profile.enabled.put(recipe.feature(),true);profile.hoeHotbarSlot=0;
@@ -722,12 +806,14 @@ class ArtisanModuleTest {
                 else if(use.purpose()==Action.Use.SLEEP){sleepUses++;sleeping=true;}
                 else if(use.purpose()==Action.Use.ARTISAN){
                     uses++;ItemData held=inventory[selected];handCounts.add(held.count());boolean feed=held.is(recipe.inputId())&&held.count()>=recipe.inputCount();
+                    if(recipe.feature()==Feature.CRYSTAL_COPY)assertTrue(held.empty(),"Crystal collection must never replace the player's original");
                     if(feed)usedGrades.add(held.quality());BlockData before=machineStates.get(use.pos());
                     if(failUncertainUses.contains(use.pos())){uncertainTargets.put(use.pos(),"Sent use has no confirmed response");outcomes.put(id,new ActionOutcome(ActionOutcome.State.FAILED,"unconfirmed target response"));return id;}
                     if(foreignRecipeReject){uncertainArtisan=true;outcomes.put(id,new ActionOutcome(ActionOutcome.State.FAILED,"unchanged raw idle block and selected input"));return id;}
                     if(!suppressMutation){if(feed){int cost=seedConsumption>=0 && !before.flag("mature") ? seedConsumption : recipe.inputCount();consumed+=cost;inventory[selected]=withCount(held,held.count()-cost);}
-                        if(before.flag("mature")&&before.flag("upgraded")&&emitBonus)put(inventory,item(recipe.sameInputAndOutput()?"society:pristine_jade":recipe.outputId(),1,0));
-                        if(before.flag("mature")){ItemData produced=item(recipe.outputId(),recipe.outputCount(),0);if(pickupDelay>0)delayed.add(new Delayed(now+pickupDelay,produced));else put(inventory,produced);}
+                        String outputId=recipe.feature()==Feature.CRYSTAL_COPY ? crystalOriginals.getOrDefault(use.pos(),"society:jade") : recipe.outputId();
+                        if(before.flag("mature")&&before.flag("upgraded")&&emitBonus)put(inventory,item(recipe.feature()==Feature.CRYSTAL_COPY?"society:pristine_"+outputId.split(":")[1]:recipe.outputId(),bonusCount,0));
+                        if(before.flag("mature") && ordinaryOutputCount!=0){ItemData produced=item(outputId,ordinaryOutputCount<0?recipe.outputCount():ordinaryOutputCount,0);if(pickupDelay>0)delayed.add(new Delayed(now+pickupDelay,produced));else put(inventory,produced);}
                         machineStates.put(use.pos(),state(use.pos(),false,feed));}
                     if(holdUse){outcomes.put(id,new ActionOutcome(ActionOutcome.State.PENDING,"waiting"));return id;}
                 }
@@ -736,7 +822,8 @@ class ArtisanModuleTest {
             else if(action instanceof Action.SwapHotbar swap){
                 ItemData old=inventory[swap.hotbarSlot()];inventory[swap.hotbarSlot()]=inventory[swap.inventoryIndex()];inventory[swap.inventoryIndex()]=old;
                 if(profile.workHotbarLease!=null && (holdPark && profile.workHotbarLease.stage()==HotbarLease.Stage.PREPARED
-                    || holdRestore && profile.workHotbarLease.stage()==HotbarLease.Stage.RESTORING)) {
+                    || holdRestore && profile.workHotbarLease.stage()==HotbarLease.Stage.RESTORING
+                    || holdClear && profile.workHotbarLease.stage()==HotbarLease.Stage.PARKED && swap.inventoryIndex()!=profile.workHotbarLease.sourceIndex())) {
                     outcomes.put(id,new ActionOutcome(ActionOutcome.State.PENDING,"swap not yet acknowledged"));return id;
                 }
             }

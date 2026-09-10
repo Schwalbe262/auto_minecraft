@@ -44,7 +44,8 @@ public final class CommodityStorageRules {
             if(job==null)continue;
             ArtisanRecipe recipe=ArtisanRecipe.find(job.recipeId());
             CommodityStore store=store(c.profile(),job.inputStoreId());
-            if(recipe!=null && c.session().allows(c.profile(),recipe.feature()) && store!=null
+            if(recipe!=null && recipe.feature()!=Feature.CRYSTAL_COPY
+                && c.session().allows(c.profile(),recipe.feature()) && store!=null
                 && store.containers().contains(pos) && store.accepts(item) && item.is(recipe.inputId()))return true;
         }
         return false;
@@ -83,7 +84,8 @@ public final class CommodityStorageRules {
             if(job==null)continue;
             ArtisanRecipe recipe=ArtisanRecipe.find(job.recipeId());
             if(recipe!=null && c.session().allows(c.profile(),recipe.feature())
-                && (storeId.equals(job.inputStoreId()) || storeId.equals(job.outputStoreId())))return true;
+                && (storeId.equals(job.outputStoreId())
+                    || recipe.feature()!=Feature.CRYSTAL_COPY && storeId.equals(job.inputStoreId())))return true;
         }
         return false;
     }

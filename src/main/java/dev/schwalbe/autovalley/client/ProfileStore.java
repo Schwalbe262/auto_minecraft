@@ -61,6 +61,8 @@ public final class ProfileStore {
             if(timingVersion==null || timingVersion.isJsonNull())
                 profile.strictHarvestTimingVersion=0;
             validate(profile);
+            CrystalCollectionMigration.migrate(profile);
+            validate(profile);
             return profile;
         } catch (RuntimeException e) { throw new IOException("Profile is invalid; original file has been preserved",e); }
     }

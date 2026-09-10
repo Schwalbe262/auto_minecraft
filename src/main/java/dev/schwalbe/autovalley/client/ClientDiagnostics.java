@@ -203,7 +203,7 @@ public final class ClientDiagnostics {
         CropDefinition crop=RegistrationRules.crop(profile,block);
         if (crop!=null) return crop.key();
         if (block.id().equals(ArtisanRecipe.ANCIENT_SEED.machineId()))return "seed_maker";
-        if (block.id().equals(ArtisanRecipe.JADE_CRYSTAL.machineId()))return "crystalarium";
+        if (block.id().equals(CrystalCollection.MACHINE_ID))return "crystalarium";
         if (block.id().equals(FruitRules.BLOCK))return "starfruit";
         if (block.id().contains("wine_keg")) return "wine_keg";
         if (block.id().contains("preserves_jar")) return "preserves_jar";
