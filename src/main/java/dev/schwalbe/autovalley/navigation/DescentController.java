@@ -6,6 +6,7 @@ import java.util.List;
 /** Walking-only descent, with a bounded corridor opt-in for native straight stairs. */
 final class DescentController {
     enum Phase { PREPARE, DESCEND, LAND, COMPLETE, FAILED }
+    static final double MAX_PREPARE_DISTANCE=.45;
     private static final double HEIGHT_TOLERANCE=.10001, CENTER=.10;
     private static final double FLOW_SPEED=.34;
     private Pos from,to;
@@ -110,7 +111,7 @@ final class DescentController {
         }
         if (now-progressTick>60 || now-firstTick>200) return fail("계단의 안전한 정지 또는 착지가 시간 안에 확인되지 않았습니다.");
         if (phase==Phase.PREPARE) {
-            if (!p.onGround() || Math.abs(p.y()-fromHeight)>HEIGHT_TOLERANCE || horizontal(p,from)>.45)
+            if (!p.onGround() || Math.abs(p.y()-fromHeight)>HEIGHT_TOLERANCE || horizontal(p,from)>MAX_PREPARE_DISTANCE)
                 return fail("계단을 내려가기 전에 상단의 안전한 지면에서 정지하지 못했습니다.");
             if (settled(p,from,measured,vx,vz)) {
                 phase=Phase.DESCEND;quietSamples=0;progressTick=now;stop();

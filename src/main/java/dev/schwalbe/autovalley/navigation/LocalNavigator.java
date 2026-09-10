@@ -71,6 +71,27 @@ public final class LocalNavigator implements Navigation {
         return failureKind==Failure.NO_PATH || failureKind==Failure.UNLOADED || failureKind==Failure.SEARCH_LIMIT
             || failureKind==Failure.OBSTACLE || failureKind==Failure.STALLED || failureKind==Failure.REACH;
     }
+    /** Current native support only, never an exception to a jump/door/inventory receipt fence. */
+    @Override public boolean safeFailureRetry(Context c) {
+        try {
+            if (failureKind!=Failure.SAFETY && failureKind!=Failure.INVALID_START
+                || c==null || c.navigation()!=this || c.world()!=lastWorld || c.actions()!=lastActions
+                || c.profile()!=requestProfile || c.session()!=requestSession || requestMode!=NavigationMode.TERRAIN
+                || c.profile().navigationMode!=requestMode || !requestInteractions || destination==null || domain==null
+                || loggingJump!=null || descent!=null || groundRecenter!=null || stairRecenter!=null || stairRecoveryRetryAt>=0
+                || interruptedLanding || interruptedDescent || !interruptedJumps.isEmpty() || doorTicket>=0) return false;
+            WorldAccess world=c.world();PlayerState player=world.player();MenuData menu=world.menu();
+            if (player==null || !player.connected() || !player.onGround() || player.sleeping() || !Float.isFinite(player.health()) || player.health()<=0
+                || !player.focused() && !c.profile().allowBackground
+                || !Double.isFinite(player.x()) || !Double.isFinite(player.y()) || !Double.isFinite(player.z())
+                || c.actions().busy() || c.actions().pauseReason()!=null
+                || menu==null || menu.container() || menu.carried()==null || !menu.carried().empty()) return false;
+            Pos feet=NavigationFeet.resolve(world,player);double height=world.standingY(feet);
+            return domain.contains(feet) && TerrainPathSearch.loadedStance(world,feet) && world.canStand(feet)
+                && world.fullFlatSupport(feet) && Double.isFinite(height) && Math.abs(player.y()-height)<=1.0e-5
+                && closedDoor(world,feet)==null && world.canRecenterOnSupport(feet);
+        } catch (RuntimeException unavailable) { return false; }
+    }
     @Override public Pos failureDestination() { return failureKind==Failure.NONE ? null : destination; }
     @Override public String diagnosticStatus() { return diagnostic; }
     @Override public ActionOutcome pendingInteractionOutcome(Context c) {
@@ -313,7 +334,10 @@ public final class LocalNavigator implements Navigation {
         if (!world.loaded(next) || !world.canStand(next)) return replan(context,Failure.OBSTACLE,"이동 경로가 바뀌었습니다.");
         if (nextIndex>0 && DescentController.descending(path.get(nextIndex-1),next,world) && closedDoor(world,next)==null) {
             if (!requestInteractions) return blocked(actions,"수확을 이어가는 이동에서는 계단 하강을 시작하지 않습니다.");
-            descent=new DescentController(path.get(nextIndex-1),next,world);
+            Pos from=path.get(nextIndex-1);
+            Result recentered=beginDescentRecenter(context,player,from,next);
+            if (recentered!=null) return recentered;
+            descent=new DescentController(from,next,world);
             return continueDescent(context);
         }
         if (requestInteractions && (logging || domain.terrain()) && nextIndex>0) {
@@ -634,6 +658,28 @@ public final class LocalNavigator implements Navigation {
         }
         stairRecoveryAttempts++;stairRecenter=new StairRecenterController(stair,c);
         return continueStairRecenter(c);
+    }
+
+    /** A* starts at a supported cell, not necessarily its center. An off-center
+     * initial pose must not enter descent preparation outside its unchanged
+     * corridor. Center only on that exact top under the existing native proof;
+     * completion discards the route and revalidates the descent on the next tick. */
+    private Result beginDescentRecenter(Context c,PlayerState player,Pos from,Pos to) {
+        WorldAccess world=c.world();MenuData menu=world.menu();
+        if (!requestInteractions || domain==null || !domain.terrain() || recenterAttempted
+            || !player.onGround() || !Double.isFinite(player.x()) || !Double.isFinite(player.y()) || !Double.isFinite(player.z())
+            || !from.equals(NavigationFeet.resolve(world,player))
+            || Math.hypot(player.x()-from.x()-.5,player.z()-from.z()-.5)<=DescentController.MAX_PREPARE_DISTANCE
+            || !domain.contains(from) || !domain.contains(to) || c.actions().busy() || c.actions().pauseReason()!=null
+            || menu==null || menu.container() || menu.carried()==null || !menu.carried().empty()
+            || !TerrainPathSearch.loadedStance(world,from) || !TerrainPathSearch.loadedStance(world,to)
+            || !world.canStand(from) || !world.canStand(to) || !world.fullFlatSupport(from)
+            || !Double.isFinite(world.standingY(from)) || Math.abs(player.y()-world.standingY(from))>1.0e-5
+            || !DescentController.descending(from,to,world) || !world.canTraverse(from,to)
+            || closedDoor(world,from)!=null || closedDoor(world,to)!=null || !world.canRecenterOnSupport(from)) return null;
+        c.actions().stopMovement();recenterAttempted=true;
+        groundRecenter=new GroundRecenterController(from,c);
+        return continueGroundRecenter(c);
     }
 
     private Pos recenterAnchor(Context c,PlayerState player) {

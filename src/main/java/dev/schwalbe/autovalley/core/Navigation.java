@@ -20,6 +20,8 @@ public interface Navigation {
     default String failureReason() { return ""; }
     default Failure failureKind() { return Failure.NONE; }
     default boolean retryableFailure() { return false; }
+    /** Read-only opt-in for a safely grounded SAFETY/INVALID_START retry; never clears a failure or owned action. */
+    default boolean safeFailureRetry(Context context) { return false; }
     default Pos failureDestination() { return null; }
     default String diagnosticStatus() { return ""; }
     default java.util.Map<String,Object> diagnostics() { return java.util.Map.of(); }
