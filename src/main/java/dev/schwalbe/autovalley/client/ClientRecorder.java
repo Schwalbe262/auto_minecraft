@@ -113,10 +113,10 @@ public final class ClientRecorder {
         Map<String,Object> data=new LinkedHashMap<>();
         Pos target=null;
         net.minecraft.world.InteractionHand hand=null;
-        if (packet instanceof ServerboundUseItemOnPacket p) {
-            type="use_block_intent"; target=MinecraftWorld.pos(p.getHitResult().getBlockPos());
-            hand=p.getHand();
-            data.put("pos",target); data.put("face",p.getHitResult().getDirection().name()); data.put("hand",p.getHand().name());
+        RecordingUseIntent useIntent=RecordingUseIntent.from(packet);
+        if (useIntent!=null) {
+            type=useIntent.type();target=useIntent.target();hand=useIntent.hand();
+            data.putAll(useIntent.fields());
         } else if (packet instanceof ServerboundContainerClickPacket p) {
             type="container_click_intent";
             data.put("containerId",p.getContainerId()); data.put("slot",p.getSlotNum());
@@ -135,8 +135,18 @@ public final class ClientRecorder {
             if (useTarget!=null) {
                 lastInteraction=useTarget; lastInteractionTick=world.tick();
                 if (world.loaded(useTarget)) data.put("blockObserved",world.block(useTarget));
+            }
+            if (useHand!=null) {
                 data.put("selectedItem",MinecraftWorld.item(mc.player.getItemInHand(useHand)));
                 data.put("player",pose());
+                data.put("observedAtTick",world.tick());
+                data.put("observationTiming","client_thread_after_intent");
+                data.put("associationVerified",false);
+                data.put("serverSuccessVerified",false);
+                // Queued position/hand state can differ from send time. Keep it an
+                // observation, never a certified origin or permission to repeat use.
+                if (MinecraftWorld.item(mc.player.getItemInHand(useHand)).is("society:cornucopia"))
+                    data.put("cornucopiaCenterObserved",MinecraftWorld.pos(mc.player.getOnPos().above()));
             }
             event(type,data);
         });
