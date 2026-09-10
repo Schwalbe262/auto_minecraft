@@ -19,9 +19,14 @@ public final class LoggingModule implements AutomationModule {
     private LoggingHotbarLease restorationRefreshLease;
     private record PartialCleanup(Profile profile,List<LoggingPlot> plots,List<Pos> remaining,List<Pos> replanting,Long due) { }
     private PartialCleanup partialCleanup;
+    /** An observed plot obstruction carries no native failure or completion receipt. */
+    private static final class PlotObstruction extends RuntimeException {
+        PlotObstruction(String message) { super(message); }
+    }
     /** Unsent navigation/observation, or unavailable storage after an acknowledged close. */
-    private record LocalRetryWait(PartialCleanup obligations,List<Poi> facilities,Stage resume,long createdAt,long retryAt,String message) { }
+    private record LocalRetryWait(PartialCleanup obligations,List<Poi> facilities,Stage resume,long createdAt,long retryAt,String message,boolean environment) { }
     private LocalRetryWait localRetryWait;
+    private boolean environmentDeferred;
     private Pending pending;
     private long ticket=-1, settleUntil, nextCheckTick=-1, lastTick=-1;
     private long saplingWaitUntil=-1;
@@ -65,6 +70,7 @@ public final class LoggingModule implements AutomationModule {
     @Override public int priority() { return 80; }
 
     @Override public WorkResult tick(Context c) {
+        environmentDeferred=false;
         if (!LoggingRules.allowed(c)) { clearMiningQuiet(); return WorkResult.idle(); }
         if (failure!=null) return WorkResult.blocked(failure);
         if (!c.world().player().connected()) return fail("벌목 중 연결이 끊겼습니다. 재접속 후 다시 실행하세요.");
@@ -143,6 +149,11 @@ public final class LoggingModule implements AutomationModule {
                 return fail("중간 목재 정리 중 벌목 등록·미완료 기록이 바뀌었습니다. 남은 작업을 완료 처리하지 않습니다.");
             }
             return advance(c);
+        } catch (PlotObstruction obstruction) {
+            try { return waitForPlotEnvironment(c,obstruction.getMessage()); }
+            catch (RuntimeException problem) {
+                return fail("벌목 상태를 안전하게 저장하거나 확인하지 못했습니다: "+problem.getMessage());
+            }
         } catch (RuntimeException problem) {
             return fail("벌목 상태를 안전하게 저장하거나 확인하지 못했습니다: "+problem.getMessage());
         }
@@ -313,13 +324,13 @@ public final class LoggingModule implements AutomationModule {
                 if (plot.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) return observePlot(c,plot);
                 inspect(c,plot);
                 if (LoggingRules.partiallyGrown(c.world(),plot))
-                    return fail("2x2 재식재 중 일부 나무만 자랐습니다. 미완료 구역을 보존하며 자동 재벌목·추가 식재하지 않습니다.");
+                    throw new PlotObstruction("2x2 재식재 중 일부 나무만 자랐습니다. 미완료 구역을 보존하며 자동 재벌목·추가 식재하지 않습니다.");
                 if (c.world().menu().container() || !c.world().menu().carried().empty())
                     return fail("재식재 중 메뉴나 커서가 바뀌었습니다. 식재 의무를 보존하고 중단했습니다.");
                 List<Pos> missingCells=plot.plantingPositions().stream().filter(p -> !occupied(c,p)).toList();
                 if (missingCells.isEmpty()) { completePlot(c,plot.corner()); plot=null; stage=Stage.PLOT; return busy("4칸 재식재 완료 저장"); }
                 if (missingCells.stream().anyMatch(p -> !air(c.world().block(p))))
-                    return fail("재식재할 칸에 남은 밑동이 있습니다. 등록 구역을 확인하세요.");
+                    throw new PlotObstruction("재식재할 칸에 남은 밑동이 있습니다. 등록 구역을 확인하세요.");
                 // Have every currently missing 2x2 planting covered BEFORE the first
                 // use. Planting one or two early can let a small tree grow before
                 // the other seeds arrive. Existing plantings/logs are never recut.
@@ -372,7 +383,7 @@ public final class LoggingModule implements AutomationModule {
                 for (LoggingPlot registered:c.profile().loggingPlots)
                     if (registered.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) return observePlot(c,registered);
                 for (LoggingPlot registered:c.profile().loggingPlots)
-                    if (!LoggingRules.completePlanting(c.world(),registered)) return fail("모든 등록 구역의 2x2 묘목 또는 네 기둥을 확인해야 합니다. 묘목과 가지는 폐기하지 않았습니다.");
+                    if (!LoggingRules.completePlanting(c.world(),registered)) throw new PlotObstruction("모든 등록 구역의 2x2 묘목 또는 네 기둥을 확인해야 합니다. 묘목과 가지는 폐기하지 않았습니다.");
                 WorkResult quiet=awaitCleanupQuiet(c); if (quiet!=null) return quiet;
                 ItemSlot trash=inventory(c).stream()
                     .filter(s -> c.profile().loggingHotbarLease==null || s.inventoryIndex()!=c.profile().loggingHotbarLease.sourceIndex())
@@ -612,7 +623,10 @@ public final class LoggingModule implements AutomationModule {
             && clearedLeafCounts.getOrDefault(plot.corner(),0)<LoggingLeafRules.MAX_CLEARS_PER_PLOT;
     }
     private boolean plotRestoreBoundary(Context c) {
-        return pending==null && ticket<0 && c.profile().loggingRunActive && c.world().player().onGround()
+        return c.profile().loggingRunActive && idleActionBoundary(c);
+    }
+    private boolean idleActionBoundary(Context c) {
+        return pending==null && ticket<0 && c.world().player().onGround()
             && !c.actions().busy() && c.actions().pauseReason()==null && c.world().menu()!=null
             && !c.world().menu().container() && c.world().menu().carried().empty() && !MachineOutputLedger.hasPending(c);
     }
@@ -620,7 +634,7 @@ public final class LoggingModule implements AutomationModule {
         approachResult=null;
         plantingStanceReady=false; plantingOrder=List.of();
         if (remaining.stream().anyMatch(p -> !c.world().loaded(p) || !c.world().loaded(p.offset(0,-1,0)))) {
-            fail("재식재할 등록 칸의 청크가 로드되지 않았습니다."); return false;
+            approachResult=waitForLocalRetry(c,"재식재할 등록 칸 또는 흙의 청크가 로드되지 않았습니다."); return false;
         }
         Navigation.Result result=c.navigation().moveToLoggingPlanting(remaining,c);
         if (result==Navigation.Result.BLOCKED) {
@@ -646,6 +660,31 @@ public final class LoggingModule implements AutomationModule {
             ? waitForLocalRetry(c,result.message()) : result;
     }
     private WorkResult waitForLocalRetry(Context c,String reason) {
+        return waitForLocalRetry(c,reason,false);
+    }
+    private WorkResult waitForPlotEnvironment(Context c,String reason) {
+        if (!c.profile().loggingRunActive) {
+            c.actions().stopMovement();
+            if (!idleActionBoundary(c) || c.profile().loggingHotbarLease!=null || !navigationRetryBoundary(c))
+                return fail("벌목 구역 확인 보류 전 안전한 조작 경계를 확인할 수 없습니다: "+reason);
+            initialPlotObservations.clear(); observationWindow.clear(); c.navigation().reset();
+            environmentDeferred=true;
+            return WorkResult.deferred("벌목 구역 확인 보류 — 다른 작업을 진행하며 다시 확인합니다: "+reason);
+        }
+        validateRemaining(c);
+        LoggingHotbarLease lease=c.profile().loggingHotbarLease;
+        if (lease!=null) {
+            c.actions().stopMovement();
+            if (!plotRestoreBoundary(c) || !navigationRetryBoundary(c) || lease.stage()!=LoggingHotbarLease.Stage.PARKED || !parked(c,lease))
+                return fail("벌목 구역 확인 보류 전 빌린 단축바의 원래 아이템과 복원 경계를 확인할 수 없습니다: "+reason);
+            // A known parked item can be restored through its existing persisted
+            // inverse/ACK path. No consumer receives custody until that path ends.
+            restoreBeforePlot=true; clearCleanupQuiet(); stage=Stage.RESTORE;
+            return busy("구역 장애물 대기 전 원래 단축바 아이템부터 복원: "+reason);
+        }
+        return waitForLocalRetry(c,reason,true);
+    }
+    private WorkResult waitForLocalRetry(Context c,String reason,boolean environment) {
         c.actions().stopMovement();
         if(failure!=null || !plotRestoreBoundary(c) || c.profile().loggingHotbarLease!=null || !navigationRetryBoundary(c))
             return fail("이동 보류 전 안전한 조작 경계를 확인할 수 없습니다: "+reason);
@@ -656,7 +695,8 @@ public final class LoggingModule implements AutomationModule {
         String message="벌목 작업 보류 — "+(once(c) ? "이 작업은 대기, " : "다른 루틴은 계속 진행, ")
             +"1200틱 후 현재 위치에서 재시도: "+reason;
         localRetryWait=new LocalRetryWait(obligations,loggingFacilities(c),stage,c.world().tick(),
-            Math.addExact(c.world().tick(),VISIBILITY_RETRY_TICKS),message);
+            Math.addExact(c.world().tick(),VISIBILITY_RETRY_TICKS),message,environment);
+        if (environment) { plantingStanceReady=false; plantingOrder=List.of(); }
         clearMiningQuiet(); clearCleanupQuiet(); c.navigation().reset();
         return WorkResult.resourceWait(message);
     }
@@ -698,10 +738,10 @@ public final class LoggingModule implements AutomationModule {
             boolean sapling=candidate.plantingPositions().stream().anyMatch(p -> c.world().block(p).id().equals(LoggingRules.SAPLING));
             if (c.profile().loggingReplantingPlots.contains(corner)) {
                 if (LoggingRules.partiallyGrown(c.world(),candidate) || chopped)
-                    throw new IllegalStateException("미완료 2x2 구역에 일부 나무나 밑동이 남았습니다. 자동 재벌목하지 않습니다.");
+                    throw new PlotObstruction("미완료 2x2 구역에 일부 나무나 밑동이 남았습니다. 자동 재벌목하지 않습니다.");
             } else if (!chopped && trunks==0) markReplanting(c,corner);
             else if (sapling || !chopped && trunks!=4)
-                throw new IllegalStateException("등록한 2x2 나무가 일부만 남거나 묘목과 섞였습니다. 건드리지 않고 확인을 기다립니다.");
+                throw new PlotObstruction("등록한 2x2 나무가 일부만 남거나 묘목과 섞였습니다. 건드리지 않고 확인을 기다립니다.");
         }
         invisiblePlots.entrySet().removeIf(entry -> !c.profile().loggingRemainingPlots.contains(entry.getKey())
             || c.profile().loggingReplantingPlots.contains(entry.getKey())
@@ -761,7 +801,12 @@ public final class LoggingModule implements AutomationModule {
         return readiness==ResourceReadiness.WAITING && partialCleanupReady(c) ? ResourceReadiness.READY : readiness;
     }
     @Override public boolean sleepSafeResourceWait(Context c) {
-        return localRetryWait==null && retainedResourceReadiness(c)!=ResourceReadiness.UNSAFE;
+        return localRetryWait!=null ? localRetryWait.environment() && localRetryWaitReadiness(c)!=ResourceReadiness.UNSAFE
+            : retainedResourceReadiness(c)!=ResourceReadiness.UNSAFE;
+    }
+    @Override public boolean sleepSafeDeferred(Context c) {
+        return environmentDeferred && stage==Stage.START && failure==null && !c.profile().loggingRunActive
+            && c.profile().loggingHotbarLease==null && idleActionBoundary(c) && navigationRetryBoundary(c);
     }
     private boolean partialCleanupReady(Context c) {
         return partialCleanup==null && LoggingRules.allowed(c) && plotRestoreBoundary(c) && c.profile().loggingHotbarLease==null
@@ -787,11 +832,29 @@ public final class LoggingModule implements AutomationModule {
     private ResourceReadiness retainedResourceReadiness(Context c) {
         // No menu actions, world changes, saved deadlines or ground-item guesses here.
         if (failure!=null || stage!=Stage.PLANT && stage!=Stage.CHOP || pending!=null || ticket>=0 || plot==null
-            || !c.profile().loggingRunActive || c.profile().loggingHotbarLease!=null)
+            || !plotRestoreBoundary(c) || c.profile().loggingHotbarLease!=null || !navigationRetryBoundary(c))
             return ResourceReadiness.UNSAFE;
         try { validateRemaining(c); }
         catch (RuntimeException invalid) { return ResourceReadiness.UNSAFE; }
         if (!c.profile().loggingPlots.contains(plot) || !c.profile().loggingRemainingPlots.contains(plot.corner())) return ResourceReadiness.UNSAFE;
+        List<ItemSlot> stock=inventory(c).stream().sorted(Comparator.comparingInt(ItemSlot::inventoryIndex)).toList();
+        if (stock.size()!=36) return ResourceReadiness.UNSAFE;
+        for (int i=0;i<36;i++) if (stock.get(i).inventoryIndex()!=i || stock.get(i).item()==null) return ResourceReadiness.UNSAFE;
+        // Revoke the old material/visibility grant and let the next ordinary tick
+        // classify changed terrain. Readiness never records a new wait or receipt.
+        try {
+            for (Pos corner:c.profile().loggingRemainingPlots) {
+                LoggingPlot candidate=registeredPlot(c,corner);
+                if (candidate.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) continue;
+                inspect(c,candidate);
+                long trunks=candidate.plantingPositions().stream().filter(p -> c.world().block(p).id().equals(LoggingRules.LOG)).count();
+                boolean chopped=candidate.plantingPositions().stream().anyMatch(p -> c.world().block(p).id().equals(LoggingRules.CHOPPED_LOG));
+                boolean sapling=candidate.plantingPositions().stream().anyMatch(p -> c.world().block(p).id().equals(LoggingRules.SAPLING));
+                if (c.profile().loggingReplantingPlots.contains(corner) ? trunks>0 && trunks<4 || chopped
+                    : sapling && trunks>0 || !chopped && trunks>0 && trunks<4) return ResourceReadiness.READY;
+            }
+        } catch (PlotObstruction changed) { return ResourceReadiness.READY; }
+        catch (RuntimeException invalid) { return ResourceReadiness.UNSAFE; }
         if (stage==Stage.CHOP) {
             if (c.profile().loggingReplantingPlots.contains(plot.corner()) || choppingApproach==null
                 || choppingApproach.status()!=LoggingApproachSearch.Status.NO_VISIBLE_STANCE
@@ -826,9 +889,6 @@ public final class LoggingModule implements AutomationModule {
                 if (negative==null) unprocessed=true;
             }
         }
-        List<ItemSlot> stock=inventory(c).stream().sorted(Comparator.comparingInt(ItemSlot::inventoryIndex)).toList();
-        if (stock.size()!=36) return ResourceReadiness.UNSAFE;
-        for (int i=0;i<36;i++) if (stock.get(i).inventoryIndex()!=i || stock.get(i).item()==null) return ResourceReadiness.UNSAFE;
         int seeds=availableSaplings(c).stream().mapToInt(s -> s.item().count()).sum();
         if (unprocessed || unobservedNegative) return ResourceReadiness.READY;
         if (stage==Stage.CHOP) {
@@ -948,7 +1008,7 @@ public final class LoggingModule implements AutomationModule {
             if (!c.world().loaded(cell)) throw new IllegalStateException("벌목 구역 청크가 로드되지 않았습니다.");
             BlockData block=c.world().block(cell);
             if (!air(block) && !LoggingRules.stump(block) && !block.id().equals(LoggingRules.SAPLING))
-                throw new IllegalStateException("등록 식재 칸에 다른 블록이 있습니다. 임의로 제거하지 않습니다.");
+                throw new PlotObstruction("등록 식재 칸에 다른 블록이 있습니다: "+block.id()+" ("+cell.x()+", "+cell.y()+", "+cell.z()+"). 임의로 제거하지 않습니다.");
         }
     }
     private static void validateRemaining(Context c) {
@@ -967,7 +1027,7 @@ public final class LoggingModule implements AutomationModule {
     }
     private static void completePlot(Context c,Pos corner) {
         LoggingPlot completed=c.profile().loggingPlots.stream().filter(p -> p.corner().equals(corner)).findFirst().orElseThrow();
-        if (!LoggingRules.completePlanting(c.world(),completed)) throw new IllegalStateException("2x2 재식재가 같은 상태의 네 칸으로 완성되지 않았습니다.");
+        if (!LoggingRules.completePlanting(c.world(),completed)) throw new PlotObstruction("2x2 재식재가 같은 상태의 네 칸으로 완성되지 않았습니다.");
         List<Pos> oldRemaining=c.profile().loggingRemainingPlots;
         List<Pos> oldReplanting=c.profile().loggingReplantingPlots;
         List<Pos> remaining=new ArrayList<>(oldRemaining); remaining.remove(corner); c.profile().loggingRemainingPlots=remaining;
@@ -1014,7 +1074,7 @@ public final class LoggingModule implements AutomationModule {
     }
     private static void finish(Context c) {
         for (LoggingPlot registered:c.profile().loggingPlots)
-            if (!LoggingRules.completePlanting(c.world(),registered)) throw new IllegalStateException("2x2 재식재 상태가 바뀌어 벌목 완료를 저장하지 않습니다.");
+            if (!LoggingRules.completePlanting(c.world(),registered)) throw new PlotObstruction("2x2 재식재 상태가 바뀌어 벌목 완료를 저장하지 않습니다.");
         if (!c.profile().loggingRemainingPlots.isEmpty() || !c.profile().loggingReplantingPlots.isEmpty()
             || c.profile().loggingHotbarLease!=null) throw new IllegalStateException("재식재 또는 단축바 복원이 아직 끝나지 않았습니다.");
         long due=Math.addExact(day(c),c.profile().loggingCycleDays);
@@ -1031,7 +1091,7 @@ public final class LoggingModule implements AutomationModule {
     private WorkResult fail(String text) { failure=text; return WorkResult.blocked(text); }
     @Override public void reset() {
         stage=Stage.START; restoreBeforePlot=false; restorationRefreshRequested=false; partialCleanup=null; pending=null; ticket=-1; actionPos=null; plot=null; table=null; craftingMenu=-1;
-        restorationRefreshLease=null; localRetryWait=null;
+        restorationRefreshLease=null; localRetryWait=null; environmentDeferred=false;
         // Scheduler resets must not turn the bounded ALL_GROWN readiness poll into
         // a per-tick scan. Explicit one-shot and durable active resumes bypass it.
         chopStrokes=trashOperations=craftOperations=0; settleUntil=0; saplingWaitUntil=-1; saplingWaitRequired=0; failure=null;

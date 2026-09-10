@@ -9,6 +9,78 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class LoggingModuleTest {
+    @Test void snowAfterPartialPlantingRestoresTheKnownBorrowedHotbarBeforeYieldingAndNeverClearsSnow() {
+        Fixture f=new Fixture(1); f.fillHotbar(); f.until(()->f.plants==1);
+        LoggingHotbarLease lease=f.profile.loggingHotbarLease; assertNotNull(lease);
+        Pos snow=f.profile.loggingPlots.get(0).plantingPositions().stream().filter(p->f.id(p).equals("minecraft:air")).findFirst().orElseThrow();
+        f.blocks.put(snow,"minecraft:snow"); int swaps=f.swaps;
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        assertEquals("minecraft:snow",f.id(snow)); assertEquals(1,f.plants); assertEquals(2,f.chops);
+        assertEquals(swaps+1,f.swaps); assertNull(f.profile.loggingHotbarLease);
+        assertEquals(lease.original(),f.inventory[lease.hotbarSlot()]);
+        assertTrue(f.module.sleepSafeResourceWait(f.context)); assertEquals(1,f.profile.loggingReplantingPlots.size());
+        f.blocks.put(snow,"minecraft:air"); f.ticks+=1200;
+        assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(4,f.plants); assertEquals(2,f.chops);
+        assertEquals(lease.original(),f.inventory[lease.hotbarSlot()]); assertFalse(f.profile.loggingRunActive);
+    }
+    @Test void transientForeignPlotBlockPreservesTheEntireBatchAndResumesAfterBoundedRetry() {
+        Fixture f=new Fixture(6); f.continuous(); f.profile.loggingRunActive=true;
+        List<Pos> remaining=f.profile.loggingPlots.stream().map(LoggingPlot::corner).toList();
+        Pos obstructed=remaining.get(5); f.profile.loggingRemainingPlots.addAll(remaining);
+        f.profile.loggingReplantingPlots.add(obstructed); f.setPlot(5,"minecraft:air");
+        f.blocks.put(obstructed,"minecraft:stone_bricks");
+        WorkResult wait=f.finish();
+        assertEquals(WorkResult.State.RESOURCE_WAIT,wait.state());
+        assertTrue(wait.message().contains("minecraft:stone_bricks"));
+        assertTrue(wait.message().contains("30, 64, 0"));
+        assertEquals(remaining,f.profile.loggingRemainingPlots);
+        assertEquals(List.of(obstructed),f.profile.loggingReplantingPlots);
+        assertTrue(f.profile.nextEligibleDay.isEmpty()); assertTrue(f.actions.isEmpty());
+        assertTrue(f.module.sleepSafeResourceWait(f.context));
+        int checkpoints=f.events.size(); long waitingAt=f.ticks;
+        for(int retry=0;retry<3;retry++) {
+            f.ticks=waitingAt+1199; assertEquals(WorkResult.State.RESOURCE_WAIT,f.step().state());
+            assertEquals(AutomationModule.ResourceReadiness.WAITING,f.module.resourceReadiness(f.context));
+            f.ticks++; assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state()); waitingAt=f.ticks;
+            assertEquals(remaining,f.profile.loggingRemainingPlots); assertTrue(f.actions.isEmpty());
+            assertEquals(checkpoints,f.events.size()); assertEquals("minecraft:stone_bricks",f.id(obstructed));
+        }
+        f.blocks.put(obstructed,"minecraft:air"); f.add(LoggingRules.SAPLING,4); f.ticks+=1200;
+        assertEquals(AutomationModule.ResourceReadiness.READY,f.module.resourceReadiness(f.context));
+        assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(10,f.chops); assertEquals(24,f.plants);
+        assertFalse(f.profile.loggingRunActive); assertTrue(f.profile.loggingRemainingPlots.isEmpty());
+        assertTrue(f.profile.loggingReplantingPlots.isEmpty());
+    }
+    @Test void foreignBlockDuringGrantedSaplingWaitWakesForObservationWithoutWritingOrLosingItsObligation() {
+        Fixture f=resourceFixture(); assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+        Pos corner=f.profile.loggingPlots.get(0).corner(); f.blocks.put(corner,"minecraft:stone_bricks");
+        int checkpoints=f.events.size(),requests=f.actions.size();
+        assertEquals(AutomationModule.ResourceReadiness.READY,f.module.resourceReadiness(f.context));
+        assertEquals(checkpoints,f.events.size()); assertEquals(requests,f.actions.size());
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.step().state()); assertTrue(f.module.sleepSafeResourceWait(f.context));
+        assertEquals(List.of(corner),f.profile.loggingRemainingPlots); assertEquals(List.of(corner),f.profile.loggingReplantingPlots);
+        f.blocks.put(corner,"minecraft:air"); f.add(LoggingRules.SAPLING,2); f.ticks+=1200;
+        assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(4,f.plants); assertEquals(0,f.chops);
+    }
+    @Test void foreignPlotObservationDoesNotWeakenNativeOrDurableSafetyChecks() {
+        for(String unsafe:List.of("busy","fence","cursor","lease","registration")) {
+            Fixture f=resourceFixture(); Pos corner=f.profile.loggingPlots.get(0).corner();
+            f.blocks.put(corner,"minecraft:stone_bricks");
+            assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
+            switch(unsafe) {
+                case "busy" -> f.forcedNativeBusy=true;
+                case "fence" -> f.nativeFence="unconfirmed native operation";
+                case "cursor" -> f.cursor=item(LoggingRules.SAPLING,1);
+                case "lease" -> f.profile.loggingHotbarLease=new LoggingHotbarLease(9,0,item("minecraft:torch",5),"a".repeat(64),LoggingHotbarLease.Stage.PARKED);
+                case "registration" -> f.profile.loggingPlots.clear();
+            }
+            assertEquals(AutomationModule.ResourceReadiness.UNSAFE,f.module.resourceReadiness(f.context),unsafe);
+            assertFalse(f.module.sleepSafeResourceWait(f.context),unsafe);
+            assertEquals(WorkResult.State.BLOCKED,f.step().state(),unsafe);
+            assertEquals(List.of(corner),f.profile.loggingRemainingPlots); assertEquals(List.of(corner),f.profile.loggingReplantingPlots);
+            assertTrue(f.actions.isEmpty()); assertTrue(f.profile.loggingRunActive); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
     @Test void completedLoggingStorageNavigationFailureRetainsItsBatchAndRetriesWithoutAnotherF8() {
         Fixture f=cleanupFixture(); f.add(LoggingRules.FIRE_LOG,2); f.blockedNavigation.add(f.woodPos);
         assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
@@ -1136,14 +1208,15 @@ class LoggingModuleTest {
         assertEquals(31,f.chops); assertEquals(4,f.plants);
     }
 
-    @Test void restartAfterPartialReplantBlocksSmallTreeMixUntilOperatorRestoresFourTrunks() {
+    @Test void restartAfterPartialReplantRestoresBorrowedHotbarThenWaitsForCoherentFourTrunks() {
         Fixture f=new Fixture(2); f.fillHotbar(); f.until(() -> f.plants==1);
         Pos first=f.actions.stream().filter(a -> a instanceof Action.PlantSapling).map(a -> ((Action.PlantSapling)a).pos()).findFirst().orElseThrow();
         assertTrue(f.profile.loggingReplantingPlots.contains(f.profile.loggingPlots.get(0).corner())); f.blocks.put(first,LoggingRules.LOG);
         LoggingHotbarLease lease=f.profile.loggingHotbarLease; assertNotNull(lease);
         f.restart();
-        assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertEquals(1,f.plants); assertEquals(2,f.chops);
-        assertEquals(lease,f.profile.loggingHotbarLease); assertEquals(0,f.trashed); assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state()); assertEquals(1,f.plants); assertEquals(2,f.chops);
+        assertNull(f.profile.loggingHotbarLease); assertEquals(lease.original(),f.inventory[lease.hotbarSlot()]);
+        assertEquals(0,f.trashed); assertTrue(f.profile.nextEligibleDay.isEmpty());
         assertEquals(2,f.profile.loggingRemainingPlots.size());
         f.setPlot(0,LoggingRules.LOG); f.restart();
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(4,f.chops,"Regrown first planting is not recut");
@@ -1158,7 +1231,7 @@ class LoggingModuleTest {
         assertFalse(LoggingRules.completePlanting(f,f.profile.loggingPlots.get(0)));
         assertNotNull(LoggingRules.trashRejection(new Action.TrashLogging(9,f.inventory[9]),f.context));
         assertNotNull(LoggingRules.trashRejection(new Action.TrashLogging(10,f.inventory[10]),f.context));
-        assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertTrue(f.actions.isEmpty());
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state()); assertTrue(f.actions.isEmpty());
         assertEquals(List.of(corner),f.profile.loggingRemainingPlots); assertEquals(List.of(corner),f.profile.loggingReplantingPlots);
         assertTrue(f.profile.nextEligibleDay.isEmpty());
     }
@@ -1166,7 +1239,7 @@ class LoggingModuleTest {
     @Test void aCompletedPlotTurningMixedBeforeWasteIsNotSilentlyFinalized() {
         Fixture f=new Fixture(1); f.until(() -> f.profile.loggingRemainingPlots.isEmpty() && f.plants==4);
         f.blocks.put(f.profile.loggingPlots.get(0).corner(),LoggingRules.LOG);
-        assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertEquals(0,f.trashed);
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state()); assertEquals(0,f.trashed);
         assertTrue(f.profile.loggingRunActive); assertTrue(f.profile.nextEligibleDay.isEmpty());
     }
 
@@ -1183,7 +1256,7 @@ class LoggingModuleTest {
         f.blocks.put(f.profile.loggingPlots.get(0).corner(),LoggingRules.LOG);
         var stage=LoggingModule.class.getDeclaredField("stage"); stage.setAccessible(true);
         stage.set(f.module,Arrays.stream(stage.getType().getEnumConstants()).filter(v -> v.toString().equals("FINISH")).findFirst().orElseThrow());
-        assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertEquals(WorkResult.State.RESOURCE_WAIT,f.step().state());
         assertTrue(f.profile.loggingRunActive); assertTrue(f.profile.nextEligibleDay.isEmpty()); assertTrue(f.actions.isEmpty());
     }
 
@@ -1308,13 +1381,13 @@ class LoggingModuleTest {
         engine.start(f.context); engineUntil(f,engine,() -> consumers[0]>0);
         engine.stop(f.context,AutomationEngine.State.PAUSED,"manual pause"); int before=consumers[0];
         f.blocks.put(f.profile.loggingPlots.get(0).corner(),"minecraft:stone_bricks");
-        engine.start(f.context); engineUntil(f,engine,() -> !engine.running());
-        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(before,consumers[0]);
+        engine.start(f.context); engineUntil(f,engine,() -> consumers[0]>before);
+        assertTrue(engine.running(),engine.status());
         assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingReplantingPlots.size());
         assertEquals(0,f.plants); assertEquals(0,f.chops);
     }
 
-    @Test void livePartialGrowthOrBorrowedHotbarInvalidatesTheGrantAtTheNextSafeBoundary() {
+    @Test void livePartialGrowthWaitsWhileBorrowedHotbarStillInvalidatesTheGrantAtTheNextSafeBoundary() {
         for(boolean lease:List.of(false,true)) {
             Fixture f=resourceFixture(); int[] consumers={0}; f.profile.enabled.put(Feature.SHIPPING,true);
             AutomationEngine engine=new AutomationEngine(List.of(f.module,
@@ -1323,7 +1396,8 @@ class LoggingModuleTest {
             if(lease) f.profile.loggingHotbarLease=new LoggingHotbarLease(9,0,item("minecraft:torch",5),"a".repeat(64),LoggingHotbarLease.Stage.PARKED);
             else f.blocks.put(f.profile.loggingPlots.get(0).corner(),LoggingRules.LOG);
             f.ticks+=20; engine.tick(f.context);
-            assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(before,consumers[0]);
+            if(lease) { assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals(before,consumers[0]); }
+            else { engineUntil(f,engine,() -> consumers[0]>before); assertTrue(engine.running(),engine.status()); }
             assertEquals(0,f.plants); assertEquals(0,f.chops); assertTrue(f.profile.loggingRunActive);
         }
     }
@@ -1417,13 +1491,13 @@ class LoggingModuleTest {
         assertTrue(planted.subList(0,4).stream().allMatch(f.profile.loggingPlots.get(0).plantingPositions()::contains));
     }
 
-    @Test void unsafePartialGrowthOrConstructionInAnotherQueuedPlotPreventsAnyFurtherFelling() {
+    @Test void partialGrowthOrConstructionInAnotherQueuedPlotWaitsWithoutAnyFurtherFelling() {
         for(String changed:List.of(LoggingRules.LOG,"minecraft:stone_bricks")) {
             Fixture f=new Fixture(2); f.profile.loggingRunActive=true;
             List<Pos> corners=f.profile.loggingPlots.stream().map(LoggingPlot::corner).toList();
             f.profile.loggingRemainingPlots.addAll(corners); f.profile.loggingReplantingPlots.add(corners.get(0));
             f.setPlot(0,"minecraft:air"); f.blocks.put(corners.get(0),changed); f.add(LoggingRules.SAPLING,2);
-            assertEquals(WorkResult.State.BLOCKED,f.finish().state()); assertEquals(0,f.chops); assertEquals(0,f.plants);
+            assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state()); assertEquals(0,f.chops); assertEquals(0,f.plants);
             assertEquals(corners,f.profile.loggingRemainingPlots); assertEquals(1,f.profile.loggingReplantingPlots.size());
         }
     }
@@ -1983,11 +2057,15 @@ class LoggingModuleTest {
         assertEquals(WorkResult.State.IDLE,f.finish().state()); assertEquals(2,f.chops);
     }
 
-    @Test void unloadedOrForeignPlantingCellsFailBeforeAnyActionAndNeverExpandThePlot() {
+    @Test void foreignPlantingCellsDeferBeforeCreatingTheBatchAndNeverExpandThePlot() {
         Fixture f=new Fixture(1); f.unloaded.add(f.profile.loggingPlots.get(0).corner());
         assertEquals(WorkResult.State.BLOCKED,f.step().state()); assertTrue(f.actions.isEmpty());
         Fixture foreign=new Fixture(1); foreign.blocks.put(foreign.profile.loggingPlots.get(0).corner(),"minecraft:oak_log");
-        assertEquals(WorkResult.State.BLOCKED,foreign.step().state()); assertTrue(foreign.actions.isEmpty());
+        assertEquals(WorkResult.State.DEFERRED,foreign.step().state()); assertTrue(foreign.actions.isEmpty());
+        assertTrue(foreign.module.sleepSafeDeferred(foreign.context));
+        assertFalse(foreign.profile.loggingRunActive); assertTrue(foreign.profile.loggingRemainingPlots.isEmpty());
+        foreign.setPlot(0,LoggingRules.LOG);
+        assertEquals(WorkResult.State.IDLE,foreign.finish().state()); assertEquals(2,foreign.chops); assertEquals(4,foreign.plants);
     }
 
     @Test void loggingObservesAnUnloadedPlotBeforeCreatingItsDurableCutBatch() {
