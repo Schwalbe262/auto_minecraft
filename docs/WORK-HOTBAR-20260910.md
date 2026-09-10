@@ -48,6 +48,8 @@ The follow-up build was installed by another normal restart; server reconnection
 
 ## Wine expansion button diagnosis
 
+**Follow-up:** the unnecessary logging-completion requirement described below has now been removed; see [the wine edit-gate fix and live button verification](WINE-EDIT-GATE-20260910.md). The paragraph below records the earlier diagnosis, not a current requirement to finish logging first.
+
 The custom wine-line expansion button requires `wineLineSettingsEditable()`. That currently rejects an active unfinished logging batch even while automation is OFF. A retained logging run therefore disables ancient-fruit wine expansion too; moving nearer the kegs or restarting alone does not clear that batch.
 
 After restoring and completing the logging work, reopen **Ctrl+F8 → saved locations → ancient-fruit wine → expand this wine region** and select the new nearby kegs. The legacy tomato-wine entry is not the custom-line expansion screen. No facility coordinates or expansion choices were changed on the user's behalf, and the edit safety gates were not bypassed.
