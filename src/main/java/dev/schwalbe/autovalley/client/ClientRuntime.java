@@ -41,13 +41,10 @@ public final class ClientRuntime {
     private volatile boolean attackFence;
     private long attackFenceUntil;
     private final EmergencyStartGate emergencyStartGate=new EmergencyStartGate();
-    private float expectedYaw,expectedPitch;
-    private boolean anglesValid;
+    private final MouseMovementTakeover mouseTakeover=new MouseMovementTakeover();
     private int savedScheduleHash;
     private boolean calibrationWasActive;
     private boolean previewShown;
-    private boolean wasSleeping;
-    private boolean wasFocused;
     private Boolean savedPauseOnLostFocus;
     private CoordinateTravel coordinateTravel;
     private PendingShipmentRecovery pendingShipmentRecovery;
@@ -88,7 +85,7 @@ public final class ClientRuntime {
             // Do not call Engine.begin/stop or alter its pending-output/live-token state.
             pendingShipmentRecovery=recovery; pendingShipmentStatus=null;
             navigator.reset(); actions.stopMovement(); actions.enabled(true);
-            anglesValid=false; attackFence=true; updateBackgroundPause();
+            mouseTakeover.reset(); attackFence=true; updateBackgroundPause();
             lastPendingShipmentReport=recovery.report();
             return true;
         } catch (RuntimeException e) {
@@ -105,7 +102,7 @@ public final class ClientRuntime {
         if (recovery==null) return;
         if (cancellation!=null) recovery.cancel(context,cancellation);
         lastPendingShipmentReport=recovery.report(); pendingShipmentStatus=recovery.status();
-        pendingShipmentRecovery=null; actions.enabled(false); anglesValid=false;
+        pendingShipmentRecovery=null; actions.enabled(false); mouseTakeover.reset();
         attackFence=world.tick()<attackFenceUntil; updateBackgroundPause();
     }
     /** Explicit movement only; it never enables a work feature or confirms a storage role. */
@@ -132,7 +129,7 @@ public final class ClientRuntime {
         String actionRejection=actions.startRejection();
         if (actionRejection!=null) { notifyUser(actionRejection); return false; }
         coordinateTravel=request;
-        actions.enabled(true); anglesValid=false; attackFence=true; updateBackgroundPause();
+        actions.enabled(true); mouseTakeover.reset(); attackFence=true; updateBackgroundPause();
         return true;
     }
     public Map<String,Object> storageSurveyReport() {
@@ -192,7 +189,7 @@ public final class ClientRuntime {
             pause("선택한 작업의 밭/설비/목적지를 먼저 등록하세요."); notifyUser(engine.status()); return false;
         }
         engine.startOnce(context,feature);
-        actions.enabled(engine.running()); anglesValid=false; attackFence=engine.running();
+        actions.enabled(engine.running()); mouseTakeover.reset(); attackFence=engine.running();
         updateBackgroundPause();
         if (!running()) notifyUser(engine.status());
         return running();
@@ -206,7 +203,7 @@ public final class ClientRuntime {
             if (recording()) { notifyUser("직접 플레이 기록을 저장한 뒤 자동화를 시작하세요."); return; }
             if (mc.screen!=null) { notifyUser("설정/인벤토리 화면을 닫은 뒤 F8을 누르세요."); return; }
             pendingShipmentStatus=null;
-            engine.start(context); actions.enabled(engine.running()); anglesValid=false; attackFence=engine.running();
+            engine.start(context); actions.enabled(engine.running()); mouseTakeover.reset(); attackFence=engine.running();
             updateBackgroundPause();
         }
     }
@@ -214,7 +211,7 @@ public final class ClientRuntime {
         coordinateTravel=null;
         if (pendingShipmentRecovery!=null) finishPendingShipment(reason);
         else { pendingShipmentStatus=null; engine.stop(context,AutomationEngine.State.PAUSED,reason); }
-        actions.enabled(false); anglesValid=false;
+        actions.enabled(false); mouseTakeover.reset();
         updateBackgroundPause();
         attackFence=world.tick()<attackFenceUntil;
         if (profileKey!=null && persistenceError==null && savedScheduleHash!=scheduleHash()) {
@@ -230,7 +227,7 @@ public final class ClientRuntime {
     public void manualInput(boolean attack) {
         if (!running()) return;
         if (attack) attackFenceUntil=world.tick()+3;
-        pause("직접 조작을 감지해 일시정지했습니다.");
+        pause("마우스 움직임을 감지해 일시정지했습니다.");
     }
     /** Called before manual item interactions, including while OFF; a later count is no longer causal evidence. */
     public void manualOutputInteraction() { MachineOutputLedger.invalidateLiveEvidence(context); }
@@ -401,8 +398,9 @@ public final class ClientRuntime {
         catch (RuntimeException e) { pause("산출물 회수 확인 저장 실패 — 자동화 중지"); }
         recorder.tick();
         ClientControl.tick(this);
-        if (running() && anglesValid && mc.isWindowActive() && wasFocused && !mc.player.isSleeping() && !wasSleeping && !actions.expectingSleep()
-            && (Math.abs(net.minecraft.util.Mth.wrapDegrees(mc.player.getYRot()-expectedYaw))>0.05 || Math.abs(mc.player.getXRot()-expectedPitch)>0.05))
+        if (mouseTakeover.moved(world.tick(),running(),mc.isWindowActive(),mc.mouseHandler.isMouseGrabbed(),
+            mc.player.isSleeping() || actions.expectingSleep(),mc.screen,mc.getWindow().getScreenWidth(),mc.getWindow().getScreenHeight(),
+            mc.mouseHandler.xpos(),mc.mouseHandler.ypos()))
             manualInput(false);
         if (running() && !profile.allowBackground && !mc.isWindowActive()) pause("다른 창으로 전환하여 일시정지했습니다.");
         if (running() && mc.screen!=null && !mc.player.isSleeping()) {
@@ -448,9 +446,6 @@ public final class ClientRuntime {
         }
         if (calibrationWasActive && !harvest.calibrating()) notifyUser(harvest.calibrationStatus());
         calibrationWasActive=harvest.calibrating();
-        expectedYaw=mc.player.getYRot(); expectedPitch=mc.player.getXRot(); anglesValid=running();
-        wasSleeping=mc.player.isSleeping();
-        wasFocused=mc.isWindowActive();
         ClientDiagnostics.tick(this);
     }
     private void connect(String key,Connection current) {
@@ -465,7 +460,7 @@ public final class ClientRuntime {
         coordinateTravel=null;
         engine.stop(context,AutomationEngine.State.OFF,"OFF — Ctrl+F8 설정 / F8 시작");
         engine.clearFailureHistory();
-        actions.enabled(false); anglesValid=false; savedScheduleHash=scheduleHash();
+        actions.enabled(false); mouseTakeover.reset(); savedScheduleHash=scheduleHash();
     }
     private void disconnect() {
         recorder.stopCapture("disconnected_or_dimension_changed");
@@ -474,9 +469,8 @@ public final class ClientRuntime {
         engine.stop(context,AutomationEngine.State.OFF,"접속 종료 — 자동화 OFF");
         engine.clearFailureHistory();
         updateBackgroundPause();
-        actions.enabled(false); attackFence=false; anglesValid=false;
+        actions.enabled(false); attackFence=false; mouseTakeover.reset();
         harvest.cancelCalibration(); calibrationWasActive=false;
-        wasSleeping=false;
         if (profileKey!=null && persistenceError==null) try { saveProfile(); } catch (RuntimeException e) { LogUtils.getLogger().warn("Auto Valley could not save the local profile on disconnect"); }
         observations.clear(); profileKey=null; connectionKey=null; connection=null;
     }

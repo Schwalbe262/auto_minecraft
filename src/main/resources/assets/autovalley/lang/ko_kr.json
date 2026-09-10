@@ -198,7 +198,7 @@
   "autovalley.calibrate": "수확 속도 시험 예약 (F8)",
   "autovalley.modules.hint": "F8 시작/정지 · Ctrl+F8 설정 · Pause 긴급 정지",
   "autovalley.background.toggle": "백그라운드: %s",
-  "autovalley.background.hint": "켜짐: 다른 앱을 사용해도 자동화를 계속합니다. 게임 안에서 직접 조작하면 일시정지합니다.",
+  "autovalley.background.hint": "켜짐: 다른 앱을 사용해도 계속합니다. 활성 게임 창의 마우스 움직임만 직접 조작으로 감지합니다. F8·긴급정지·메뉴 안전 검사는 유지됩니다.",
   "autovalley.schedule.open": "게임 날짜 기준 수확·생산 주기…",
   "autovalley.schedule.harvest": "토마토 수확 주기: 게임 1~28일",
   "autovalley.schedule.tomato_only": "이 입력은 토마토 수확에만 적용되며, 다른 작물 주기는 바꾸지 않습니다.",

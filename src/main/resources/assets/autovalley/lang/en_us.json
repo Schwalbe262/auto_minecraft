@@ -198,7 +198,7 @@
   "autovalley.calibrate": "Prepare pace trial (F8)",
   "autovalley.modules.hint": "F8 start / pause · Ctrl+F8 settings · Pause emergency stop",
   "autovalley.background.toggle": "Background: %s",
-  "autovalley.background.hint": "ON: automation continues while you use other apps; direct input inside Minecraft still pauses it.",
+  "autovalley.background.hint": "ON: continues while you use other apps. Only mouse movement in the active game window triggers manual takeover. F8, emergency stop and menu safety checks remain.",
   "autovalley.schedule.open": "Production cycles in game days…",
   "autovalley.schedule.harvest": "Tomato harvest cycle (1–28 game days)",
   "autovalley.schedule.tomato_only": "This input changes tomato harvesting only, not other crops.",

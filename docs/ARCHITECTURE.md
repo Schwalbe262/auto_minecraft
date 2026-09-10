@@ -16,7 +16,7 @@ A Netty handler observes vanilla replies after vanilla queues their application.
 
 ## Scheduling
 
-Background operation defaults on. Alt/Tab/Windows task switching is exempt from manual takeover, while actual game movement, mouse input, and remapped attacks still stop automation. Background operation uses game APIs, never OS input or global hooks. Vanilla pause-on-lost-focus is temporarily suppressed only while background automation runs and restored on stop. Foreground-only mode remains available. Disconnection and unsafe health/hunger always stop work.
+Background operation defaults on. Manual takeover uses the active game's cursor coordinates, not camera rotation or ordinary keys/clicks/scroll. A bounded four-client-tick grace rebases after start, focus/grab/screen/size changes or waking. Movement in a focused automation-owned menu can also take over. Alt/Tab/Windows switching and other-app mouse movement do not count; conflicting manual item/menu inputs while ON are suppressed locally instead of canceling automation. Explicit F8/STOP/settings and native/menu/custody safety checks remain. Background operation uses game APIs, never OS input or global hooks. Vanilla pause-on-lost-focus is temporarily suppressed only while background automation runs and restored on stop. Disabling background operation still deliberately pauses on focus loss. Disconnection and unsafe health/hunger always stop work.
 
 Explicit local diagnostic/control request files support inspection and start/pause without stealing window focus. They contain no arbitrary input or mutation API; start uses the same runtime checks as F8. Snapshots contain local positions/inventory and must not be published.
 
