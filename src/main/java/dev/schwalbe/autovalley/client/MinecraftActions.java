@@ -127,6 +127,36 @@ public final class MinecraftActions implements ActionPort {
             return new LoggingRestorationReceipt.Endpoint(MinecraftWorld.item(item),fingerprint);
         } catch (java.security.NoSuchAlgorithmException unavailable) { return null; }
     }
+    @Override public boolean workHotbarRestored(HotbarLease lease) {
+        return workHotbarCustody(lease,true);
+    }
+    @Override public boolean workHotbarParked(HotbarLease lease) {
+        return workHotbarCustody(lease,false);
+    }
+    private boolean workHotbarCustody(HotbarLease lease,boolean restored) {
+        if(context==null || lease==null || !lease.valid() || context.profile().workHotbarLease!=lease
+            || context.profile().loggingHotbarLease!=null || pending!=null
+            || loggingAction!=null || loggingRecipe!=null || loggingSwap!=null || inventoryRefresh!=null
+            || lateLoggingSwap!=null || lateLoggingAction!=null || lateLoggingRecipe!=null
+            || lateInventoryReply!=null || lateTrashReply!=null || loggingFailure!=null
+            || consolidationFailure!=null || trashFailure!=null || mc.player==null || mc.level==null
+            || mc.player.containerMenu!=mc.player.inventoryMenu || mc.player.inventoryMenu.containerId!=0
+            || mc.player.inventoryMenu.slots.size()!=46 || !mc.player.inventoryMenu.getCarried().isEmpty())return false;
+        var slots=mc.player.inventoryMenu.slots;
+        var sources=slots.stream().filter(s->s.container==mc.player.getInventory() && s.getContainerSlot()==lease.sourceIndex()).toList();
+        var destinations=slots.stream().filter(s->s.container==mc.player.getInventory() && s.getContainerSlot()==lease.hotbarSlot()).toList();
+        if(sources.size()!=1 || destinations.size()!=1)return false;
+        int source=sources.get(0).index,destination=destinations.get(0).index;
+        if(source!=lease.sourceIndex() || destination!=36+lease.hotbarSlot())return false;
+        var full=LoggingRestorationReceipt.latest(observations.fullNativeMenuSnapshotsSince(0,-1));
+        if(full==null || !full.carried().isEmpty() || full.items().size()!=46)return false;
+        var liveSource=restorationEndpoint(sources.get(0).getItem());var liveHotbar=restorationEndpoint(destinations.get(0).getItem());
+        var packetSource=restorationEndpoint(full.items().get(source));var packetHotbar=restorationEndpoint(full.items().get(destination));
+        return restored ? WorkHotbarRestorationReceipt.proves(lease,observations.generation(),lastHotbarSwapGeneration,lastHotbarSwapSequence,
+            full.seq(),true,liveSource,liveHotbar,packetSource,packetHotbar)
+            : WorkHotbarRestorationReceipt.provesParked(lease,observations.generation(),lastHotbarSwapGeneration,lastHotbarSwapSequence,
+                full.seq(),true,liveSource,liveHotbar,packetSource,packetHotbar);
+    }
     @Override public String recoveryStatus() {
         if (inventoryRefresh!=null && pending instanceof Action.RefreshInventory)
             return "단축바 복원 확인용 인벤토리 동기화 중 — 아이템 이동 없이 서버 응답을 기다립니다";
@@ -198,6 +228,7 @@ public final class MinecraftActions implements ActionPort {
     private String transferRejection(Action.QuickMove transfer) {
         if (context.session().oneShotFeature==Feature.STORAGE_SURVEY) return "Storage survey cannot transfer items";
         if (!ownsContainer() || ownedContainer==null) return "This container was not opened by automation";
+        if(!WorkHotbarLeasePolicy.containerAllowed(context,ownedContainer))return "Container is outside the leased work owner";
         Poi poi=context.profile().pois.stream().filter(p -> p.pos().equals(ownedContainer)).findFirst().orElse(null);
         ItemSlot source=world.menu().slot(transfer.slot());
         ItemData item=source.item();

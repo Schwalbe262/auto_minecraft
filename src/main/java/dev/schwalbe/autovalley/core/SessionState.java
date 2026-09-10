@@ -8,6 +8,8 @@ import java.util.Set;
 /** Ephemeral observations/permissions: never serialized into the user's profile. */
 public final class SessionState {
     public Feature oneShotFeature;
+    /** Current owner of a temporary working slot; not a grant to run another feature. */
+    public Feature workHotbarOwner;
     /** Live evidence does not survive reconnect; persisted output debts do. */
     public final Set<String> liveMachineOutputs=new HashSet<>();
     public String activeMachineOutputId;

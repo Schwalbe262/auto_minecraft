@@ -11,6 +11,8 @@ public final class SafetyPolicy {
         if (!player.connected() || (!profile.allowBackground && !player.focused())) return "Game is not connected or requires focus";
         MenuData menu = world.menu();
         if (menu == null || !menu.carried().empty()) return "Resolve the item on the cursor before resuming";
+        String workCustody=WorkHotbarLeasePolicy.rejection(action,context);
+        if(workCustody!=null)return workCustody;
         if (context.session().pendingShipmentRecovery!=null && !context.session().pendingShipmentRecovery.permits(action,context))
             return "Pending-output recovery permits only its planned shipment and navigation doors";
         boolean surveying=context.session().oneShotFeature==Feature.STORAGE_SURVEY;
@@ -79,9 +81,9 @@ public final class SafetyPolicy {
         if (action instanceof Action.SelectHotbar select)
             return select.slot()<0 || select.slot()>8 ? "Invalid hotbar slot" : null;
         if (action instanceof Action.RefreshInventory)
-            return !LoggingRules.allowed(context) || !profile.loggingRunActive || profile.loggingHotbarLease==null
+            return profile.workHotbarLease==null && (!LoggingRules.allowed(context) || !profile.loggingRunActive || profile.loggingHotbarLease==null)
                 || menu.container() || menu.id()!=0 || !context.actions().supportsInventoryRefresh()
-                ? "Inventory refresh is limited to the pending logging hotbar restoration" : null;
+                ? "Inventory refresh is limited to a pending hotbar custody restoration" : null;
         if (action instanceof Action.SwapHotbar swap)
             return menu.container() || swap.inventoryIndex()<0 || swap.inventoryIndex()>35 || swap.hotbarSlot()<0 || swap.hotbarSlot()>8
                 ? "Invalid inventory swap" : null;
