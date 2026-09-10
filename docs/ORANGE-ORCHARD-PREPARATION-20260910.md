@@ -22,3 +22,13 @@ The old recorder did not record `ServerboundUseItemPacket`. Fruit updates and pi
 - The passive recorder now captures block-use and air/item-use intents separately, including hand and native sequence. Item/position observations are collected on the client thread and explicitly marked as unverified, later observations rather than send-time truth or server-success evidence. Chat, commands, custom payloads, identity and raw NBT remain excluded.
 
 No automatic orange harvest is performed as part of this preparation.
+
+## Verification and installation
+
+The final offline `test build` passed **2,344 tests / 177 suites / 0 failures, errors or skips**, including 25 new draft validation/persistence/import tests and 5 item-use recording tests. A second incremental build included the last strict-coordinate test edit.
+
+Artifact SHA-256: `F99F46C7D54C17EE3C94D7B5A66830FE8E26BC3060938E6B215EF70CDA46DA37`.
+
+At a clean live boundary (no menu, carried item, hotbar lease or pending production output), the same Society instance was normally restarted and rejoined the original hostname server. The previous artifact and registration/import files were backed up locally. At 20:37:57 KST the normal `import_work` workflow acknowledged the one draft with 63 observed fruit positions. Comparing the saved profile's pre-existing fields with the pre-restart backup found **no changed existing field**, including feature switches, schedules, unfinished logging state and wine registrations. The ancient-fruit line remained at 96 machines, with its next scheduled pass on game day 599.
+
+The new native harvesting action was deliberately not implemented or tested in live gameplay: this is preparation only. No horn use was sent by the assistant. The existing continuous automation, which had been ON before the maintenance restart, was resumed after registration.
