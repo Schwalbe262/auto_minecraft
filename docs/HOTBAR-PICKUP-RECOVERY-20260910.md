@@ -107,3 +107,35 @@ this successful run; no production rule was relaxed to fix compilation.
 
 Deployment artifact SHA-256:
 `A88A2B221CFA463CBE93EA490775E7DD892A5D31F8EAC4BFC5132932D352FE97`.
+
+## Final deployment and live continuation
+
+The existing Society instance was normally closed and restarted with the final
+artifact; the installed SHA-256 matched. No second concurrent client, forced
+termination, OS input injection or inventory click replay was used.
+
+On the final connection, one genuine inventory refresh and four native hotbar
+exchanges were confirmed. The old custody lease cleared and logging finished,
+including its inventory cleanup and berry-shipping phase. The durable profile
+then contained `loggingRunActive=false` and no hotbar lease.
+
+A bounded read-only client-thread sampler recorded five-second snapshots. From
+05:44:43 to 05:48:03 UTC (14:44:43 to 14:48:03 KST), all 41 samples remained
+connected and running, with no late-action fences or retained failed outcomes.
+The native ticket counter advanced from 75 to 369. The routine moved from logging
+to tomato harvest/storage and then to the 384-machine wine group. Tomatoes rose
+to 1,302 during harvest and were no longer in inventory when production began.
+Progress continued with the Minecraft window unfocused.
+
+By 05:51:38 UTC, the wine production pass had collected 384 wines, returned the
+unused tomatoes and yielded to `WineStorageModule`. At 05:52:18 UTC the wine
+inventory was empty, that storage phase had yielded, and the preserves module
+was processing machine 18/144. Across the 92 samples spanning 455 seconds, there
+were no sampled stops, disconnects, late fences or retained failed outcomes.
+The routine was left running in continuous mode, not a one-shot test.
+
+The private sampler has a four-hour maximum lifetime and no gameplay, outcome,
+checkpoint, resume or restart authority. It records later evidence; it is not an
+autorestart watchdog, and its scheduled duration is not already-completed soak
+testing. This observed continuation validates this incident's recovery, not a
+claim that every automation path is now indefinitely stable.
