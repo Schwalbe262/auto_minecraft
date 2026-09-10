@@ -4,6 +4,8 @@ import java.util.*;
 
 public final class Profile {
     public int schemaVersion = 6;
+    /** Legacy files without this field receive a one-time conservative ancient-crop transition. */
+    public int strictHarvestTimingVersion = 1;
     public NavigationMode navigationMode = NavigationMode.TERRAIN;
     public boolean useWaypointHints = true;
     /** Coordinate drafts remain separate from registered, authorized work locations. */

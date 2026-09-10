@@ -42,19 +42,19 @@ class HarvestAndStorageModuleTest {
         assertEquals(AutomationEngine.State.COMPLETE,f.engine.state());assertEquals(0,f.harvests);assertEquals(9,f.stored(STORE,FRUIT));
         assertEquals(450L,f.profile.nextEligibleDay.get("harvest:Ancient"));
     }
-    @Test void futureDueButRipeAncientFruitIsHarvestedAndStoredAfterAllTomatoes() {
+    @Test void futureDueRipeAncientFruitWaitsWhileDueTomatoesAreHarvestedAndStored() {
         Fixture f=new Fixture();f.tomatoes();f.profile.nextEligibleDay.put("harvest:Ancient",450L);
         f.requireTomatoStoredBeforeAncient=true;f.start();f.run(200);
         assertEquals(AutomationEngine.State.COMPLETE,f.engine.state(),f.engine.status());
-        assertEquals(List.of(TOMATO_FIRST,TOMATO_SECOND,CROP),f.harvested());
-        assertEquals(4,f.stored(TOMATO_STORE,ItemData.TOMATO));assertEquals(2,f.stored(STORE,FRUIT));
-        assertEquals(0,f.count(FRUIT));assertEquals(451L,f.profile.nextEligibleDay.get("harvest:Ancient"));
+        assertEquals(List.of(TOMATO_FIRST,TOMATO_SECOND),f.harvested());
+        assertEquals(4,f.stored(TOMATO_STORE,ItemData.TOMATO));assertEquals(0,f.stored(STORE,FRUIT));
+        assertEquals(0,f.count(FRUIT));assertEquals(450L,f.profile.nextEligibleDay.get("harvest:Ancient"));
     }
     @Test void immatureCropDoesNotGetClickedAndItsLinkedExistingProduceCanStillBeStored() {
         Fixture f=new Fixture();f.blocks.put(CROP,new BlockData(CROP,FRUIT,Map.of("age","9")));f.inventory[1]=item(FRUIT,3,2);
         f.start();f.run(100);assertEquals(AutomationEngine.State.COMPLETE,f.engine.state());
         assertEquals(0,f.harvests);assertEquals(3,f.stored(STORE,FRUIT));assertEquals("9",f.block(CROP).properties().get("age"));
-        assertEquals(442L,f.profile.nextEligibleDay.get("harvest:Ancient"),"Immature recheck is not a completed ten-day harvest cycle");
+        assertEquals(451L,f.profile.nextEligibleDay.get("harvest:Ancient"),"Even an empty inspection waits the configured cycle");
     }
     @Test void unrelatedCommodityGroupAndOtherItemsInSharedStoreDoNotBroadenOneShot() {
         Fixture f=new Fixture();f.inventory[1]=item("society:jade",4,0);

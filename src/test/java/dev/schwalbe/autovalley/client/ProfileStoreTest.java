@@ -12,6 +12,27 @@ import static org.junit.jupiter.api.Assertions.*;
 class ProfileStoreTest {
     @TempDir Path directory;
 
+    @Test void legacyHarvestPolicyMarkerIsDetectedWithoutChangingDiskOrInventingHarvestDates() throws Exception {
+        String key=ProfileStore.key("legacy-harvest-policy");Path file=directory.resolve(key+".json");
+        String json="{\"schemaVersion\":6,\"nextEligibleDay\":{\"harvest:Ancient\":615}}";Files.writeString(file,json);
+        Profile loaded=new ProfileStore(directory).load(key);
+        assertEquals(0,loaded.strictHarvestTimingVersion);assertEquals(615L,loaded.nextEligibleDay.get("harvest:Ancient"));
+        assertEquals(json,Files.readString(file));
+    }
+    @Test void strictHarvestPolicyMarkerAndDatesSurviveSaveReload() throws Exception {
+        ProfileStore store=new ProfileStore(directory);String key=ProfileStore.key("strict-harvest-policy");
+        Profile p=new Profile();p.nextEligibleDay.put("harvest:Ancient",623L);store.save(key,p);
+        Profile loaded=store.load(key);assertEquals(1,loaded.strictHarvestTimingVersion);assertEquals(p.nextEligibleDay,loaded.nextEligibleDay);
+    }
+    @Test void unsupportedHarvestPolicyVersionCannotBeSaved() {
+        for(int version:List.of(-1,2)) {Profile p=new Profile();p.strictHarvestTimingVersion=version;assertThrows(IllegalArgumentException.class,()->ProfileStore.validate(p));}
+    }
+    @Test void nullStoredHarvestPolicyCannotBypassTheLegacyTransition() throws Exception {
+        String key=ProfileStore.key("null-harvest-policy");Path file=directory.resolve(key+".json");
+        String json="{\"strictHarvestTimingVersion\":null}";Files.writeString(file,json);
+        assertEquals(0,new ProfileStore(directory).load(key).strictHarvestTimingVersion);assertEquals(json,Files.readString(file));
+    }
+
     @Test void fullInventoryHarvestDefaultsEnabledAndExplicitOptOutRoundTrips() throws Exception {
         Profile profile=new Profile(); assertTrue(profile.continueHarvestWhenFull);
         profile.continueHarvestWhenFull=false;

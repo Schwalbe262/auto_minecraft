@@ -305,7 +305,8 @@ class NavigationHarvestTest {
         module.tick(context);
         assertNull(actions.movement);
         assertEquals(1,actions.submitted.size());
-        assertTrue(context.profile().nextEligibleDay.isEmpty());
+        assertEquals(1L,context.profile().nextEligibleDay.get("harvest:first"),"Admission is reserved, not acknowledged completion");
+        assertTrue(actions.busy(),"The pending native use is still not successful");
     }
 
     @Test void tractorContinuationKeepsOnlyTheImmediateSameRowCenterAndStopsAtTheTurn() {
@@ -639,7 +640,7 @@ class NavigationHarvestTest {
         assertEquals(Map.of("harvest:first",375L,"harvest:second",375L),profile.nextEligibleDay);
     }
 
-    @Test void eligibleButUnripeFarmRechecksEachNextMorningInsteadOfRepeatedTwoDayDeferral() {
+    @Test void eligibleButUnripeFarmWaitsTheConfiguredTwoDayCycleEvenAfterReset() {
         FakeWorld world=new FakeWorld();world.tomato(ORIGIN,2);
         Profile profile=farmProfile(ORIGIN);profile.harvestCycleDays=2;
         profile.nextEligibleDay.put("harvest:first",372L);
@@ -648,7 +649,7 @@ class NavigationHarvestTest {
         for (long day:List.of(372L,373L)) {
             world.day=day*24000+5000;
             assertEquals(WorkResult.State.IDLE,module.tick(context).state());
-            assertEquals(day+1,profile.nextEligibleDay.get("harvest:first"));
+            assertEquals(374L,profile.nextEligibleDay.get("harvest:first"));
             assertTrue(actions.submitted.isEmpty());assertTrue(navigation.reaches.isEmpty());assertNull(actions.movement);
             module.reset();
         }
@@ -918,7 +919,10 @@ class NavigationHarvestTest {
         Context context = new Context(world,actions,new LocalNavigator(),profile);
         for (int i=0;i<1000 && module.calibrating();i++) {
             WorkResult result = module.tick(context);
-            if (result.state()==WorkResult.State.BLOCKED) module.reset(); // Simulated explicit take-over between failed samples.
+            if (result.state()==WorkResult.State.BLOCKED) {
+                module.reset(); // A failed sample cannot bypass the configured cycle on restart.
+                world.day=profile.nextEligibleDay.get("harvest:first")*24000+5000;
+            }
             if (actions.busy()) {
                 Action.UseBlock use = (Action.UseBlock)actions.submitted.get(actions.submitted.size()-1);
                 world.tomato(use.pos(),0);

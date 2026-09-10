@@ -39,6 +39,50 @@ class HarvestSafetyTest {
         }
     }
 
+    @Test void aFutureDatedNeighbouringFieldCannotBeHarvestedThroughTheCurrentFieldsAreaEffect() {
+        Fixture f=new Fixture(); Pos neighbor=TARGET.offset(1,0,0); f.tomato(neighbor); f.farm(neighbor,neighbor);
+        Farm adjacent=f.profile.farms.get(1); String key=CropRules.farmKey(adjacent);
+        f.profile.nextEligibleDay.put(key,2L); f.footprint=new HarvestFootprint(true,1,List.of(TARGET,neighbor));
+        String rejection=f.rejection(); assertNotNull(rejection); assertTrue(rejection.contains("수확 주기"));
+        assertTrue(rejection.contains(adjacent.name())); assertNotNull(f.policy());
+        assertEquals(Map.of(key,2L),f.profile.nextEligibleDay,"The guard cannot advance or erase any field's date");
+    }
+
+    @Test void theAlreadyAdmittedFieldMayFinishAfterItsFirstAcknowledgementReservedTheNextCycle() {
+        Fixture f=new Fixture();Pos neighbor=TARGET.offset(1,0,0);f.tomato(neighbor);
+        f.profile.farms.set(0,new Farm("current",TARGET,neighbor));
+        f.profile.nextEligibleDay.put("harvest:current",10L);
+        f.footprint=new HarvestFootprint(true,1,List.of(TARGET,neighbor));
+        assertNull(f.rejection());assertNull(f.policy());
+        assertEquals(Map.of("harvest:current",10L),f.profile.nextEligibleDay);
+    }
+
+    @Test void dueOrUnscheduledAdjacentFieldsKeepTheirExistingRegisteredCropPermission() {
+        Fixture f=new Fixture();Pos neighbor=TARGET.offset(1,0,0);f.tomato(neighbor);f.farm(neighbor,neighbor);
+        String key=CropRules.farmKey(f.profile.farms.get(1));
+        f.footprint=new HarvestFootprint(true,1,List.of(TARGET,neighbor));
+        assertNull(f.rejection());f.profile.nextEligibleDay.put(key,0L);assertNull(f.rejection());
+        f.day=24000L+1000;assertNull(f.rejection());
+        f.profile.nextEligibleDay.put(key,1L);assertNull(f.rejection());
+        f.profile.nextEligibleDay.put(key,2L);assertNotNull(f.rejection());
+    }
+
+    @Test void theSameCycleGuardAppliesToAncientFruitAndToNativeUpperCellFallback() {
+        Fixture f=new Fixture();Pos upper=TARGET.offset(0,1,0);String crop=CropRules.ANCIENT_FRUIT;
+        f.profile.farms.set(0,new Farm("lower",TARGET,TARGET,crop));
+        f.profile.farms.add(new Farm("upper",upper,upper,crop));
+        for(Pos position:List.of(TARGET,upper))f.blocks.put(position,new BlockData(position,CropRules.ANCIENT_FRUIT_ITEM,Map.of("age","10")));
+        f.footprint=new HarvestFootprint(true,0,List.of(TARGET,upper));
+        f.profile.nextEligibleDay.put("harvest:lower",10L);assertNull(f.rejection());
+        f.profile.nextEligibleDay.put("harvest:upper",10L);assertNotNull(f.rejection());assertNotNull(f.policy());
+    }
+
+    @Test void futureFieldsOutsideThePotentialFootprintDoNotBlockAnAdmittedHarvest() {
+        Fixture f=new Fixture();Pos neighbor=TARGET.offset(1,0,0);f.tomato(neighbor);f.farm(neighbor,neighbor);
+        f.profile.nextEligibleDay.put(CropRules.farmKey(f.profile.farms.get(1)),2L);
+        assertNull(f.rejection());assertNull(f.policy());assertFalse(f.reads.contains(neighbor));
+    }
+
     @Test void upperBlockFallbackCannotEscapeTheRegisteredVerticalBounds() {
         Fixture f=new Fixture(); Pos upper=TARGET.offset(0,1,0);
         f.blocks.put(upper,new BlockData(upper,"farmersdelight:tomatoes_on_rope",Map.of("age","3")));
@@ -180,7 +224,7 @@ class HarvestSafetyTest {
         final List<Pos> reads=new ArrayList<>();
         final List<ItemSlot> items=new ArrayList<>();
         HarvestFootprint footprint=HarvestFootprint.single(TARGET);
-        int selected;
+        int selected; long day=1000;
         Fixture() {
             tomato(TARGET); farm(TARGET,TARGET);
             items.add(new ItemSlot(0,0,true,HOE)); items.add(new ItemSlot(1,1,true,ItemData.EMPTY));
@@ -191,7 +235,7 @@ class HarvestSafetyTest {
         String rejection() { return HarvestSafety.rejection(context(),TARGET); }
         String policy() { return SafetyPolicy.rejection(new Action.UseBlock(TARGET,Action.Use.HARVEST),context()); }
         @Override public long tick() { return 10; }
-        @Override public long dayTime() { return 1000; }
+        @Override public long dayTime() { return day; }
         @Override public PlayerState player() { return new PlayerState(.5,64,.5,0,0,true,false,20,20,selected,true,true); }
         @Override public BlockData block(Pos pos) { reads.add(pos); return blocks.getOrDefault(pos,new BlockData(pos,"minecraft:air",Map.of())); }
         @Override public boolean loaded(Pos pos) { return !unloaded.contains(pos); }

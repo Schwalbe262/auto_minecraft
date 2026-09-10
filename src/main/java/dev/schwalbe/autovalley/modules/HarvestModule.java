@@ -11,9 +11,7 @@ public final class HarvestModule implements AutomationModule {
     private Stage stage = Stage.PREPARE;
     private final Deque<Pos> pending = new ArrayDeque<>();
     private final Map<Pos,Integer> primaryLanes = new HashMap<>();
-    private final Set<String> harvestedThisPass = new HashSet<>();
     private final Set<String> completedFields = new HashSet<>();
-    private final LoadedAncientHarvestProbe loadedAncientProbe=new LoadedAncientHarvestProbe();
     private Farm observingFarm;
     private CropDefinition observingCrop;
     private final ModuleSupport.ObservationWindow observationWindow=new ModuleSupport.ObservationWindow();
@@ -102,7 +100,7 @@ public final class HarvestModule implements AutomationModule {
                 || observingCrop!=null && !observingCrop.equals(CropRules.definition(profile,observingFarm))))
             return fail(context,"수확 중 밭 또는 작물 정의가 바뀌었습니다. 등록 내용을 다시 확인하세요.");
         if (!active) {
-            if(observingFarm==null)loadedAncientProbe.refresh(context,cropScope);
+            if(observingFarm==null)HarvestSchedule.transition(context);
             if (observingFarm==null) observingFarm=profile.farms.stream()
                 .filter(this::inCropScope)
                 .filter(f -> !completedFields.contains(farmKey(f)) && profile.nextEligibleDay.getOrDefault(farmKey(f),Long.MIN_VALUE)<=gameDay(world))
@@ -188,6 +186,10 @@ public final class HarvestModule implements AutomationModule {
             String footprintRejection = HarvestSafety.rejection(context,target);
             if (footprintRejection != null) return fail(context,footprintRejection);
             harvestRadius = world.harvestFootprint(target).radius();
+            // Persist this cycle's admission BEFORE dispatch: a manual OFF between
+            // sending and processing the ACK must not reopen the same field early.
+            // This is an attempt reservation, never evidence that a crop was harvested.
+            HarvestSchedule.reserveNextCycle(context,observingFarm);
             ticket = actions.submit(new Action.UseBlock(target, Action.Use.HARVEST));
             useAttempts++;
             stage = Stage.USING;
@@ -218,6 +220,9 @@ public final class HarvestModule implements AutomationModule {
                 if (!isMature(context,target)) unresolvedOutput = "작물은 바뀌었지만 수확 응답이 확인되지 않았습니다. 수확물을 확인한 뒤 F8로 다시 시작하세요.";
                 return fail(context, unresolvedOutput != null ? unresolvedOutput : "우클릭 수확이 확인되지 않았습니다: " + outcome.message());
             }
+            // Reserve only after this actual native ACK and changed crop. The
+            // admitted pass continues, but OFF/restart cannot start an early new one.
+            HarvestSchedule.reserveNextCycle(context,observingFarm);
             pickupStarted = world.tick();
             stage = Stage.PICKUP;
         }
@@ -313,8 +318,8 @@ public final class HarvestModule implements AutomationModule {
         pending.clear();
         Set<Pos> seen = new HashSet<>();
         for (Farm farm : observingFarm==null ? List.<Farm>of() : List.of(observingFarm)) {
-            // An admitted pass must finish its full A-B rescan, even if an earlier
-            // confirmed click has already forecast the next cohort's date.
+            // An admitted pass must finish its full A-B rescan, even after a
+            // confirmed click has reserved its next full cycle.
             if (farm.volume() > 32768) return "밭 하나의 등록 범위는 32768블록 이하여야 합니다.";
             int matureCount = 0;
             int minX = Math.min(farm.first().x(), farm.second().x()), maxX = Math.max(farm.first().x(), farm.second().x());
@@ -337,9 +342,7 @@ public final class HarvestModule implements AutomationModule {
                     }
                 }
             }
-            if (matureCount == 0) context.profile().nextEligibleDay.put(farmKey(farm),
-                AncientHarvestTiming.nextCheckDay(context.profile(),farm,context.world(),gameDay(context.world()),
-                    harvestedThisPass.contains(farmKey(farm))));
+            if (matureCount == 0) HarvestSchedule.reserveNextCycle(context,farm);
         }
         return null;
     }
@@ -409,7 +412,6 @@ public final class HarvestModule implements AutomationModule {
         for (Farm farm : context.profile().farms) {
             if (!farm.contains(harvested) || farm.volume() > 32768
                     || !Objects.equals(observingCrop,CropRules.definition(context.profile(),farm))) continue;
-            harvestedThisPass.add(farmKey(farm));
             if (pending.stream().anyMatch(farm::contains)) continue;
             boolean remaining = false;
             for (int x = Math.min(farm.first().x(),farm.second().x()); x <= Math.max(farm.first().x(),farm.second().x()) && !remaining; x++) {
@@ -420,8 +422,7 @@ public final class HarvestModule implements AutomationModule {
                     }
                 }
             }
-            if (!remaining) context.profile().nextEligibleDay.put(farmKey(farm),
-                AncientHarvestTiming.nextCheckDay(context.profile(),farm,context.world(),gameDay(context.world()),true));
+            if (!remaining) HarvestSchedule.reserveNextCycle(context,farm);
         }
     }
 
@@ -505,7 +506,6 @@ public final class HarvestModule implements AutomationModule {
         routeOrdered = false;
         pending.clear();
         primaryLanes.clear();
-        harvestedThisPass.clear();
         completedFields.clear(); observingFarm=null; observingCrop=null;
         observationWindow.clear();
         target = null;

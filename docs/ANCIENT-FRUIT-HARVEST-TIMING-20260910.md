@@ -1,5 +1,8 @@
 # Ancient-fruit field timing and A/B edits
 
+**Historical policy:** superseded by [strict configured cycles](STRICT-HARVEST-CYCLES-20260911.md)
+at the user's request. Early ripe-crop overrides and remaining-age forecasts are no longer used.
+
 ## Diagnosed state
 
 The saved ancient field was A `(716,72,1587)` to B `(725,72,1607)`.

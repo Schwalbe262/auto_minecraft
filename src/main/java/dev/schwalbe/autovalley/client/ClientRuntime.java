@@ -349,7 +349,7 @@ public final class ClientRuntime {
         try { saveProfile(); notifyUser("경유지를 저장했습니다."); }
         catch (RuntimeException e) { profile.pois.remove(profile.pois.size()-1); notifyUser(e.getMessage()); }
     }
-    private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.wineBatchSchedule,profile.wineProductionSchedules,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest,profile.pendingMachineOutputs,profile.machineOutputResolutions,profile.loggingRunActive,profile.loggingRemainingPlots,profile.loggingReplantingPlots,profile.loggingHotbarLease); }
+    private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.strictHarvestTimingVersion,profile.wineBatchSchedule,profile.wineProductionSchedules,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest,profile.pendingMachineOutputs,profile.machineOutputResolutions,profile.loggingRunActive,profile.loggingRemainingPlots,profile.loggingReplantingPlots,profile.loggingHotbarLease); }
     private void checkpointMachineState() {
         try { saveProfile(); }
         catch (RuntimeException e) { persistenceError=e.getMessage(); throw e; }

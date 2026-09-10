@@ -53,7 +53,13 @@ public final class ProfileStore {
         if (!Files.exists(file)) return new Profile();
         if (Files.size(file)>2_000_000) throw new IOException("Profile is too large");
         try {
-            Profile profile=GSON.fromJson(Files.readString(file,StandardCharsets.UTF_8),Profile.class);
+            String json=Files.readString(file,StandardCharsets.UTF_8);
+            // Keep stream deserialization's strict integer handling; a JsonElement
+            // conversion would silently truncate malformed fractional settings.
+            Profile profile=GSON.fromJson(json,Profile.class);
+            var timingVersion=com.google.gson.JsonParser.parseString(json).getAsJsonObject().get("strictHarvestTimingVersion");
+            if(timingVersion==null || timingVersion.isJsonNull())
+                profile.strictHarvestTimingVersion=0;
             validate(profile);
             return profile;
         } catch (RuntimeException e) { throw new IOException("Profile is invalid; original file has been preserved",e); }
@@ -153,6 +159,8 @@ public final class ProfileStore {
     public static void validate(Profile profile) {
         if (profile==null || profile.schemaVersion<1 || profile.schemaVersion>7 || profile.pois==null || profile.farms==null || profile.enabled==null
             || profile.nextEligibleDay==null || profile.disposalDirections==null) throw new IllegalArgumentException("Unsupported or incomplete profile");
+        if(profile.strictHarvestTimingVersion<0 || profile.strictHarvestTimingVersion>1)
+            throw new IllegalArgumentException("Unsupported harvest timing policy");
         if (profile.pois.size()>4096) throw new IllegalArgumentException("Too many registered locations");
         Set<String> farms=new HashSet<>();
         for (Farm farm:profile.farms) {
