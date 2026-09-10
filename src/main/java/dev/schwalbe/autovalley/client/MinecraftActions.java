@@ -208,10 +208,11 @@ public final class MinecraftActions implements ActionPort {
         if (poi==null && !commodity) return "Container registration changed or commodity transfer is outside its job";
         boolean kindMatches=commodity || poi!=null && switch (poi.kind()) {
             case TOMATO_CHEST -> TomatoStorageRules.permitsTransfer(item,world.menu());
-            case WINE_CHEST -> source.player() && item.is(ItemData.WINE) && item.year()!=null && item.year().equals(poi.classifier());
+            case WINE_CHEST -> context.profile().tomatoWineEnabled && source.player() && item.is(ItemData.WINE) && item.year()!=null && item.year().equals(poi.classifier());
             case WOOD_CHEST -> LoggingRules.allowed(context) && source.player() && LoggingRules.wood(item);
             case SHIPPING_BIN -> source.player() && (item.standardShippingProduct() && context.session().allows(context.profile(),Feature.SHIPPING)
                 || item.is(ItemData.WINE) && WineSaleRules.permitted(item,context)
+                || WineLineSaleRules.permitted(item,context)
                 || item.is(ItemData.TOMATO) && TomatoSaleRules.permitted(item,context)
                 || LoggingRules.allowed(context) && LoggingRules.byproduct(item));
             default -> false;
@@ -234,8 +235,9 @@ public final class MinecraftActions implements ActionPort {
                     artisanAttempt=null;finish(ActionOutcome.State.FAILED,"Unconfirmed artisan attempt prevents another send");return;
                 }
             }
-            if(use.purpose()==Action.Use.MACHINE && NativeWineFeedReceipt.eligible(use.pos(),beforeBlock,
-                    mc.player.getMainHandItem(),beforePlayer.selectedSlot(),beforeMenu)) {
+            WineProductionLine wineLine=use.purpose()==Action.Use.MACHINE ? WineProductionRules.at(context.profile(),use.pos()) : null;
+            if(use.purpose()==Action.Use.MACHINE && wineLine!=null && NativeWineFeedReceipt.eligible(use.pos(),beforeBlock,
+                    mc.player.getMainHandItem(),beforePlayer.selectedSlot(),beforeMenu,wineLine.inputItemId())) {
                 // Idle input may be partial; mature harvest resets it before a full
                 // refill. Capture this dispatch without guessing unsynchronized BE stage.
                 wineFeedAttempt=new NativeWineFeedReceipt.Attempt(use.pos(),beforeBlock,mc.player.getMainHandItem(),
@@ -399,6 +401,8 @@ public final class MinecraftActions implements ActionPort {
                     Poi destination=ownedContainer==null ? null : context.profile().pois.stream().filter(p -> p.pos().equals(ownedContainer)).findFirst().orElse(null);
                     if (confirmed && destination!=null && destination.kind()==PoiKind.SHIPPING_BIN && source.item().is(ItemData.WINE))
                         WineSaleRules.consume(source.item(),quantity,context);
+                    if (confirmed && destination!=null && destination.kind()==PoiKind.SHIPPING_BIN)
+                        WineLineSaleRules.consume(source.item(),quantity,context);
                     if (confirmed && destination!=null && destination.kind()==PoiKind.SHIPPING_BIN && source.item().is(ItemData.TOMATO))
                         TomatoSaleRules.consume(quantity,context);
                 } else if (pending instanceof Action.ThrowRotten drop) {

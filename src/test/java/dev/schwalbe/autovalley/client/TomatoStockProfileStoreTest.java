@@ -11,7 +11,7 @@ class TomatoStockProfileStoreTest {
     @Test void missingFieldKeepsThreeDayDefaultWithoutRewritingTheProfile() throws Exception {
         ProfileStore store=new ProfileStore(directory);String key=ProfileStore.key("stock refresh legacy");Path file=directory.resolve(key+".json");
         String original="{\"schemaVersion\":5,\"nextEligibleDay\":{\"farm:kept\":30}}";Files.writeString(file,original);
-        Profile profile=store.load(key);assertEquals(3,profile.tomatoStockRefreshDays);assertEquals(5,profile.schemaVersion);
+        Profile profile=store.load(key);assertEquals(3,profile.tomatoStockRefreshDays);assertEquals(6,profile.schemaVersion);
         assertEquals(original,Files.readString(file));assertFalse(Files.exists(directory.resolve(key+".json.bak")));
     }
     @Test void refreshRangeRoundTripsWithoutSerializingRamStock() throws Exception {

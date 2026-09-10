@@ -27,6 +27,7 @@ public final class WineSurplusShippingModule implements AutomationModule {
     @Override public int priority() { return 35; }
 
     @Override public WorkResult tick(Context c) {
+        if (!c.profile().tomatoWineEnabled) return WorkResult.idle();
         session=c.session();
         if (ticket>=0) {
             ActionOutcome outcome=c.actions().outcome(ticket);

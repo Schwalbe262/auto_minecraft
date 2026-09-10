@@ -113,6 +113,21 @@ public final class ClientDiagnostics {
         registration.put("farmsByCrop",farmsByCrop);
         registration.put("commodityStoreCount",profile.commodityStores.size());
         registration.put("artisanJobCount",profile.artisanJobs.size());
+        List<Map<String,Object>> wineLines=new ArrayList<>();
+        for(WineProductionLine line:WineProductionRules.lines(profile)) {
+            Map<String,Object> details=new LinkedHashMap<>();
+            details.put("id",line.id());details.put("name",line.name());details.put("enabled",line.enabled());
+            details.put("inputItem",line.inputItemId());details.put("outputItem",line.outputItemId());
+            details.put("machineCount",line.machines().size());details.put("cycleDays",line.cycleDays());
+            CommodityStore input=WineProductionRules.inputStore(profile,line),output=WineProductionRules.outputStore(profile,line);
+            details.put("inputContainerCount",input==null?profile.pois(PoiKind.TOMATO_CHEST).size():input.containers().size());
+            details.put("outputContainerCount",output==null?profile.pois(PoiKind.WINE_CHEST).size():output.containers().size());
+            WineBatchSchedule schedule=WineBatchRules.schedule(profile,line.id());
+            details.put("nextDueDay",schedule==null?null:schedule.nextDueDay());
+            details.put("active",schedule!=null && schedule.active());details.put("remaining",schedule==null?0:schedule.remaining().size());
+            wineLines.add(details);
+        }
+        registration.put("wineProductionLines",wineLines);
         registration.put("fruitPatchCount",profile.fruitPatches.size());
         Map<String,Integer> byKind = new LinkedHashMap<>();
         for (PoiKind kind : PoiKind.values()) byKind.put(kind.name(),profile.pois(kind).size());

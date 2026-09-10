@@ -9,18 +9,24 @@ public final class WorkRegistrationImport {
     private static final Gson GSON=new Gson();
     public record Data(Map<String,CropDefinition> crops,List<Farm> farms,Map<String,CommodityStore> stores,
                        Map<String,String> cropStores,Map<String,ArtisanJob> artisanJobs,List<FruitPatch> fruitPatches,
-                       Set<Feature> enable) { }
+                       Map<String,WineProductionLine> wineProductionLines,Set<Feature> enable) {
+        public Data(Map<String,CropDefinition> crops,List<Farm> farms,Map<String,CommodityStore> stores,
+                    Map<String,String> cropStores,Map<String,ArtisanJob> artisanJobs,List<FruitPatch> fruitPatches,Set<Feature> enable) {
+            this(crops,farms,stores,cropStores,artisanJobs,fruitPatches,Map.of(),enable);
+        }
+    }
     private WorkRegistrationImport() { }
     public static Profile merge(Profile current,String json) {
         if(json==null || json.length()>200_000)throw new IllegalArgumentException("Work import is too large");
         JsonElement tree=JsonParser.parseString(json);
-        if(!tree.isJsonObject() || !Set.of("crops","farms","stores","cropStores","artisanJobs","fruitPatches","enable")
+        if(!tree.isJsonObject() || !Set.of("crops","farms","stores","cropStores","artisanJobs","fruitPatches","wineProductionLines","enable")
                 .containsAll(tree.getAsJsonObject().keySet()))throw new IllegalArgumentException("Unknown work import field");
         Data data=GSON.fromJson(tree,Data.class);
         Profile candidate=GSON.fromJson(GSON.toJson(current),Profile.class);
         ProfileStore.validate(candidate);
         add(candidate.crops,data.crops());add(candidate.commodityStores,data.stores());
         add(candidate.cropStores,data.cropStores());add(candidate.artisanJobs,data.artisanJobs());
+        add(candidate.wineProductionLines,data.wineProductionLines());
         if(data.farms()!=null)for(Farm farm:data.farms()) {
             if(farm==null)throw new IllegalArgumentException("Null farm");
             Farm existing=candidate.farms.stream().filter(f->f.name().equals(farm.name())).findFirst().orElse(null);
@@ -38,7 +44,11 @@ public final class WorkRegistrationImport {
             if(existing==null)candidate.fruitPatches.add(patch);
         }
         if(data.enable()!=null)for(Feature feature:data.enable()) {
-            if(feature==null || !Set.of(Feature.HARVEST,Feature.COMMODITY_STORAGE,Feature.SEED_MAKER,Feature.CRYSTAL_COPY,Feature.STARFRUIT).contains(feature))
+            boolean wine=feature==Feature.WINE || feature==Feature.WINE_STORAGE || feature==Feature.WINE_SURPLUS_SHIPPING;
+            if(wine && (data.wineProductionLines()==null || data.wineProductionLines().isEmpty()))
+                throw new IllegalArgumentException("Wine switches require an explicit wine-line registration");
+            if(feature==null || !Set.of(Feature.HARVEST,Feature.COMMODITY_STORAGE,Feature.SEED_MAKER,Feature.CRYSTAL_COPY,Feature.STARFRUIT,
+                    Feature.WINE,Feature.WINE_STORAGE,Feature.WINE_SURPLUS_SHIPPING).contains(feature))
                 throw new IllegalArgumentException("Import cannot change unrelated feature switches");
             candidate.enabled.put(feature,true);
         }

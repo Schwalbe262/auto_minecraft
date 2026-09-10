@@ -58,6 +58,20 @@ public final class ProductionMergePlanner {
         return planItems(inventory, feature, ItemData.TOMATO, hoeHotbar, grade, preferredSource);
     }
 
+    public static Optional<Plan> planIngredient(List<ItemSlot> inventory,Feature feature,int hoeHotbar,
+                                                String itemId,int grade,Integer preferredSource) {
+        if (!ItemData.isProductionIngredientId(itemId) || grade<0 || grade>3
+                || feature==Feature.PRESERVES && !ItemData.TOMATO.equals(itemId)) return Optional.empty();
+        return planItems(inventory,feature,itemId,hoeHotbar,grade,preferredSource);
+    }
+
+    public static Optional<Plan> planProduct(List<ItemSlot> inventory,Feature feature,int hoeHotbar,
+                                            String itemId,Integer preferredSource) {
+        if (feature==Feature.WINE ? !ItemData.isWineId(itemId)
+                : feature!=Feature.PRESERVES || !ItemData.PRESERVES.equals(itemId)) return Optional.empty();
+        return planItems(inventory,feature,itemId,hoeHotbar,null,preferredSource);
+    }
+
     private static Optional<Plan> planItems(List<ItemSlot> inventory, Feature feature, String itemId,
                                           int hoeHotbar, Integer requiredGrade, Integer preferredSource) {
         if ((feature != Feature.WINE && feature != Feature.PRESERVES) || hoeHotbar < 0 || hoeHotbar >= HOTBAR_SIZE)
@@ -65,7 +79,7 @@ public final class ProductionMergePlanner {
         List<ItemData> snapshot = snapshot(inventory);
         if (snapshot.isEmpty()) return Optional.empty();
         int materialHotbar=(hoeHotbar+1)%HOTBAR_SIZE;
-        int protectedMaterial=ItemData.TOMATO.equals(itemId) ? -1 : materialHotbar;
+        int protectedMaterial=ItemData.isProductionIngredientId(itemId) ? -1 : materialHotbar;
         List<Integer> sources = new ArrayList<>();
         for (int index = 0; index < INVENTORY_SIZE; index++) {
             if (index != hoeHotbar && index != protectedMaterial && candidate(snapshot.get(index), itemId)
@@ -110,7 +124,7 @@ public final class ProductionMergePlanner {
         // hotbar while main inventory is empty. One normal hotbar->main QUICK_MOVE
         // creates an opposite-region pair for a fresh, real merge on the next plan.
         // Product rearrangement and arbitrary reverse scratch swaps are not allowed.
-        if (ItemData.TOMATO.equals(itemId)) {
+        if (ItemData.isProductionIngredientId(itemId)) {
             int emptyMain = -1;
             for (int index = HOTBAR_SIZE; index < INVENTORY_SIZE; index++) {
                 if (snapshot.get(index).empty()) { emptyMain = index; break; }
@@ -141,7 +155,7 @@ public final class ProductionMergePlanner {
         if (!plan.direct() && (plan.scratchHotbar()<0 || plan.scratchHotbar()>=HOTBAR_SIZE
                 || plan.scratchHotbar()==hoeHotbar || plan.scratchHotbar()==materialHotbar
                 || !safeScratch(plan.expectedItems().get(plan.scratchHotbar()),plan.itemId()))) return false;
-        if (!ItemData.TOMATO.equals(plan.itemId())) {
+        if (!ItemData.isProductionIngredientId(plan.itemId())) {
             if (plan.sourceIndex()==materialHotbar || plan.destinations().contains(materialHotbar)) return false;
             ItemData material=plan.expectedItems().get(materialHotbar);
             if (plan.direct() && plan.sourceIndex()>=HOTBAR_SIZE && (material.empty()
@@ -165,13 +179,14 @@ public final class ProductionMergePlanner {
     private static boolean candidate(ItemData item, String itemId) {
         return item.is(itemId) && !item.hoe() && item.count() < CANDIDATE_STACK_LIMIT
                 && item.quality() >= 0 && item.quality() <= 3
+                // Stal wine has Vinery aging; the installed ancient drink is a plain KubeJS item.
                 && (!ItemData.WINE.equals(itemId) || item.year() != null && item.year() >= 0);
     }
 
     private static boolean safeScratch(ItemData item,String itemId) {
         // Swapping the same product into the old source would make it an implicit
         // native QUICK_MOVE destination. Keep that displaced stack unrelated.
-        return item.empty() || !item.hoe() && !item.is(ItemData.TOMATO) && !item.is(itemId);
+        return item.empty() || !item.hoe() && !ItemData.isProductionIngredientId(item.id()) && !item.is(itemId);
     }
 
     private static boolean visiblyCompatible(ItemData source, ItemData destination) {

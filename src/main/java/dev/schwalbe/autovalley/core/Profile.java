@@ -3,7 +3,7 @@ package dev.schwalbe.autovalley.core;
 import java.util.*;
 
 public final class Profile {
-    public int schemaVersion = 5;
+    public int schemaVersion = 6;
     public NavigationMode navigationMode = NavigationMode.TERRAIN;
     public boolean useWaypointHints = true;
     /** Coordinate drafts remain separate from registered, authorized work locations. */
@@ -47,9 +47,13 @@ public final class Profile {
     public int resourceRetryTicks = 200;
     public int harvestCycleDays = 1;
     public int wineCycleDays = 6;
+    public boolean tomatoWineEnabled = true;
     public int preservesCycleDays = 3;
     public Map<String, Long> nextEligibleDay = new HashMap<>();
     public WineBatchSchedule wineBatchSchedule;
+    /** Independent ingredient/source/rack/output definitions; the legacy tomato line remains implicit. */
+    public Map<String,WineProductionLine> wineProductionLines = new LinkedHashMap<>();
+    public Map<String,WineBatchSchedule> wineProductionSchedules = new LinkedHashMap<>();
     public Map<String,PendingMachineOutput> pendingMachineOutputs = new LinkedHashMap<>();
     public List<MachineOutputLedger.ResolutionEntry> machineOutputResolutions = new ArrayList<>();
     public long lastSeenDay = -1;

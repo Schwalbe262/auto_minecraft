@@ -55,14 +55,14 @@ final class NativeInventoryConsolidation {
             // Prefer EMPTY, but an unrelated item may use the exact inverse-SWAP
             // protocol. Never displace an ingredient, any hoe, or the same product.
             if (!scratch.isEmpty() && (scratch.getItem() instanceof HoeItem
-                || ItemData.TOMATO.equals(BuiltInRegistries.ITEM.getKey(scratch.getItem()).toString())
+                || ItemData.isProductionIngredientId(BuiltInRegistries.ITEM.getKey(scratch.getItem()).toString())
                 || scratch.getItem()==source.getItem())) return null;
         }
         ItemStack protectedItem=player.getInventory().getItem(protectedHotbar);
         if (plan.direct() && plan.sourceIndex()>=9 && (protectedItem.isEmpty()
             || ItemStack.isSameItemSameTags(source,protectedItem) && protectedItem.getCount()<protectedItem.getMaxStackSize())) return null;
         ItemStack material=player.getInventory().getItem((protectedHotbar+1)%9);
-        if (!ItemData.TOMATO.equals(plan.itemId()) && plan.direct() && plan.sourceIndex()>=9
+        if (!ItemData.isProductionIngredientId(plan.itemId()) && plan.direct() && plan.sourceIndex()>=9
             && (material.isEmpty() || ItemStack.isSameItemSameTags(source,material)
                 && material.getCount()<material.getMaxStackSize())) return null;
         int capacity=0;
@@ -144,7 +144,7 @@ final class NativeInventoryConsolidation {
         if (after.empty() || after.count()<=before.count()) return false;
         try {
             String id=TagParser.parseTag(after.identity()).getString("id");
-            if (!Set.of(ItemData.TOMATO,ItemData.WINE,ItemData.PRESERVES,CropRules.ANCIENT_FRUIT_ITEM,
+            if (!Set.of(ItemData.TOMATO,ItemData.WINE,ItemData.ANCIENT_WINE,ItemData.PRESERVES,CropRules.ANCIENT_FRUIT_ITEM,
                 "society:ancient_fruit_seed","society:jade",FruitRules.ITEM).contains(id)) return false;
             return before.empty() || before.limit()==after.limit() && before.identity().equals(after.identity());
         } catch (com.mojang.brigadier.exceptions.CommandSyntaxException failure) { return false; }

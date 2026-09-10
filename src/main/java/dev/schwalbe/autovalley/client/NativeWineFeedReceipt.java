@@ -34,21 +34,30 @@ final class NativeWineFeedReceipt {
                 states.add(new StateProof(receipt.seq(),receipt.pos(),BuiltInRegistries.BLOCK.getKey(receipt.state().getBlock()).toString(),mature,working,properties,true));
             }
             return NativeWineFeedReceipt.confirmedCount(target,before,selected,sequence,generation,observations.generation(),states,
-                latestSelected(observations,ingredient,selected,menuId,beforeMenu,sequence));
+                latestSelected(observations,ingredient,selected,menuId,beforeMenu,sequence),
+                BuiltInRegistries.ITEM.getKey(ingredient.getItem()).toString());
         }
     }
     private NativeWineFeedReceipt() { }
     static boolean eligible(Pos target,BlockData before,ItemStack ingredient,int selected,MenuData menu) {
+        return eligible(target,before,ingredient,selected,menu,ItemData.TOMATO);
+    }
+    static boolean eligible(Pos target,BlockData before,ItemStack ingredient,int selected,MenuData menu,String inputId) {
         return (idle(target,before) || mature(target,before)) && selected>=0 && selected<9 && menu!=null && menu.id()==0 && !menu.container() && menu.carried().empty()
-            && ingredient!=null && !ingredient.isEmpty() && ItemData.TOMATO.equals(BuiltInRegistries.ITEM.getKey(ingredient.getItem()).toString())
+            && ItemData.isProductionIngredientId(inputId)
+            && ingredient!=null && !ingredient.isEmpty() && inputId.equals(BuiltInRegistries.ITEM.getKey(ingredient.getItem()).toString())
             && ingredient.getCount()>=3 && ingredient.getCount()<=ingredient.getMaxStackSize();
     }
     static int confirmedCount(Pos target,BlockData before,int selected,long sequence,long generation,long observedGeneration,
                               List<StateProof> blocks,SelectedProof slot) {
+        return confirmedCount(target,before,selected,sequence,generation,observedGeneration,blocks,slot,ItemData.TOMATO);
+    }
+    static int confirmedCount(Pos target,BlockData before,int selected,long sequence,long generation,long observedGeneration,
+                              List<StateProof> blocks,SelectedProof slot,String inputId) {
         boolean idle=idle(target,before);
         if(!(idle || mature(target,before)) || selected<0 || selected>=9 || generation!=observedGeneration || blocks==null || slot==null
             || !slot.raw() || !slot.cursorEmpty() || slot.seq()<=sequence || slot.inventoryIndex()!=selected
-            || !ItemData.TOMATO.equals(slot.beforeId()) || slot.beforeCount()<3 || slot.afterCount()<0)return 0;
+            || !ItemData.isProductionIngredientId(inputId) || !inputId.equals(slot.beforeId()) || slot.beforeCount()<3 || slot.afterCount()<0)return 0;
         StateProof latest=null;
         for(StateProof block:blocks)if(block!=null && target.equals(block.pos()) && block.seq()>sequence
             && (latest==null || block.seq()>latest.seq()))latest=block;
@@ -61,7 +70,7 @@ final class NativeWineFeedReceipt {
         // the idle partial-input exception must never authorize it.
         if(!idle && used!=3)return 0;
         if(slot.afterCount()==0)return slot.beforeCount()==3 && "minecraft:air".equals(slot.afterId()) ? 3 : 0;
-        return ItemData.TOMATO.equals(slot.afterId()) && slot.sameNativeIdentity() ? (int)used : 0;
+        return inputId.equals(slot.afterId()) && slot.sameNativeIdentity() ? (int)used : 0;
     }
     private static boolean idle(Pos target,BlockData before) {
         return target!=null && before!=null && target.equals(before.pos()) && KEG.equals(before.id()) && before.properties()!=null

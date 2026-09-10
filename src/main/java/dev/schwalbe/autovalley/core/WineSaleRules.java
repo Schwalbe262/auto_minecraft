@@ -6,7 +6,7 @@ import java.util.stream.Collectors;
 public final class WineSaleRules {
     private WineSaleRules() { }
     public static boolean permitted(ItemData item,Context c) {
-        if (!c.session().allows(c.profile(),Feature.WINE_SURPLUS_SHIPPING) || !item.is(ItemData.WINE) || item.year()==null) return false;
+        if (!c.profile().tomatoWineEnabled || !c.session().allows(c.profile(),Feature.WINE_SURPLUS_SHIPPING) || !item.is(ItemData.WINE) || item.year()==null) return false;
         Integer now=c.world().wineYear();
         if (now==null || item.year()<0 || item.year()>now) return false;
         WineSalePermit permit=c.session().wineSalePermits.get(item.year());

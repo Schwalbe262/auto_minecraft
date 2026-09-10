@@ -9,6 +9,8 @@ public final class MachineModule implements AutomationModule {
     private enum Stage { START, MACHINE, SOURCE, SNAPSHOT, CHOOSE, FETCH_SOURCE, FETCH, RETURN, EQUIP, VERIFY, PICKUP, OUTPUT }
     private enum Pending { CLOSE, OPEN_SCAN, OPEN_FETCH, WITHDRAW, SWAP, SELECT, USE, INPUT_MERGE, OUTPUT_MERGE }
     private final Feature feature;
+    private final String lineId;
+    private WineProductionLine productionLine;
     private Stage stage = Stage.START, afterClose;
     private Pending pending;
     private long ticket = -1, verifySince;
@@ -44,6 +46,26 @@ public final class MachineModule implements AutomationModule {
     public MachineModule(Feature feature) {
         if (feature != Feature.WINE && feature != Feature.PRESERVES) throw new IllegalArgumentException("Machine feature must be WINE or PRESERVES");
         this.feature = feature;
+        this.lineId=feature==Feature.WINE ? WineProductionRules.LEGACY_ID : null;
+    }
+    public MachineModule(String lineId) {
+        if(lineId==null || lineId.isBlank())throw new IllegalArgumentException("Wine line ID is required");
+        this.feature=Feature.WINE;this.lineId=lineId;
+    }
+    public String lineId() { return lineId; }
+    private boolean legacyInput() { return lineId==null || WineProductionRules.LEGACY_ID.equals(lineId); }
+    private String inputId() { return productionLine==null ? ItemData.TOMATO : productionLine.inputItemId(); }
+    private String ingredientLabel() { return legacyInput() ? "토마토" : inputId(); }
+    private boolean inputGrade(ItemData item,int wanted) { return wanted>=0 && wanted<4 && item.is(inputId()) && item.quality()==wanted; }
+    /** A dispatcher may change lines only after this module and the shared adapter release ownership. */
+    public boolean canSwitchLine(Context c) {
+        return canSwitchLine(c,false);
+    }
+    public boolean canSwitchLine(Context c,boolean allowContainerClose) {
+        return ticket<0 && pending==null && unresolvedInteraction==null && outputOperationId==null && !c.actions().busy()
+            && c.actions().pauseReason()==null && c.world().menu()!=null && (allowContainerClose || !c.world().menu().container())
+            && c.world().menu().carried().empty() && c.world().player().onGround()
+            && c.profile().loggingHotbarLease==null && !MachineOutputLedger.hasPending(c);
     }
     @Override public Feature feature() { return feature; }
     @Override public int priority() { return feature == Feature.WINE ? 60 : 70; }
@@ -62,12 +84,17 @@ public final class MachineModule implements AutomationModule {
             && c.profile().loggingHotbarLease==null && !MachineOutputLedger.hasPending(c);
     }
     private String blockId() { return feature == Feature.WINE ? "society:wine_keg" : "society:preserves_jar"; }
-    private String outputId() { return feature == Feature.WINE ? ItemData.WINE : ItemData.PRESERVES; }
+    private String outputId() { return feature==Feature.PRESERVES ? ItemData.PRESERVES : productionLine==null ? ItemData.WINE : productionLine.outputItemId(); }
     private Poi target() { return machines.get(machineIndex); }
     private BlockData machine(Context c) { return c.world().block(target().pos()); }
 
     @Override public WorkResult tick(Context c) {
         yieldTravel=false;
+        if(feature==Feature.WINE && stage==Stage.START && ticket<0) {
+            productionLine=WineProductionRules.line(c.profile(),lineId);
+            if(productionLine==null || !productionLine.enabled() || !legacyInput() && !WineProductionRules.allowed(c,productionLine))
+                return WorkResult.blocked("Wine production line is unavailable or not enabled: "+lineId);
+        }
         if (MachineOutputLedger.hasPending(c) && (outputOperationId==null || !MachineOutputLedger.ownsActive(c,feature)))
             return WorkResult.blocked("Resolve the pending machine output before starting another production run");
         if (unresolvedInteraction != null) return WorkResult.blocked(unresolvedInteraction);
@@ -79,7 +106,7 @@ public final class MachineModule implements AutomationModule {
                 && feature==Feature.WINE && result.proof()==ActionOutcome.Proof.CONSOLIDATION_SKIPPED_UNSENT
                 && result.confirmedCount()==0;
             if (!result.success() && !skippedOutput) {
-                if (source!=null && (pending==Pending.OPEN_SCAN || pending==Pending.OPEN_FETCH || pending==Pending.WITHDRAW))
+                if (legacyInput() && source!=null && (pending==Pending.OPEN_SCAN || pending==Pending.OPEN_FETCH || pending==Pending.WITHDRAW))
                     c.session().tomatoStockCache.invalidate(source.pos());
                 return fail("Production action failed: " + result.message());
             }
@@ -95,7 +122,7 @@ public final class MachineModule implements AutomationModule {
                 }
                 case WITHDRAW -> {
                     if (!validMenu(c)) return fail("Tomato source changed during withdrawal");
-                    if (ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade)) <= withdrawalBefore) return fail("Tomato withdrawal was not acknowledged");
+                    if (ModuleSupport.count(c,i -> inputGrade(i,grade)) <= withdrawalBefore) return fail("Tomato withdrawal was not acknowledged");
                     String invalid = snapshot(c,source,true);
                     if (invalid != null) return fail(invalid);
                     stage = Stage.FETCH;
@@ -172,7 +199,7 @@ public final class MachineModule implements AutomationModule {
             }
             case MACHINE -> {
                 if (machineIndex >= machines.size()) {
-                    if (feature==Feature.WINE) WineBatchRules.finish(c);
+                    if (feature==Feature.WINE) WineBatchRules.finish(c,lineId);
                     clearRun(); return WorkResult.idle();
                 }
                 if (closeIfNeeded(c,Stage.MACHINE)) return WorkResult.busy(machineStatus("상자 닫는 중"));
@@ -215,7 +242,7 @@ public final class MachineModule implements AutomationModule {
                 if (sourceIndex >= sources.size()) {
                     // Only the final CLOSE receipt reaches this boundary. Partial
                     // surveys and individual withdrawals never renew the survey date.
-                    c.session().tomatoStockCache.completeSurvey(c,stockSurvey,surveyedStock);
+                    if(legacyInput())c.session().tomatoStockCache.completeSurvey(c,stockSurvey,surveyedStock);
                     stockSurvey=null; surveyedStock.clear();
                     stockReady = true; freshForHaul = true; stockDay = gameDay(c);
                     stage = Stage.CHOOSE; break;
@@ -245,24 +272,24 @@ public final class MachineModule implements AutomationModule {
                 }
                 // Bulk-hauling 64-stacks leaves 1/4-tomato fragments for 3/5-input
                 // recipes. Merge held fragments before recounting or buying another haul.
-                if (grade>=0 && heldCandidate(c)==null && c.world().inventory().stream().filter(s -> ModuleSupport.tomatoGrade(s.item(),grade)).count()>1) {
-                    String fingerprint=mergeState(c,ItemData.TOMATO,grade);
+                if (grade>=0 && heldCandidate(c)==null && c.world().inventory().stream().filter(s -> inputGrade(s.item(),grade)).count()>1) {
+                    String fingerprint=mergeState(c,inputId(),grade);
                     if (inputMergeAttempts<36 && !fingerprint.equals(rejectedInputMerge)) {
-                        var merge=ProductionMergePlanner.planTomatoes(c.world().inventory(),feature,c.profile().hoeHotbarSlot,grade,null);
+                        var merge=ProductionMergePlanner.planIngredient(c.world().inventory(),feature,c.profile().hoeHotbarSlot,inputId(),grade,null);
                         if (merge.isPresent() && (!merge.get().reposition() || !fingerprint.equals(repositionedInputState))) {
                             pendingMergeState=fingerprint; pendingReposition=merge.get().reposition(); inputMergeAttempts++;
                             if (pendingReposition) repositionedInputState=fingerprint;
                             submit(c,new Action.ConsolidateInventory(merge.get()),Pending.INPUT_MERGE); break;
                         }
                     }
-                    if (ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade))>=cost) {
+                    if (ModuleSupport.count(c,i -> inputGrade(i,grade))>=cost) {
                         int fundedGrade=singleStackGrade(c);
                         if (fundedGrade<0) return fail("Combine fragmented tomatoes of the selected grade into a compatible stack before retrying");
                         // Zero progress or no safe merge plan does not invalidate a
                         // real single recipe stack. Permit it without claiming a merge,
                         // or use another carried grade before any new supply trip.
                         grade=fundedGrade;
-                        singleStackFallbackState=mergeState(c,ItemData.TOMATO,grade);
+                        singleStackFallbackState=mergeState(c,inputId(),grade);
                     }
                     // Even1+1 fragments may need merging to make room for another haul.
                     // If fewer than one recipe remain, a normal refill is still necessary.
@@ -299,7 +326,7 @@ public final class MachineModule implements AutomationModule {
                 if (invalid != null) return fail(invalid);
                 // Count this source again after opening it; never withdraw from an old chest snapshot.
                 boolean funded=heldCandidate(c)!=null;
-                int held=ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
+                int held=ModuleSupport.count(c,i -> inputGrade(i,grade));
                 int needed=remainingIngredientDemand(c)-held;
                 if (funded && needed<=0) { close(c,Stage.RETURN); break; }
                 // A source stack can have tags absent from our ItemData projection. Never
@@ -309,7 +336,7 @@ public final class MachineModule implements AutomationModule {
                     return fail("Keep two empty output slots before withdrawing production tomatoes");
                 }
                 List<ItemSlot> available=c.world().menu().slots().stream().filter(s -> !s.player())
-                    .filter(s -> ModuleSupport.tomatoGrade(s.item(),grade) && s.item().count()<=64).toList();
+                    .filter(s -> inputGrade(s.item(),grade) && s.item().count()<=64).toList();
                 // Full-stack QuickMove is cursor-free. Prefer a stack within the demand;
                 // the final indivisible stack may exceed it by at most 63 tomatoes.
                 ItemSlot under=available.stream().filter(s -> s.item().count()<=needed)
@@ -363,7 +390,7 @@ public final class MachineModule implements AutomationModule {
                 if (skipped!=null) return skipped;
                 ItemSlot selected = c.world().inventory().stream().filter(s -> s.inventoryIndex() == hotbar).findFirst().orElse(null);
                 ItemSlot prepared = feeding ? heldCandidate(c) : null;
-                boolean correct = feeding ? selected != null && ModuleSupport.tomatoGrade(selected.item(),grade) && selected.item().count() >= cost
+                boolean correct = feeding ? selected != null && inputGrade(selected.item(),grade) && selected.item().count() >= cost
                     && (selected.item().count()>cost || prepared!=null && (prepared.inventoryIndex()==hotbar || prepared.item().count()<=cost))
                     : selected == null || selected.item().empty();
                 if (!correct) {
@@ -400,7 +427,7 @@ public final class MachineModule implements AutomationModule {
                     useSettleAt = -1; c.navigation().reset(); stage = Stage.RETURN;
                     return WorkResult.busy(machineStatus("상호작용 위치 재접근"));
                 }
-                inputBefore = ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
+                inputBefore = ModuleSupport.count(c,i -> inputGrade(i,grade));
                 partialWineFeedEligible=feature==Feature.WINE && feeding && !collected && cost==3
                     && "false".equals(block.properties().get("working")) && "false".equals(block.properties().get("mature"));
                 partialWineFeedTarget=partialWineFeedEligible ? target().pos() : null;
@@ -418,13 +445,13 @@ public final class MachineModule implements AutomationModule {
                     if (feature==Feature.PRESERVES) {
                         PendingMachineOutput output=MachineOutputLedger.prepare(c,feature,target().pos());
                         outputOperationId=output.id(); outputWineYear=output.expectedWineYear();
-                    } else outputWineYear=c.world().wineYear(); // Optional merge preference only.
+                    } else outputWineYear=ItemData.WINE.equals(outputId()) ? c.world().wineYear() : null; // Optional merge preference only.
                 }
                 submit(c,new Action.UseBlock(target().pos(),Action.Use.MACHINE),Pending.USE);
             }
             case VERIFY -> {
                 BlockData block = machine(c);
-                int consumed = inputBefore - ModuleSupport.count(c,i -> ModuleSupport.tomatoGrade(i,grade));
+                int consumed = inputBefore - ModuleSupport.count(c,i -> inputGrade(i,grade));
                 boolean exactPartial=feature==Feature.WINE && feeding && !collected && partialWineFeedEligible && cost==3
                     && Objects.equals(partialWineFeedTarget,target().pos()) && confirmedPartialWineInput>=1 && confirmedPartialWineInput<=2;
                 boolean exactFull=feature==Feature.WINE && feeding && fullWineFeedEligible && cost==3
@@ -436,13 +463,13 @@ public final class MachineModule implements AutomationModule {
                     && "true".equals(block.properties().get("working"));
                 if (inputConfirmed && stateConfirmed) {
                     if (feeding) { freshForHaul = false; inputMergeAttempts=0; }
-                    if (feature==Feature.WINE) WineBatchRules.confirmFeed(c,target().pos());
+                    if (feature==Feature.WINE) WineBatchRules.confirmFeed(c,lineId,target().pos());
                     else schedule(c,target(),feeding ? c.profile().preservesCycleDays : 1);
                     if (collected && feature==Feature.PRESERVES) {
                         MachineOutputLedger.confirmMachine(c,outputOperationId);
                         stage = Stage.PICKUP;
                     } else if (collected) {
-                        preferredOutputSource=outputWineYear==null ? null : newlyReceivedOutput(c);
+                        preferredOutputSource=ItemData.WINE.equals(outputId()) && outputWineYear==null ? null : newlyReceivedOutput(c);
                         outputMergeAttempts=0; stage=Stage.OUTPUT;
                     }
                     else { machineIndex++; stage = Stage.MACHINE; }
@@ -479,7 +506,7 @@ public final class MachineModule implements AutomationModule {
                 if (feature!=Feature.WINE || emptyInventorySlots(c)<=RESERVED_OUTPUT_SLOTS) {
                     String fingerprint=mergeState(c,outputId(),null);
                     if (outputMergeAttempts<36 && !fingerprint.equals(rejectedOutputMerge)) {
-                        var merge=ProductionMergePlanner.plan(c.world().inventory(),feature,c.profile().hoeHotbarSlot,preferredOutputSource);
+                        var merge=ProductionMergePlanner.planProduct(c.world().inventory(),feature,c.profile().hoeHotbarSlot,outputId(),preferredOutputSource);
                         if (merge.isPresent()) {
                             pendingMergeState=fingerprint; outputMergeAttempts++;
                             submit(c,new Action.ConsolidateInventory(merge.get(),feature==Feature.WINE),Pending.OUTPUT_MERGE); break;
@@ -497,15 +524,15 @@ public final class MachineModule implements AutomationModule {
     private String progressStatus() {
         if (pending==Pending.OPEN_SCAN || pending==Pending.CLOSE && afterClose==Stage.SOURCE
                 || stage==Stage.SOURCE || stage==Stage.SNAPSHOT)
-            return "토마토 재고 확인 " + Math.min(sourceIndex,sources.size()) + "/" + sources.size() + " — 가장 많은 등급 선택";
+            return ingredientLabel()+" 재고 확인 " + Math.min(sourceIndex,sources.size()) + "/" + sources.size() + " — 가장 많은 등급 선택";
         if (pending==Pending.OPEN_FETCH || pending==Pending.WITHDRAW || stage==Stage.FETCH_SOURCE || stage==Stage.FETCH)
-            return "재료 가져오는 중 — " + (grade<0 ? "토마토" : "등급 " + grade + " 토마토") + " · " + machineStatus("보충 준비");
+            return "재료 가져오는 중 — " + (grade<0 ? ingredientLabel() : "등급 " + grade + " "+ingredientLabel()) + " · " + machineStatus("보충 준비");
         if (pending==Pending.INPUT_MERGE) return machineStatus("선택한 등급의 재료 합치는 중");
         if (pending==Pending.OUTPUT_MERGE) return machineStatus("인벤토리 산출물 정리 중");
         return machineStatus(switch (stage) {
             case START -> "처리할 설비 확인";
             case MACHINE -> "이동·생산 상태 확인";
-            case CHOOSE -> "가장 많은 토마토 등급 선택";
+            case CHOOSE -> "가장 많은 "+ingredientLabel()+" 등급 선택";
             case RETURN -> "재료를 들고 설비로 돌아가는 중";
             case EQUIP -> "사용할 재료 준비";
             case VERIFY -> "재료 소비·생산 상태 확인";
@@ -521,7 +548,7 @@ public final class MachineModule implements AutomationModule {
 
     /** The common date opens one rack pass; availability is checked per member, not as a global gate. */
     private WorkResult prepareWineRun(Context c) {
-        WineBatchSchedule schedule=WineBatchRules.ensure(c);
+        WineBatchSchedule schedule=WineBatchRules.ensure(c,lineId);
         if (schedule==null) return WorkResult.idle();
         if (!schedule.active() && gameDay(c)<schedule.nextDueDay())
             return new WorkResult(WorkResult.State.IDLE,"와인 랙 공통 생산일 "+schedule.nextDueDay()+"일 대기 — 개별 조기 완료 통은 방문하지 않습니다");
@@ -537,22 +564,22 @@ public final class MachineModule implements AutomationModule {
         // an open menu alone must not starve every later production module.
         if (closeIfNeeded(c,Stage.START)) return WorkResult.busy("와인 작업 전 보관함 닫는 중");
         if (schedule.active() && schedule.remaining().isEmpty()) {
-            WineBatchRules.finish(c); return WorkResult.idle();
+            WineBatchRules.finish(c,lineId); return WorkResult.idle();
         }
         Map<Pos,Poi> registered=new LinkedHashMap<>();
-        for (Poi poi:c.profile().pois(PoiKind.WINE_KEG)) registered.put(poi.pos(),poi);
+        for (Poi poi:WineProductionRules.machines(c.profile(),productionLine)) registered.put(poi.pos(),poi);
         List<Pos> targets=schedule.active() ? schedule.remaining() : new ArrayList<>(registered.keySet());
         if (targets.isEmpty()) return fail("Registered wine rack is empty; review the common production schedule");
-        if (!schedule.active()) WineBatchRules.open(c,targets);
+        if (!schedule.active()) WineBatchRules.open(c,lineId,targets);
         // Registration edits during a paused pass do not strand all other members.
         // Record the removal explicitly; it is not evidence of a successful refill.
         for (Pos pos:targets) if (!registered.containsKey(pos)) {
             if (c.actions().artisanRejection(pos)!=null)
                 return WorkResult.blocked(c.actions().artisanRejection(pos));
-            WineBatchRules.skip(c,pos,"no longer registered");
+            WineBatchRules.skip(c,lineId,pos,"no longer registered");
         }
-        targets=c.profile().wineBatchSchedule.remaining();
-        if (targets.isEmpty()) { WineBatchRules.finish(c); return WorkResult.idle(); }
+        targets=WineBatchRules.schedule(c.profile(),lineId).remaining();
+        if (targets.isEmpty()) { WineBatchRules.finish(c,lineId); return WorkResult.idle(); }
         machines=new ArrayList<>(ModuleSupport.nearest(c,targets.stream().map(registered::get).toList()));
         return null;
     }
@@ -584,7 +611,7 @@ public final class MachineModule implements AutomationModule {
         String rejection=c.actions().artisanRejection(target().pos());
         if (rejection!=null) return WorkResult.blocked(rejection);
         c.actions().stopMovement();
-        WineBatchRules.skip(c,target().pos(),reason);
+        WineBatchRules.skip(c,lineId,target().pos(),reason);
         machineIndex++; stage=Stage.MACHINE; useSettleAt=-1; yieldTravel=false;
         collected=false; feeding=false;
         partialWineFeedEligible=false; partialWineFeedTarget=null; confirmedPartialWineInput=0;
@@ -606,7 +633,7 @@ public final class MachineModule implements AutomationModule {
     private int[] heldCounts(Context c) {
         int[] counts=new int[4];
         for (ItemSlot slot:c.world().inventory()) if (slot.inventoryIndex()>=0 && slot.inventoryIndex()<36
-                && slot.item().is(ItemData.TOMATO) && slot.item().quality()>=0 && slot.item().quality()<4)
+                && slot.item().is(inputId()) && slot.item().quality()>=0 && slot.item().quality()<4)
             counts[slot.item().quality()]+=slot.item().count();
         return counts;
     }
@@ -615,7 +642,7 @@ public final class MachineModule implements AutomationModule {
         if (grade>=0 && held[grade]>=cost) {
             // Prefer another substantial carried batch before emptying the last hand
             // recipe, but exact-cost remnants must still be usable without a scan loop.
-            if (held[grade]==cost && remainingIngredientDemand(c)>cost) {
+            if (legacyInput() && held[grade]==cost && remainingIngredientDemand(c)>cost) {
                 int replacement=chooseGrade(held,cost+1);
                 if (replacement>=0) return replacement;
             }
@@ -646,7 +673,7 @@ public final class MachineModule implements AutomationModule {
     }
     private Integer newlyReceivedOutput(Context c) {
         return c.world().inventory().stream().filter(s -> s.inventoryIndex()>=0 && s.inventoryIndex()<36)
-            .filter(s -> s.item().is(outputId()) && (feature!=Feature.WINE || Objects.equals(s.item().year(),outputWineYear)))
+            .filter(s -> s.item().is(outputId()) && (!ItemData.WINE.equals(outputId()) || Objects.equals(s.item().year(),outputWineYear)))
             .filter(s -> {
                 ItemData before=inventoryBeforeOutput.getOrDefault(s.inventoryIndex(),ItemData.EMPTY);
                 return !ModuleSupport.same(before,s.item()) || s.item().count()>before.count();
@@ -655,21 +682,29 @@ public final class MachineModule implements AutomationModule {
             .map(ItemSlot::inventoryIndex).orElse(null);
     }
     private void beginStockScan(Context c) {
-        sources = StorageVisitOrder.order(c.profile().pois(PoiKind.TOMATO_CHEST),c.world().player());
+        sources = StorageVisitOrder.order(WineProductionRules.sources(c.profile(),productionLine),c.world().player());
         stock.clear(); stockReady = false; freshForHaul = false; sourceIndex = 0; grade=-1; stage = Stage.SOURCE;
-        surveyedStock.clear(); stockSurvey=c.session().tomatoStockCache.beginSurvey(c);
+        surveyedStock.clear(); stockSurvey=legacyInput() ? c.session().tomatoStockCache.beginSurvey(c) : null;
     }
     private void prepareStockHaul(Context c) {
+        if(!legacyInput()) {
+            // Keep this line's verified counts throughout its batch. Every actual
+            // source is re-read after OPEN and after each acknowledged withdrawal.
+            if(stockReady && stockDay==gameDay(c)) {
+                freshForHaul=true;grade=-1;stage=Stage.CHOOSE;
+            } else beginStockScan(c);
+            return;
+        }
         // This is called only after usable carried ingredients are exhausted.
         // Cache contents select a destination, never authorize its QuickMove.
         Optional<TomatoStockCache.View> remembered=c.session().tomatoStockCache.reusable(c);
         if (remembered.isEmpty()) { beginStockScan(c); return; }
-        sources=StorageVisitOrder.order(c.profile().pois(PoiKind.TOMATO_CHEST),c.world().player());
+        sources=StorageVisitOrder.order(WineProductionRules.sources(c.profile(),productionLine),c.world().player());
         stock.clear(); surveyedStock.clear(); stockSurvey=null;
         for (Poi poi:sources) {
             int[] counts=new int[4];
             for (ItemData item:remembered.get().contents().get(poi.pos()))
-                if (item.is(ItemData.TOMATO)) counts[item.quality()]+=item.count();
+                if (item.is(inputId())) counts[item.quality()]+=item.count();
             stock.put(poi,counts);
         }
         stockReady=true; freshForHaul=true; stockDay=gameDay(c); grade=-1; stage=Stage.CHOOSE;
@@ -699,7 +734,7 @@ public final class MachineModule implements AutomationModule {
     }
     private String scheduleKey(Poi poi) {
         Pos p = poi.pos();
-        return (feature == Feature.WINE ? "wine:" : "preserves:") + p.x() + ":" + p.y() + ":" + p.z();
+        return feature==Feature.WINE ? WineBatchRules.key(lineId,p) : "preserves:"+Profile.positionKey(p);
     }
     private static boolean morningSettled(Context c) { return Math.floorMod(c.world().dayTime(),24000) >= 220; }
     private void schedule(Context c,Poi poi,int days) {
@@ -708,19 +743,20 @@ public final class MachineModule implements AutomationModule {
     private String snapshot(Context c, Poi poi, boolean verifiedReceipt) {
         int[] counts = new int[4];
         for (ItemSlot s : c.world().menu().slots()) if (!s.player() && !s.item().empty()) {
-            if (!s.item().is(ItemData.TOMATO)) {
+            if (!s.item().is(inputId())) {
+                if(!legacyInput())continue;
                 c.session().tomatoStockCache.invalidate(poi.pos());
                 return "Tomato source contains a non-tomato item; inspect the registered tomato-only storage";
             }
             int q = s.item().quality();
             if (q < 0 || q > 3) {
-                c.session().tomatoStockCache.invalidate(poi.pos());
+                if(legacyInput())c.session().tomatoStockCache.invalidate(poi.pos());
                 return "Tomato source contains an unknown tomato grade";
             }
             counts[q] += s.item().count();
         }
         stock.put(poi,counts);
-        if (verifiedReceipt) {
+        if (verifiedReceipt && legacyInput()) {
             // Legacy menu shapes remain usable locally, but cannot be promoted
             // to the shared, complete 27-slot warehouse memory.
             List<ItemSlot> slots=c.world().menu().slots().stream().filter(s -> !s.player())
@@ -737,21 +773,21 @@ public final class MachineModule implements AutomationModule {
     }
     private ItemSlot heldCandidate(Context c) {
         List<ItemSlot> held=c.world().inventory().stream()
-            .filter(s -> s.inventoryIndex()>=0 && s.inventoryIndex()<36 && ModuleSupport.tomatoGrade(s.item(),grade)).toList();
+            .filter(s -> s.inventoryIndex()>=0 && s.inventoryIndex()<36 && inputGrade(s.item(),grade)).toList();
         ItemSlot refill=held.stream().filter(s -> s.item().count()>cost).findFirst().orElse(null);
         if (refill!=null) return refill;
         // More work and carried same-grade fragments warrant a bounded merge
         // before emptying the hand. A genuinely final recipe
         // keeps the old exact-cost completion semantics; it needs no later refill.
         if (grade>=0 && remainingIngredientDemand(c)>cost && heldCounts(c)[grade]>cost
-                && !mergeState(c,ItemData.TOMATO,grade).equals(singleStackFallbackState)) return null;
+                && !mergeState(c,inputId(),grade).equals(singleStackFallbackState)) return null;
         return held.stream().filter(s -> s.item().count()>=cost).findFirst().orElse(null);
     }
     private int singleStackGrade(Context c) {
         int[] counts=heldCounts(c); boolean[] funded=new boolean[4];
         for (ItemSlot slot:c.world().inventory()) {
             ItemData item=slot.item();
-            if (slot.inventoryIndex()>=0 && slot.inventoryIndex()<36 && item.is(ItemData.TOMATO)
+            if (slot.inventoryIndex()>=0 && slot.inventoryIndex()<36 && item.is(inputId())
                     && item.quality()>=0 && item.quality()<4 && item.count()>=cost) funded[item.quality()]=true;
         }
         if (grade>=0 && funded[grade]) return grade;
@@ -810,7 +846,7 @@ public final class MachineModule implements AutomationModule {
         // Durable output state is the guard after reset and may be reconciled while OFF.
         // An unrelated local latch must not keep blocking after that obligation is resolved.
         if (uncertainInteraction && !durableOutput) unresolvedInteraction = message;
-        return WorkResult.blocked(message);
+        return WorkResult.blocked(legacyInput() ? message : message.replace("Tomato",inputId()).replace("tomatoes",inputId()).replace("tomato",inputId()));
     }
     @Override public void reset() { yieldTravel=false; clearRun(); unresolvedInteraction = null; rejectedInputMerge=null; rejectedOutputMerge=null; repositionedInputState=null; }
     private void clearRun() {

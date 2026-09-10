@@ -29,7 +29,7 @@ class AdditionalWorkIntegrationTest {
             Profile p=new Profile();p.schemaVersion=schema;p.enabled.clear();ProfileStore.validate(p);
             for(Feature feature:List.of(Feature.COMMODITY_STORAGE,Feature.SEED_MAKER,Feature.CRYSTAL_COPY,Feature.STARFRUIT))
                 assertFalse(p.enabled(feature),feature.toString());
-            assertEquals(5,p.schemaVersion);assertTrue(p.enabled(Feature.HARVEST));
+            assertEquals(6,p.schemaVersion);assertTrue(p.enabled(Feature.HARVEST));
         }
     }
     @Test void oneShotJobOnlyOpensItsDeclaredInputAndOutputGroups() {

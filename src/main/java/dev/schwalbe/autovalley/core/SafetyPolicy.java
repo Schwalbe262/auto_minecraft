@@ -44,11 +44,14 @@ public final class SafetyPolicy {
                     PoiKind kind = wine ? PoiKind.WINE_KEG : PoiKind.PRESERVES_JAR;
                     Feature feature = wine ? Feature.WINE : Feature.PRESERVES;
                     ItemData held = held(world);
+                    WineProductionLine line=wine ? WineProductionRules.at(profile,use.pos()) : null;
                     int cost = wine || block.flag("upgraded") ? 3 : 5;
                     boolean known = wine || block.id().equals("society:preserves_jar");
-                    boolean validHand = held.is(ItemData.TOMATO) && held.count() >= cost
+                    String inputId=wine && line!=null ? line.inputItemId() : ItemData.TOMATO;
+                    boolean validHand = held.is(inputId) && held.count() >= cost
                         || block.flag("mature") && held.empty();
-                    yield !known || !context.session().allows(profile,feature) || !registered(profile,use.pos(),kind)
+                    boolean registration=wine ? line!=null && WineProductionRules.allowed(context,line) : registered(profile,use.pos(),kind);
+                    yield !known || !context.session().allows(profile,feature) || !registration
                         || block.flag("working") && !block.flag("mature") || !validHand ? "Machine, ingredient, or batch is not ready" : null;
                 }
                 case OPEN_CONTAINER -> !(CommodityStorageRules.openAllowed(context,use.pos()) && StorageSurveyRules.ordinaryStorage(block)) && profile.pois.stream().noneMatch(p -> p.pos().equals(use.pos())
@@ -92,10 +95,15 @@ public final class SafetyPolicy {
                 return "Inventory consolidation snapshot is stale";
             if (!ProductionMergePlanner.protectsProductionSlots(plan,profile.hoeHotbarSlot))
                 return "Inventory consolidation must preserve the hoe and material hotbar slots";
-            var expected=ItemData.TOMATO.equals(plan.itemId())
-                ? ProductionMergePlanner.planTomatoes(world.inventory(),plan.feature(),profile.hoeHotbarSlot,
+            boolean legacy=plan.feature()==Feature.PRESERVES && (ItemData.TOMATO.equals(plan.itemId()) || ItemData.PRESERVES.equals(plan.itemId()));
+            boolean configured=plan.feature()==Feature.WINE && WineProductionRules.lines(profile).stream()
+                .anyMatch(line->WineProductionRules.allowed(context,line)
+                    && (line.inputItemId().equals(plan.itemId()) || line.outputItemId().equals(plan.itemId())));
+            if (!legacy && !configured) return "Production item has no enabled line";
+            var expected=ItemData.isProductionIngredientId(plan.itemId())
+                ? ProductionMergePlanner.planIngredient(world.inventory(),plan.feature(),profile.hoeHotbarSlot,plan.itemId(),
                     plan.expectedItems().get(plan.sourceIndex()).quality(),plan.sourceIndex())
-                : ProductionMergePlanner.plan(world.inventory(),plan.feature(),profile.hoeHotbarSlot,plan.sourceIndex());
+                : ProductionMergePlanner.planProduct(world.inventory(),plan.feature(),profile.hoeHotbarSlot,plan.itemId(),plan.sourceIndex());
             return expected.isEmpty() || !expected.get().equals(plan) ? "Inventory consolidation plan changed or is unsafe" : null;
         }
         if (action instanceof Action.QuickMove move) {

@@ -15,6 +15,7 @@ public final class SessionState {
     public PendingShipmentRecovery pendingShipmentRecovery;
     public boolean allows(Profile profile,Feature feature) { return oneShotFeature==null ? profile.enabled(feature) : oneShotFeature==feature; }
     public final Map<Integer,WineSalePermit> wineSalePermits=new HashMap<>();
+    public final Map<String,WineLineSalePermit> wineLineSalePermits=new HashMap<>();
     public TomatoSalePermit tomatoSalePermit;
     /** Last confirmed stock survives ordinary OFF/ON, never reconnect or application restart. */
     public final TomatoStockCache tomatoStockCache=new TomatoStockCache();

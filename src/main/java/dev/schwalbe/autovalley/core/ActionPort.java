@@ -1,6 +1,8 @@
 package dev.schwalbe.autovalley.core;
 public interface ActionPort {
     boolean busy();
+    /** A wrapper may close only a menu that this adapter owns, never a player's unrelated screen. */
+    default boolean ownsContainer() { return false; }
     long submit(Action action);
     ActionOutcome outcome(long ticket);
     void move(Movement movement);

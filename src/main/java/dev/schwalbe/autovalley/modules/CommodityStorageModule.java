@@ -23,6 +23,8 @@ public final class CommodityStorageModule extends DepositModule {
     @Override public WorkResult tick(Context c){profile=c.profile();return super.tick(c);}
     @Override protected boolean accepts(ItemData item) {
         return profile!=null && item!=null && !item.empty() && (restrictItems.isEmpty() || restrictItems.contains(item.id()))
+            && (storeId!=null || profile.wineProductionLines==null || profile.wineProductionLines.values().stream()
+                .filter(Objects::nonNull).noneMatch(line->line.outputItemId().equals(item.id())))
             && stores().stream().anyMatch(store->store.accepts(item));
     }
     private List<CommodityStore> stores() {

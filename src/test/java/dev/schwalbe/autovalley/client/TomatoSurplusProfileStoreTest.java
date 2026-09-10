@@ -31,7 +31,7 @@ class TomatoSurplusProfileStoreTest {
             Files.writeString(path,json);Profile profile=store.load(key);
             assertEquals(90,profile.tomatoStorageLimitPercent);assertTrue(profile.tomatoSurplusShippingEnabled);
             assertFalse(profile.enabled(Feature.TOMATO_STORAGE));assertEquals(Map.of("farm:kept",30L),profile.nextEligibleDay);
-            assertEquals(5,profile.schemaVersion);assertEquals(json,Files.readString(path));
+            assertEquals(6,profile.schemaVersion);assertEquals(json,Files.readString(path));
             assertFalse(Files.exists(directory.resolve(key+".json.bak")));
         }
     }

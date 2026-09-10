@@ -26,8 +26,8 @@ public final class ClientRuntime {
     private final LocalNavigator navigator=new LocalNavigator();
     private final HarvestModule harvest=new HarvestModule();
     private final AutomationEngine engine=new AutomationEngine(List.of(new StorageSurveyModule(),new DisposalModule(),new TomatoStorageModule(),
-        new WineStorageModule(),new WineSurplusShippingModule(),new ShippingModule(),new CommodityStorageModule(),new HarvestAndStorageModule(harvest),
-        new MachineModule(Feature.WINE),new MachineModule(Feature.PRESERVES),new ArtisanModule(Feature.SEED_MAKER),new ArtisanModule(Feature.CRYSTAL_COPY),
+        new WineRoutineModule(Feature.WINE_STORAGE),new WineRoutineModule(Feature.WINE_SURPLUS_SHIPPING),new ShippingModule(),new CommodityStorageModule(),new HarvestAndStorageModule(harvest),
+        new WineProductionModule(),new MachineModule(Feature.PRESERVES),new ArtisanModule(Feature.SEED_MAKER),new ArtisanModule(Feature.CRYSTAL_COPY),
         new StarfruitModule(),new LoggingModule(),new SleepModule()));
     private final ProfileStore store=new ProfileStore(FMLPaths.CONFIGDIR.get().resolve("autovalley"));
     private Profile profile=new Profile();
@@ -247,6 +247,25 @@ public final class ClientRuntime {
     }
     public void openSettings() { pause("설정 중"); mc.setScreen(new ValleyScreen()); }
     public void toggleFeature(Feature feature) { pause("기능 설정 변경"); profile.enabled.put(feature,!profile.enabled(feature)); saveProfile(); }
+    /** A local line setting never resets its dates, skips an ACK, or starts gameplay. */
+    public boolean wineLineSettingsEditable() {
+        return !running() && !recording() && profileKey!=null && persistenceError==null && !automationStartBlocked()
+            && world.player().connected() && world.menu()!=null && !world.menu().container() && world.menu().carried().empty()
+            && actions.settingsEditSafe() && !profile.loggingRunActive && !MachineOutputLedger.hasPending(context);
+    }
+    public boolean updateWineLine(String id,boolean enabled,int cycleDays) {
+        if (!wineLineSettingsEditable() || cycleDays<1 || cycleDays>28) return false;
+        WineProductionLine previous=WineProductionRules.line(profile,id);
+        if (previous==null) return false;
+        if (WineProductionRules.LEGACY_ID.equals(id)) {
+            boolean oldEnabled=profile.tomatoWineEnabled;int oldCycle=profile.wineCycleDays;
+            profile.tomatoWineEnabled=enabled;profile.wineCycleDays=cycleDays;
+            try {saveProfile();return true;} catch(RuntimeException e){profile.tomatoWineEnabled=oldEnabled;profile.wineCycleDays=oldCycle;return false;}
+        }
+        profile.wineProductionLines.put(id,new WineProductionLine(previous.id(),previous.name(),previous.inputItemId(),previous.outputItemId(),
+            previous.inputStoreId(),previous.outputStoreId(),previous.machines(),cycleDays,enabled));
+        try {saveProfile();return true;} catch(RuntimeException e){profile.wineProductionLines.put(id,previous);return false;}
+    }
     private LoggingLeafSettings.Boundary loggingLeafSettingBoundary() {
         boolean connected=mc.player!=null && mc.level!=null && mc.getConnection()!=null && context.profile()==profile;
         return new LoggingLeafSettings.Boundary(running(),recording(),connected,
@@ -324,7 +343,7 @@ public final class ClientRuntime {
         try { saveProfile(); notifyUser("경유지를 저장했습니다."); }
         catch (RuntimeException e) { profile.pois.remove(profile.pois.size()-1); notifyUser(e.getMessage()); }
     }
-    private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.wineBatchSchedule,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest,profile.pendingMachineOutputs,profile.machineOutputResolutions,profile.loggingRunActive,profile.loggingRemainingPlots,profile.loggingReplantingPlots,profile.loggingHotbarLease); }
+    private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.wineBatchSchedule,profile.wineProductionSchedules,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest,profile.pendingMachineOutputs,profile.machineOutputResolutions,profile.loggingRunActive,profile.loggingRemainingPlots,profile.loggingReplantingPlots,profile.loggingHotbarLease); }
     private void checkpointMachineState() {
         try { saveProfile(); }
         catch (RuntimeException e) { persistenceError=e.getMessage(); throw e; }

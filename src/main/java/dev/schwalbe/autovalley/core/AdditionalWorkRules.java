@@ -53,6 +53,7 @@ public final class AdditionalWorkRules {
         List<Pos> result=new ArrayList<>();
         if(p.commodityStores!=null)p.commodityStores.values().stream().filter(s->s!=null && s.valid()).forEach(s->result.addAll(s.containers()));
         if(p.artisanJobs!=null)p.artisanJobs.values().stream().filter(Objects::nonNull).forEach(j->result.addAll(j.machines()));
+        if(p.wineProductionLines!=null)p.wineProductionLines.values().stream().filter(Objects::nonNull).forEach(j->result.addAll(j.machines()));
         if(p.fruitPatches!=null)p.fruitPatches.stream().filter(s->s!=null && s.valid()).forEach(s->result.addAll(s.fruits()));
         return List.copyOf(result);
     }

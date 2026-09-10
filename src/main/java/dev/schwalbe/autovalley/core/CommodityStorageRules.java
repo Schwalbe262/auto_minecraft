@@ -22,23 +22,55 @@ public final class CommodityStorageRules {
             && (!physicalCells.contains(poi.pos()) || poi.kind()==PoiKind.STORAGE_CANDIDATE));
     }
     public static boolean openAllowed(Context c,Pos pos) {
-        return at(c.profile(),pos).stream().anyMatch(store->scopeAllows(c,store.id()));
+        return at(c.profile(),pos).stream().anyMatch(store->scopeAllows(c,store.id()) || wineOpenAllows(c,store.id()));
     }
     public static boolean depositAllowed(Context c,Pos pos,ItemData item) {
-        return at(c.profile(),pos).stream().anyMatch(store->store.accepts(item) && scopeAllows(c,store.id()));
+        return at(c.profile(),pos).stream().anyMatch(store->store.accepts(item)
+            && (scopeAllows(c,store.id()) || wineDepositAllows(c,store.id(),item)));
     }
     public static boolean knownItem(Context c,ItemData item) {
         return c.profile().commodityStores!=null && c.profile().commodityStores.values().stream()
-            .anyMatch(store->store!=null && store.accepts(item) && scopeAllows(c,store.id()));
+            .anyMatch(store->store!=null && store.accepts(item)
+                && (scopeAllows(c,store.id()) || wineDepositAllows(c,store.id(),item)));
     }
     public static boolean withdrawalAllowed(Context c,Pos pos,ItemData item) {
-        if(c.profile().artisanJobs==null)return false;
-        for(ArtisanJob job:c.profile().artisanJobs.values()) {
+        for (WineProductionLine line:WineProductionRules.lines(c.profile())) {
+            if (WineProductionRules.LEGACY_ID.equals(line.id()) || !WineProductionRules.allowed(c,line)
+                || !WineProductionRules.input(item,line)) continue;
+            CommodityStore input=WineProductionRules.inputStore(c.profile(),line);
+            if (input!=null && input.containers().contains(pos) && input.accepts(item)) return true;
+        }
+        if(c.profile().artisanJobs!=null)for(ArtisanJob job:c.profile().artisanJobs.values()) {
             if(job==null)continue;
             ArtisanRecipe recipe=ArtisanRecipe.find(job.recipeId());
             CommodityStore store=store(c.profile(),job.inputStoreId());
             if(recipe!=null && c.session().allows(c.profile(),recipe.feature()) && store!=null
                 && store.containers().contains(pos) && store.accepts(item) && item.is(recipe.inputId()))return true;
+        }
+        return false;
+    }
+    /** Entire declared reserve, each cell checked independently of the native one/two-cell menu shape. */
+    public static boolean unreservedContainerSet(Profile profile,Collection<Pos> cells) {
+        return cells!=null && !cells.isEmpty() && cells.stream().allMatch(pos->pos!=null && unreservedContainer(profile,List.of(pos)));
+    }
+    private static boolean wineOpenAllows(Context c,String storeId) {
+        for (WineProductionLine line:WineProductionRules.lines(c.profile())) {
+            if (!line.enabled() || WineProductionRules.LEGACY_ID.equals(line.id()) || !WineProductionRules.configured(c.profile(),line)) continue;
+            if (storeId.equals(line.inputStoreId()) && c.session().allows(c.profile(),Feature.WINE)) return true;
+            if (storeId.equals(line.outputStoreId()) && (c.session().allows(c.profile(),Feature.WINE)
+                || c.session().allows(c.profile(),Feature.WINE_STORAGE)
+                || c.session().allows(c.profile(),Feature.WINE_SURPLUS_SHIPPING))) return true;
+        }
+        return false;
+    }
+    private static boolean wineDepositAllows(Context c,String storeId,ItemData item) {
+        if (item==null) return false;
+        for (WineProductionLine line:WineProductionRules.lines(c.profile())) {
+            if (!line.enabled() || WineProductionRules.LEGACY_ID.equals(line.id()) || !WineProductionRules.configured(c.profile(),line)) continue;
+            if (storeId.equals(line.inputStoreId()) && item.is(line.inputItemId())
+                && c.session().allows(c.profile(),Feature.WINE)) return true;
+            if (storeId.equals(line.outputStoreId()) && item.is(line.outputItemId())
+                && (c.session().allows(c.profile(),Feature.WINE) || c.session().allows(c.profile(),Feature.WINE_STORAGE))) return true;
         }
         return false;
     }
