@@ -44,7 +44,7 @@ This is not evidence that the newly added work-slot allocator ran in the live se
 
 The logging follow-up accepts only the existing logging items (saplings, spruce logs, fire logs, twigs and mossberries, at most 64 per nonempty stack) in the working endpoint. Exact original-item data/fingerprint and native inventory evidence remain required. If fresh saplings need a full working slot, the existing restoration path first returns the original item, waits for its acknowledgment, then prepares saplings normally. Unknown items, changed originals and uncertain inverse clicks remain blocked. Thirteen additional tests cover this reproduced case and its rejection boundaries.
 
-The follow-up build was installed by another normal restart. The user had resumed manual play, so automation is left OFF rather than automatically taking control again. Live execution of this final logging fix still needs the next explicit F8 start.
+The follow-up build was installed by another normal restart; server reconnection and OFF state were confirmed at 17:15 KST. The user had resumed manual play, so automation is left OFF rather than automatically taking control again. Live execution of this final logging fix still needs the next explicit F8 start.
 
 ## Wine expansion button diagnosis
 
