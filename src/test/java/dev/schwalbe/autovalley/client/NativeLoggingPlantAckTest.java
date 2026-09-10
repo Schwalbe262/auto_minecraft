@@ -11,7 +11,7 @@ class NativeLoggingPlantAckTest {
         return new NativeLoggingActions.PlantBlockAck(seq,pos,planted);
     }
     private static boolean confirmed(List<NativeLoggingActions.PlantBlockAck> replies) {
-        return NativeLoggingActions.plantingConfirmed(true,true,true,1,1,520,TARGET,replies);
+        return NativeLoggingActions.plantingConfirmed(true,true,false,true,1,1,520,TARGET,replies);
     }
 
     @Test void rawPlacementConfirmsEvenWhenPickupBurstNeverReportsTheConsumedOneCount() {
@@ -47,20 +47,36 @@ class NativeLoggingPlantAckTest {
     }
 
     @Test void connectionChangeCannotBorrowAnOlderSessionsPlacement() {
-        assertFalse(NativeLoggingActions.plantingConfirmed(true,true,true,1,2,520,TARGET,List.of(ack(522,TARGET,true))));
+        assertFalse(NativeLoggingActions.plantingConfirmed(true,true,false,true,1,2,520,TARGET,List.of(ack(522,TARGET,true))));
     }
 
-    @Test void requestMustHaveBeenDispatchedFromAirWithTheAuthorizedSapling() {
+    @Test void requestMustHaveBeenDispatchedFromAnAdmittedCellWithTheAuthorizedSapling() {
         var replies=List.of(ack(522,TARGET,true));
-        assertFalse(NativeLoggingActions.plantingConfirmed(false,true,true,1,1,520,TARGET,replies));
-        assertFalse(NativeLoggingActions.plantingConfirmed(true,false,true,1,1,520,TARGET,replies));
-        assertFalse(NativeLoggingActions.plantingConfirmed(true,true,false,1,1,520,TARGET,replies));
+        assertFalse(NativeLoggingActions.plantingConfirmed(false,true,false,true,1,1,520,TARGET,replies));
+        assertFalse(NativeLoggingActions.plantingConfirmed(true,false,false,true,1,1,520,TARGET,replies));
+        assertFalse(NativeLoggingActions.plantingConfirmed(true,true,false,false,1,1,520,TARGET,replies));
     }
 
     @Test void absentOrMalformedEvidenceFailsClosed() {
         assertFalse(confirmed(null));
         assertFalse(confirmed(Arrays.asList((NativeLoggingActions.PlantBlockAck)null)));
         assertFalse(confirmed(List.of(ack(522,null,true))));
-        assertFalse(NativeLoggingActions.plantingConfirmed(true,true,true,1,1,520,null,List.of(ack(522,TARGET,true))));
+        assertFalse(NativeLoggingActions.plantingConfirmed(true,true,false,true,1,1,520,null,List.of(ack(522,TARGET,true))));
+    }
+
+    @Test void directlyReplacingOneSnowLayerUsesTheSameExactTargetRawReplyProof() {
+        var replies=List.of(ack(522,TARGET,true));
+        assertTrue(NativeLoggingActions.plantingConfirmed(true,false,true,true,1,1,520,TARGET,replies));
+        assertFalse(NativeLoggingActions.plantingConfirmed(false,false,true,true,1,1,520,TARGET,replies));
+        assertFalse(NativeLoggingActions.plantingConfirmed(true,false,true,false,1,1,520,TARGET,replies));
+        assertFalse(NativeLoggingActions.plantingConfirmed(true,false,true,true,1,2,520,TARGET,replies));
+    }
+
+    @Test void snowDisappearancePredictionOrAPlacementAboveSnowIsNotSuccess() {
+        for(var replies:List.of(List.<NativeLoggingActions.PlantBlockAck>of(),
+            List.of(ack(522,TARGET,false)),List.of(ack(522,TARGET.offset(0,1,0),true)),
+            List.of(ack(522,TARGET.offset(0,-1,0),true)),List.of(ack(520,TARGET,true)),
+            List.of(ack(522,TARGET,true),ack(523,TARGET,false))))
+            assertFalse(NativeLoggingActions.plantingConfirmed(true,false,true,true,1,1,520,TARGET,replies));
     }
 }

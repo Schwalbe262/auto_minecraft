@@ -9,11 +9,20 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
-/** Bounded native UP-face selection; an intervening sapling or wall is never ignored. */
+/** Bounded native soil/single-layer-snow UP-face selection; an occluder is never ignored. */
 final class NativeLoggingPlantHit {
     static final int MAX_BOXES=16,MAX_CANDIDATES=MAX_BOXES*9;
     private static final double EPS=1.0e-7;
     private NativeLoggingPlantHit() { }
+
+    /** The native context must place inside the registered cell, never above snow or into its soil. */
+    static boolean placementTargetsCell(BlockPos target,BlockHitResult hit,BlockPos nativePlacement,
+            boolean singleSnowLayer,boolean replacingClicked,boolean canReplaceCell,boolean canPlace) {
+        if (target==null || hit==null || nativePlacement==null || !target.equals(nativePlacement)
+            || hit.getType()!=HitResult.Type.BLOCK || hit.isInside() || hit.getDirection()!=Direction.UP
+            || !canReplaceCell || !canPlace || replacingClicked!=singleSnowLayer) return false;
+        return (singleSnowLayer ? target : target.below()).equals(hit.getBlockPos());
+    }
 
     static BlockHitResult nearest(BlockPos soil,Vec3 eye,List<AABB> boxes,double reach,Function<Vec3,BlockHitResult> clip) {
         if (soil==null || !finite(eye) || !Double.isFinite(reach) || reach<=0 || clip==null) return null;

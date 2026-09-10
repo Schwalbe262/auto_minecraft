@@ -71,6 +71,12 @@ public final class LoggingRules {
         return item!=null && (item.empty() || item.count()<=64 && (wood(item) || waste(item) || byproduct(item)));
     }
     public static boolean stump(BlockData block) { return block!=null && (block.id().equals(LOG) || block.id().equals(CHOPPED_LOG)); }
+    /** Only cells that can be replaced by direct sapling placement; never a permission to break terrain. */
+    public static boolean replaceablePlantingCell(BlockData block) {
+        return block!=null && ("minecraft:air".equals(block.id()) || "minecraft:cave_air".equals(block.id())
+            || "minecraft:void_air".equals(block.id())
+            || "minecraft:snow".equals(block.id()) && block.properties()!=null && "1".equals(block.properties().get("layers")));
+    }
     /** A coherent 2x2 planting pattern, not proof of a particular generated canopy. */
     public static boolean completePlanting(WorldAccess world,LoggingPlot plot) {
         return plot.plantingPositions().stream().allMatch(p -> world.loaded(p) && world.block(p).id().equals(SAPLING))
@@ -101,6 +107,7 @@ public final class LoggingRules {
                 && partiallyGrown(c.world(),plot)) return "2x2 재식재 중 일부 나무만 자랐습니다. 자동으로 다시 베거나 남은 칸을 채우지 않습니다.";
         if (!allowed(c) || !base(c.profile(),pos) || c.world().menu().container()
             || !SafetyPolicy.held(c.world()).is(SAPLING) || !c.world().loaded(pos)
+            || !replaceablePlantingCell(c.world().block(pos))
             || !c.world().canPlantLoggingSapling(pos)) return "등록한 빈 식재 칸에 가문비나무 묘목만 심을 수 있습니다.";
         return null;
     }

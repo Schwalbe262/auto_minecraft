@@ -14,9 +14,11 @@ import net.minecraft.nbt.TagParser;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.SnowLayerBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -82,7 +84,7 @@ final class NativeLoggingActions {
     void begin(Minecraft mc,ServerObservations observations) {
         if (planting) {
             BlockHitResult hit=plantHit(mc,target);
-            if (hit==null) throw new IllegalArgumentException("The planting soil UP face is not visible");
+            if (hit==null) throw new IllegalArgumentException("The planting soil or single snow layer UP face is not visible");
             started=true; // A throwing native use may already have sent its request.
             mc.gameMode.useItemOn(mc.player,InteractionHand.MAIN_HAND,hit);
             mc.player.swing(InteractionHand.MAIN_HAND);
@@ -185,7 +187,7 @@ final class NativeLoggingActions {
             // Placement is a world postcondition, not an inventory transfer. Concurrent
             // falling-tree pickups may coalesce away the transient held-count decrement.
             // Only raw server block replies enter this proof; client prediction does not.
-            return plantingConfirmed(started,original.isAir(),!held.isEmpty() && held.is(Items.SPRUCE_SAPLING),
+            return plantingConfirmed(started,original.isAir(),singleSnowLayer(original),!held.isEmpty() && held.is(Items.SPRUCE_SAPLING),
                 generation,observations.generation(),beforeSequence,target,
                 observations.nativeBlocksSince(beforeSequence).stream().map(s -> new PlantBlockAck(s.seq(),s.pos(),
                     s.state().is(Blocks.SPRUCE_SAPLING) || s.state().is(Blocks.SPRUCE_LOG))).toList());
@@ -216,9 +218,10 @@ final class NativeLoggingActions {
         return latest!=null && latest.air();
     }
     /** Reduced raw-block proof, kept pure so stale/latest/connection guards can be tested without a running registry. */
-    static boolean plantingConfirmed(boolean started,boolean originalAir,boolean saplingHeld,
+    static boolean plantingConfirmed(boolean started,boolean originalAir,boolean originalSingleSnowLayer,boolean saplingHeld,
             long generation,long currentGeneration,long beforeSequence,Pos target,List<PlantBlockAck> replies) {
-        if (!started || !originalAir || !saplingHeld || generation!=currentGeneration || target==null || replies==null) return false;
+        if (!started || (!originalAir && !originalSingleSnowLayer) || !saplingHeld
+            || generation!=currentGeneration || target==null || replies==null) return false;
         PlantBlockAck latest=null;
         for (PlantBlockAck reply:replies) {
             if (reply==null || reply.pos()==null) return false;
@@ -256,19 +259,35 @@ final class NativeLoggingActions {
     static boolean canPlantFrom(Minecraft mc,Pos target,Vec3 eye,double reach) {
         return plantHitFrom(mc,target,eye,reach)!=null;
     }
-    private static BlockHitResult plantHit(Minecraft mc,Pos target) {
+    static BlockHitResult plantHit(Minecraft mc,Pos target) {
         return mc==null || mc.player==null ? null : plantHitFrom(mc,target,mc.player.getEyePosition(),3.25);
+    }
+    private static boolean singleSnowLayer(BlockState state) {
+        return state!=null && state.is(Blocks.SNOW) && state.hasProperty(SnowLayerBlock.LAYERS)
+            && state.getValue(SnowLayerBlock.LAYERS)==1;
     }
     private static BlockHitResult plantHitFrom(Minecraft mc,Pos target,Vec3 eye,double reach) {
         if (mc==null || mc.level==null || mc.player==null || mc.gameMode==null || target==null) return null;
         var base=MinecraftWorld.nativePos(target);
         var soil=base.below();
-        if (!mc.level.hasChunkAt(base) || !mc.level.hasChunkAt(soil) || !mc.level.getBlockState(base).isAir()) return null;
+        if (!mc.level.hasChunkAt(base) || !mc.level.hasChunkAt(soil)) return null;
         try {
+            BlockState cell=mc.level.getBlockState(base);
+            boolean snow=singleSnowLayer(cell);
+            if (!cell.isAir() && !snow) return null;
             if (!Blocks.SPRUCE_SAPLING.defaultBlockState().canSurvive(mc.level,base)) return null;
-            var shape=mc.level.getBlockState(soil).getShape(mc.level,soil,CollisionContext.of(mc.player));
-            return NativeLoggingPlantHit.nearest(soil,eye,shape.toAabbs(),Math.min(reach,mc.gameMode.getPickRange()),
+            // The native first ray hit is the real snow outline, not soil hidden
+            // beneath it. Ordinary placement replaces that one layer in-place.
+            var surface=snow ? base : soil;
+            var shape=mc.level.getBlockState(surface).getShape(mc.level,surface,CollisionContext.of(mc.player));
+            BlockHitResult hit=NativeLoggingPlantHit.nearest(surface,eye,shape.toAabbs(),Math.min(reach,mc.gameMode.getPickRange()),
                 end -> mc.level.clip(new ClipContext(eye,end,ClipContext.Block.OUTLINE,ClipContext.Fluid.NONE,mc.player)));
+            if (hit==null) return null;
+            // A stance query can run before saplings have been selected. This is
+            // a read-only placement context; dispatch separately checks the real hand.
+            var placement=new BlockPlaceContext(mc.player,InteractionHand.MAIN_HAND,new ItemStack(Items.SPRUCE_SAPLING),hit);
+            return NativeLoggingPlantHit.placementTargetsCell(base,hit,placement.getClickedPos(),snow,
+                placement.replacingClickedOnBlock(),cell.canBeReplaced(placement),placement.canPlace()) ? hit : null;
         } catch (RuntimeException unknownGeometry) { return null; }
     }
 }

@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Real logging observations must yield safely without erasing the durable batch. */
 class EngineLoggingEnvironmentWaitTest {
-    @Test void snowBeforeABatchStartsAllowsOtherWorkAndSleepWhileUsingTheNormalRetryBackoff() {
+    @Test void nonReplaceableSnowBeforeABatchStartsAllowsOtherWorkAndSleepWhileUsingTheNormalRetryBackoff() {
         Fixture f=new Fixture("minecraft:snow");
         f.profile.loggingRunActive=false;f.profile.loggingRemainingPlots.clear();f.profile.loggingReplantingPlots.clear();
         f.profile.nextEligibleDay.remove(LoggingRules.DUE_KEY);f.start(false);f.untilWait();
@@ -103,7 +103,7 @@ class EngineLoggingEnvironmentWaitTest {
         assertFalse(f.profile.enabled(Feature.LOGGING));f.assertPreserved();
     }
 
-    @Test void snowObstructionRestoresTheBorrowedSlotThroughOneAcknowledgedInverseBeforeOtherWorkOrSleep() {
+    @Test void nonReplaceableSnowObstructionRestoresTheBorrowedSlotThroughOneAcknowledgedInverseBeforeOtherWorkOrSleep() {
         for(String response:List.of("acknowledged","failed","native fence")) {
             Fixture f=new Fixture("minecraft:snow");
             ItemData original=item(ItemData.TOMATO,52),working=item(LoggingRules.SAPLING,3);
@@ -135,7 +135,7 @@ class EngineLoggingEnvironmentWaitTest {
             }
             assertEquals(1,f.sent,"A timeout or terrain retry must never duplicate the inverse");
             assertEquals("minecraft:snow",f.block(f.plot.corner()).id());
-            assertEquals("1",f.block(f.plot.corner()).properties().get("layers"));f.assertObligations();
+            assertEquals("2",f.block(f.plot.corner()).properties().get("layers"));f.assertObligations();
         }
     }
 
@@ -234,7 +234,7 @@ class EngineLoggingEnvironmentWaitTest {
         public BlockData block(Pos pos){
             String id=pos.y()<64 ? "minecraft:dirt" : plot.plantingPositions().contains(pos)
                 && (obstructedCell==null || obstructedCell.equals(pos)) ? plantingBlock : "minecraft:air";
-            return new BlockData(pos,id,id.equals("minecraft:snow")?Map.of("layers","1"):Map.of());
+            return new BlockData(pos,id,id.equals("minecraft:snow")?Map.of("layers","2"):Map.of());
         }
         public boolean loaded(Pos pos){return true;}public boolean canStand(Pos pos){return true;}
         public boolean canTraverse(Pos from,Pos to){return true;}

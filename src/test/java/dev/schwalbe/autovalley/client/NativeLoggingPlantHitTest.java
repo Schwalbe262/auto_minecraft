@@ -117,4 +117,80 @@ class NativeLoggingPlantHitTest {
         assertNotNull(before);assertNotNull(after);assertEquals(1,before.getLocation().y);assertEquals(.5,after.getLocation().y);
         assertNull(NativeLoggingPlantHit.nearest(SOIL,eye,changed,3.25,end -> before));
     }
+
+    @Test void aSingleSnowLayerIsClickedOnItsActualOutlineAndNotThroughToSoil() {
+        BlockPos snow=SOIL.above(); Vec3 eye=new Vec3(.5,3,.5);
+        var layer=List.of(new AABB(0,0,0,1,.125,1));
+        List<BlockHitResult> observed=new ArrayList<>();
+        BlockHitResult result=NativeLoggingPlantHit.nearest(snow,eye,layer,3.25,end -> {
+            BlockHitResult nativeHit=AABB.clip(layer,eye,end,snow); observed.add(nativeHit); return nativeHit;
+        });
+        assertNotNull(result); assertEquals(snow,result.getBlockPos());
+        assertEquals(1.125,result.getLocation().y,1.0e-9); assertEquals(Direction.UP,result.getDirection());
+        assertTrue(observed.stream().anyMatch(h -> h==result));
+        assertNull(NativeLoggingPlantHit.nearest(snow,eye,layer,3.25,end -> AABB.clip(FULL,eye,end,SOIL)));
+    }
+
+    @Test void aSnowSurfaceStillRequiresUnobstructedUpFaceAndActualReach() {
+        BlockPos snow=SOIL.above(); var layer=List.of(new AABB(0,0,0,1,.125,1));
+        Vec3 distant=new Vec3(.5,4.376,.5);
+        assertNull(NativeLoggingPlantHit.nearest(snow,distant,layer,3.25,end -> AABB.clip(layer,distant,end,snow)));
+        Vec3 side=new Vec3(-1,1.05,.5);
+        assertNull(NativeLoggingPlantHit.nearest(snow,side,layer,3.25,end -> AABB.clip(layer,side,end,snow)));
+        Vec3 eye=new Vec3(.5,4,.5); BlockPos obstruction=snow.above();
+        assertNull(NativeLoggingPlantHit.nearest(snow,eye,layer,3.25,end -> {
+            BlockHitResult wall=AABB.clip(FULL,eye,end,obstruction);
+            return wall!=null ? wall : AABB.clip(layer,eye,end,snow);
+        }));
+    }
+
+    @Test void nativePlacementMustReplaceTheClickedSnowCellAndNeverPlaceAboveIt() {
+        BlockPos target=SOIL.above();
+        BlockHitResult snow=new BlockHitResult(new Vec3(.5,1.125,.5),Direction.UP,target,false);
+        assertTrue(NativeLoggingPlantHit.placementTargetsCell(target,snow,target,true,true,true,true));
+        assertFalse(NativeLoggingPlantHit.placementTargetsCell(target,snow,target.above(),true,true,true,true));
+        assertFalse(NativeLoggingPlantHit.placementTargetsCell(target,snow,SOIL,true,true,true,true));
+        assertFalse(NativeLoggingPlantHit.placementTargetsCell(target,snow,target,true,false,true,true));
+        assertFalse(NativeLoggingPlantHit.placementTargetsCell(target,snow,target,true,true,false,true));
+        assertFalse(NativeLoggingPlantHit.placementTargetsCell(target,snow,target,true,true,true,false));
+    }
+
+    @Test void normalAirPlacementMustStillClickSoilWithoutReplacingIt() {
+        BlockPos target=SOIL.above();
+        BlockHitResult soil=new BlockHitResult(new Vec3(.5,1,.5),Direction.UP,SOIL,false);
+        assertTrue(NativeLoggingPlantHit.placementTargetsCell(target,soil,target,false,false,true,true));
+        assertFalse(NativeLoggingPlantHit.placementTargetsCell(target,soil,target,false,true,true,true));
+        assertFalse(NativeLoggingPlantHit.placementTargetsCell(target,soil,target,true,true,true,true));
+        BlockHitResult wrongSurface=new BlockHitResult(new Vec3(.5,1,.5),Direction.UP,target,false);
+        assertFalse(NativeLoggingPlantHit.placementTargetsCell(target,wrongSurface,target,false,false,true,true));
+    }
+
+    @Test void placementContextCannotAuthorizeUnknownTargetMissInsideOrNonUpFace() {
+        BlockPos target=SOIL.above(); Vec3 top=new Vec3(.5,1.125,.5);
+        for(BlockHitResult hit:List.of(BlockHitResult.miss(top,Direction.UP,target),
+            new BlockHitResult(top,Direction.UP,target,true),new BlockHitResult(top,Direction.NORTH,target,false),
+            new BlockHitResult(top,Direction.UP,target.east(),false)))
+            assertFalse(NativeLoggingPlantHit.placementTargetsCell(target,hit,target,true,true,true,true));
+        assertFalse(NativeLoggingPlantHit.placementTargetsCell(target,null,target,true,true,true,true));
+        assertFalse(NativeLoggingPlantHit.placementTargetsCell(null,null,target,true,true,true,true));
+        assertFalse(NativeLoggingPlantHit.placementTargetsCell(target,new BlockHitResult(top,Direction.UP,target,false),null,true,true,true,true));
+    }
+
+    @Test void liveAdapterRequiresNativeSingleSnowLayerContextSurvivalAndFreshHitBeforeUse() throws Exception {
+        String source=java.nio.file.Files.readString(java.nio.file.Path.of("src/main/java/dev/schwalbe/autovalley/client/NativeLoggingActions.java"));
+        assertTrue(source.contains("state.is(Blocks.SNOW) && state.hasProperty(SnowLayerBlock.LAYERS)"));
+        assertTrue(source.contains("state.getValue(SnowLayerBlock.LAYERS)==1"));
+        assertTrue(source.contains("if (!cell.isAir() && !snow) return null;"));
+        assertTrue(source.contains("Blocks.SPRUCE_SAPLING.defaultBlockState().canSurvive(mc.level,base)"));
+        assertTrue(source.contains("var surface=snow ? base : soil;"));
+        assertTrue(source.contains("ClipContext.Block.OUTLINE,ClipContext.Fluid.NONE"));
+        assertTrue(source.contains("placement.getClickedPos()"));
+        assertTrue(source.contains("placement.replacingClickedOnBlock(),cell.canBeReplaced(placement),placement.canPlace()"));
+        assertTrue(source.contains("original.isAir(),singleSnowLayer(original),!held.isEmpty() && held.is(Items.SPRUCE_SAPLING)"));
+        String begin=source.substring(source.indexOf("void begin("),source.indexOf("String advance("));
+        assertTrue(begin.indexOf("BlockHitResult hit=plantHit(mc,target)")<begin.indexOf("mc.gameMode.useItemOn"));
+        String planting=begin.substring(0,begin.indexOf("} else {"));
+        assertFalse(planting.contains("DESTROY_BLOCK")); assertFalse(planting.contains("setBlock"));
+        assertFalse(planting.contains("removeBlock"));
+    }
 }

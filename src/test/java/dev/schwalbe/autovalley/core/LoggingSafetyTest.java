@@ -96,6 +96,24 @@ class LoggingSafetyTest {
         assertNotNull(f.reject(new Action.PlantSapling(BASE)));
     }
 
+    @Test void oneSnowLayerAllowsDirectPlantingOnlyWithTheExistingNativeProof() {
+        Fixture f=new Fixture(); f.world.put(2,item(LoggingRules.SAPLING,4,0));
+        f.world.blocks.put(BASE,new BlockData(BASE,"minecraft:snow",Map.of("layers","1")));
+        assertNotNull(f.reject(new Action.PlantSapling(BASE)),"Replaceability must not replace native placement proof");
+        f.world.plantable=true; assertNull(f.reject(new Action.PlantSapling(BASE)));
+        f.world.unloaded.add(BASE); assertNotNull(f.reject(new Action.PlantSapling(BASE)));
+    }
+
+    @Test void genericNativeApprovalCannotMakeForeignBlocksOrMultipleSnowLayersPlantable() {
+        Fixture f=new Fixture(); f.world.put(2,item(LoggingRules.SAPLING,4,0)); f.world.plantable=true;
+        for(String id:List.of("minecraft:snow_block","minecraft:stone_bricks","minecraft:spruce_leaves",LoggingRules.SAPLING,LoggingRules.LOG)) {
+            f.world.blockAt(BASE,id); assertNotNull(f.reject(new Action.PlantSapling(BASE)),id);
+        }
+        f.world.blocks.put(BASE,new BlockData(BASE,"minecraft:snow",Map.of("layers","2")));
+        assertNotNull(f.reject(new Action.PlantSapling(BASE)));
+        f.world.blockAt(BASE,"minecraft:snow"); assertNotNull(f.reject(new Action.PlantSapling(BASE)));
+    }
+
     @Test void trashAllowsExactTwigButNotVanillaStickWoodOrBerries() {
         Fixture f = new Fixture(); f.actions.trashSupported = true;
         ItemData twig = item(LoggingRules.TWIG, 10, 0); f.world.put(9, twig);

@@ -70,10 +70,23 @@ class NavigationPlantingTest {
         assertEquals(0,f.submissions);
     }
 
+    @Test void snowCoveredTargetsStillRequireAllFourNativePlacementProofsWithoutClearingTerrain() {
+        Fixture f=new Fixture();
+        for(Pos cell:CELLS) f.blocks.put(cell,new BlockData(cell,"minecraft:snow",Map.of("layers","1")));
+        f.predicted.addAll(CELLS); f.actual.addAll(CELLS.subList(0,3));
+        assertEquals(List.of(START,STANCE),f.find());
+        assertEquals(Navigation.Result.MOVING,f.step());
+        f.actual.add(CELLS.get(3)); f.now++;
+        assertEquals(Navigation.Result.ARRIVED,f.step());
+        assertEquals(0,f.submissions,"Navigation only proves the planting stance; it must not dig or plant");
+        assertTrue(CELLS.stream().allMatch(cell->f.block(cell).id().equals("minecraft:snow")));
+    }
+
     private static final class Fixture implements WorldAccess,ActionPort {
         final LocalNavigator navigation=new LocalNavigator(); final Profile profile=new Profile();
         final SessionState session=new SessionState(); final Context context;
         final Set<Pos> actual=new HashSet<>(),predicted=new HashSet<>(); final List<Double> reaches=new ArrayList<>();
+        final Map<Pos,BlockData> blocks=new HashMap<>();
         long now; double x=.5; Movement movement; int submissions;
         Fixture() {
             profile.navigationMode=NavigationMode.WAYPOINTS;
@@ -94,7 +107,7 @@ class NavigationPlantingTest {
         public boolean canInteractFrom(Pos feet,Pos target,double reach){return true;}
         public boolean canPlantLoggingSapling(Pos target,double reach){reaches.add(reach);return actual.contains(target);}
         public boolean canPlantLoggingSaplingFrom(Pos feet,Pos target,double reach){reaches.add(reach);return feet.equals(STANCE)&&predicted.contains(target);}
-        public BlockData block(Pos p){return new BlockData(p,"minecraft:air",Map.of());}
+        public BlockData block(Pos p){return blocks.getOrDefault(p,new BlockData(p,"minecraft:air",Map.of()));}
         public List<BlockData> scan(Pos p,int h,int v){return List.of();} public List<ItemSlot> inventory(){return List.of();}
         public MenuData menu(){return new MenuData(0,0,List.of(),ItemData.EMPTY,false);}
         public boolean mayPlace(int slot,ItemData item){return false;}

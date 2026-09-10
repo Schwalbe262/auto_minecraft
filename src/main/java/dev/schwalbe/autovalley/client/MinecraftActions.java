@@ -309,7 +309,10 @@ public final class MinecraftActions implements ActionPort {
             loggingAction=new NativeLoggingActions(mc,world,observations,action,context);
             Pos target=action instanceof Action.ChopTree chop ? chop.pos()
                 : action instanceof Action.ClearLoggingLeaf leaf ? leaf.pos() : ((Action.PlantSapling)action).pos();
-            var hit=world.hit(action instanceof Action.PlantSapling ? target.offset(0,-1,0) : target,mc.player.getEyePosition());
+            // Aim at the same real placement surface that native use will hit:
+            // exposed soil for air, or the replaceable snow layer itself.
+            var hit=action instanceof Action.PlantSapling ? NativeLoggingActions.plantHit(mc,target)
+                : world.hit(target,mc.player.getEyePosition());
             if (hit!=null) lookAt(hit.getLocation());
             loggingAction.begin(mc,observations);
         } else if (action instanceof Action.CraftFireLogs) {

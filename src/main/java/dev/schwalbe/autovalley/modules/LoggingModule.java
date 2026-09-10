@@ -61,7 +61,7 @@ public final class LoggingModule implements AutomationModule {
     private final Map<Pos,LoggingApproachSearch> invisiblePlots=new LinkedHashMap<>();
     private final Map<Pos,Integer> staleApproachReplans=new HashMap<>();
     private long visibilityScanTick=Long.MIN_VALUE;
-    private final Map<Pos,List<String>> initialPlotObservations=new HashMap<>();
+    private final Map<Pos,List<BlockData>> initialPlotObservations=new HashMap<>();
     private long initialObservationDay=Long.MIN_VALUE;
     private final ModuleSupport.ObservationWindow observationWindow=new ModuleSupport.ObservationWindow();
     private final DepositModule wood=new LoggingDeposit(false), berries=new LoggingDeposit(true);
@@ -195,15 +195,15 @@ public final class LoggingModule implements AutomationModule {
                 for (LoggingPlot candidate:plots) {
                     if (candidate.plantingPositions().stream().allMatch(c.world()::loaded)) {
                         inspect(c,candidate);
-                        initialPlotObservations.put(candidate.corner(),candidate.plantingPositions().stream().map(p -> c.world().block(p).id()).toList());
+                        initialPlotObservations.put(candidate.corner(),candidate.plantingPositions().stream().map(c.world()::block).toList());
                     }
-                    List<String> observed=initialPlotObservations.get(candidate.corner());
+                    List<BlockData> observed=initialPlotObservations.get(candidate.corner());
                     if (observed==null) return observePlot(c,candidate);
-                    boolean grown=observed.stream().allMatch(LoggingRules.LOG::equals);
+                    boolean grown=observed.stream().allMatch(block -> LoggingRules.LOG.equals(block.id()));
                     allGrown &= grown;
                     if (grown) ready.add(candidate.corner());
-                    else if (observed.stream().anyMatch(id -> id.equals("minecraft:air") || id.equals("minecraft:cave_air")
-                        || id.equals(LoggingRules.CHOPPED_LOG))) repair.add(candidate.corner());
+                    else if (observed.stream().anyMatch(block -> LoggingRules.replaceablePlantingCell(block)
+                        || block.id().equals(LoggingRules.CHOPPED_LOG))) repair.add(candidate.corner());
                 }
                 List<Pos> selected=new ArrayList<>(repair);
                 if (once(c) || c.profile().loggingMode!=LoggingMode.ALL_GROWN || allGrown) selected.addAll(ready);
@@ -329,14 +329,14 @@ public final class LoggingModule implements AutomationModule {
                     return fail("재식재 중 메뉴나 커서가 바뀌었습니다. 식재 의무를 보존하고 중단했습니다.");
                 List<Pos> missingCells=plot.plantingPositions().stream().filter(p -> !occupied(c,p)).toList();
                 if (missingCells.isEmpty()) { completePlot(c,plot.corner()); plot=null; stage=Stage.PLOT; return busy("4칸 재식재 완료 저장"); }
-                if (missingCells.stream().anyMatch(p -> !air(c.world().block(p))))
+                if (missingCells.stream().anyMatch(p -> !LoggingRules.replaceablePlantingCell(c.world().block(p))))
                     throw new PlotObstruction("재식재할 칸에 남은 밑동이 있습니다. 등록 구역을 확인하세요.");
                 // Have every currently missing 2x2 planting covered BEFORE the first
                 // use. Planting one or two early can let a small tree grow before
                 // the other seeds arrive. Existing plantings/logs are never recut.
                 int seeds=availableSaplings(c).stream().mapToInt(s -> s.item().count()).sum();
                 if (seeds<missingCells.size()) return waitForSaplings(c,seeds,missingCells.size());
-                // Find one native stance exposing every remaining soil UP face.
+                // Find one native stance exposing each remaining soil/single-snow UP face.
                 // Keep that stance and its far-to-near order while all faces remain
                 // visible; only replan if a newly planted sapling actually occludes one.
                 if (!plantingStanceReady || missingCells.stream().anyMatch(p -> !c.world().canPlantLoggingSapling(p,3.25)))
@@ -754,7 +754,7 @@ public final class LoggingModule implements AutomationModule {
             if (candidate.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) {
                 if (seeds>=4) return corner; // Observation, not a planting permission.
             } else {
-                long missing=candidate.plantingPositions().stream().filter(p -> air(c.world().block(p))).count();
+                long missing=candidate.plantingPositions().stream().filter(p -> LoggingRules.replaceablePlantingCell(c.world().block(p))).count();
                 if (seeds>=missing) return corner;
             }
             break; // Strict oldest-first: a smaller newer obligation cannot spend its seeds.
@@ -895,7 +895,7 @@ public final class LoggingModule implements AutomationModule {
             if (!c.profile().loggingReplantingPlots.isEmpty()) {
                 LoggingPlot oldest=registeredPlot(c,c.profile().loggingReplantingPlots.get(0));
                 long missing=oldest.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p)) ? 4
-                    : oldest.plantingPositions().stream().filter(p -> air(c.world().block(p))).count();
+                    : oldest.plantingPositions().stream().filter(p -> LoggingRules.replaceablePlantingCell(c.world().block(p))).count();
                 if (seeds>=missing) return ResourceReadiness.READY;
             }
             return visibilityRetryAt<0 || c.world().tick()>=visibilityRetryAt || c.world().tick()<visibilityRetryAt-VISIBILITY_RETRY_TICKS
@@ -909,7 +909,7 @@ public final class LoggingModule implements AutomationModule {
         int missing=0;
         for (Pos cell:plot.plantingPositions()) {
             BlockData block=c.world().block(cell);
-            if (air(block)) missing++;
+            if (LoggingRules.replaceablePlantingCell(block)) missing++;
             else if (!block.id().equals(LoggingRules.SAPLING) && !block.id().equals(LoggingRules.LOG))
                 return ResourceReadiness.UNSAFE;
         }
@@ -920,7 +920,6 @@ public final class LoggingModule implements AutomationModule {
     private static long day(Context c) { return Math.floorDiv(c.world().dayTime(),24000L); }
     private static List<ItemSlot> inventory(Context c) { return c.world().inventory().stream().filter(s -> s.player() && s.inventoryIndex()>=0 && s.inventoryIndex()<36).toList(); }
     private static ItemData item(Context c,int index) { return inventory(c).stream().filter(s -> s.inventoryIndex()==index).map(ItemSlot::item).findFirst().orElse(ItemData.EMPTY); }
-    private static boolean air(BlockData block) { return block.id().equals("minecraft:air") || block.id().equals("minecraft:cave_air") || block.id().equals("minecraft:void_air"); }
     private static boolean occupied(Context c,Pos p) { return c.world().loaded(p) && (c.world().block(p).id().equals(LoggingRules.SAPLING) || c.world().block(p).id().equals(LoggingRules.LOG)); }
     private WorkResult awaitMiningQuiet(Context c,Pos target,Pos base) {
         c.actions().stopMovement();
@@ -1007,7 +1006,7 @@ public final class LoggingModule implements AutomationModule {
         for (Pos cell:p.plantingPositions()) {
             if (!c.world().loaded(cell)) throw new IllegalStateException("벌목 구역 청크가 로드되지 않았습니다.");
             BlockData block=c.world().block(cell);
-            if (!air(block) && !LoggingRules.stump(block) && !block.id().equals(LoggingRules.SAPLING))
+            if (!LoggingRules.replaceablePlantingCell(block) && !LoggingRules.stump(block) && !block.id().equals(LoggingRules.SAPLING))
                 throw new PlotObstruction("등록 식재 칸에 다른 블록이 있습니다: "+block.id()+" ("+cell.x()+", "+cell.y()+", "+cell.z()+"). 임의로 제거하지 않습니다.");
         }
     }
