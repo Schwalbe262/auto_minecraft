@@ -105,3 +105,12 @@ historical fill date and no feed acknowledgement was synthesized.
 Live collection/refill, full-reserve shipping and a complete six-day cycle have
 not yet been observed: these machines were already in cooldown. Automated tests
 cover those transitions, but are not presented as a completed live production run.
+
+After the final UI build was installed, the same Society instance reconnected
+and reloaded both dates unchanged. Normal continuous start was acknowledged at
+06:45:35 UTC. Passive snapshots at 06:46:27, 06:46:40 and 06:46:54 showed preserves
+progressing from 3/101 to 16/101 to 31/101, carried ingredients decreasing, and
+preserves increasing. Both wine lines remained inactive at their respective
+579/581 deadlines. All three snapshots were connected and running with an empty
+cursor and no open container. This verifies that idle wine routines yield to
+other real work; it is a short deployment check, not a multi-hour stability claim.
