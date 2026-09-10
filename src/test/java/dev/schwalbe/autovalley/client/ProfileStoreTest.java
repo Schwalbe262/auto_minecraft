@@ -187,7 +187,7 @@ class ProfileStoreTest {
 
     @Test void futureProfileSchemaIsPreservedAndRejected() throws Exception {
         String key=ProfileStore.key("future-schema"); Path file=directory.resolve(key+".json");
-        String future="{\"schemaVersion\":7}"; Files.writeString(file,future);
+        String future="{\"schemaVersion\":8}"; Files.writeString(file,future);
         assertThrows(IOException.class,() -> new ProfileStore(directory).load(key));
         assertEquals(future,Files.readString(file));
     }

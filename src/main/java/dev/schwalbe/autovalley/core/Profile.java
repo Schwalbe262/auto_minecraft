@@ -21,6 +21,8 @@ public final class Profile {
     public List<Pos> loggingRemainingPlots = new ArrayList<>();
     public List<Pos> loggingReplantingPlots = new ArrayList<>();
     public LoggingHotbarLease loggingHotbarLease = null;
+    /** Owner OFF does not waive restoration of this one temporarily relocated hotbar item. */
+    public HotbarLease workHotbarLease = null;
     public Map<Feature, Boolean> enabled = new EnumMap<>(Feature.class);
     public boolean allowBackground = true;
     public boolean continueHarvestWhenFull = true;

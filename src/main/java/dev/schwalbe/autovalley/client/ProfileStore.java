@@ -151,7 +151,7 @@ public final class ProfileStore {
         return directory.resolve(key+".json");
     }
     public static void validate(Profile profile) {
-        if (profile==null || profile.schemaVersion<1 || profile.schemaVersion>6 || profile.pois==null || profile.farms==null || profile.enabled==null
+        if (profile==null || profile.schemaVersion<1 || profile.schemaVersion>7 || profile.pois==null || profile.farms==null || profile.enabled==null
             || profile.nextEligibleDay==null || profile.disposalDirections==null) throw new IllegalArgumentException("Unsupported or incomplete profile");
         if (profile.pois.size()>4096) throw new IllegalArgumentException("Too many registered locations");
         Set<String> farms=new HashSet<>();
@@ -181,12 +181,18 @@ public final class ProfileStore {
         WineBatchRules.validate(profile);
         MachineOutputLedger.validate(profile);
         LoggingRules.validate(profile);
+        HotbarLease workLease=profile.workHotbarLease;
+        if (workLease!=null && (!workLease.valid() || workLease.hotbarSlot()==profile.hoeHotbarSlot
+                || workLease.hotbarSlot()==profile.loggingAxeHotbarSlot || profile.loggingHotbarLease!=null))
+            throw new IllegalArgumentException("Invalid or overlapping work hotbar restoration obligation");
         CoordinateDestinationRules.validate(profile);
         AdditionalWorkRules.validate(profile);
         WineProductionRules.validate(profile);
         for (Feature feature:Feature.values()) profile.enabled.putIfAbsent(feature,feature.defaultEnabled());
         // Older clients must not silently lose crop/store/job definitions, navigation
-        // drafts or logging obligations. Upgrade only after validation; load never rewrites disk.
-        profile.schemaVersion=6;
+        // drafts or logging obligations. A work lease requires schema 7 so an older
+        // client cannot silently discard its custody record. Do not downgrade after
+        // restoration; unchanged legacy profiles remain schema 6. Load never rewrites disk.
+        profile.schemaVersion=Math.max(profile.schemaVersion,workLease==null ? 6 : 7);
     }
 }
