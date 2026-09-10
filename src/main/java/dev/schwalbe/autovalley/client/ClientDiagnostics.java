@@ -134,6 +134,10 @@ public final class ClientDiagnostics {
         }
         registration.put("wineProductionLines",wineLines);
         registration.put("fruitPatchCount",profile.fruitPatches.size());
+        registration.put("orchardDrafts",profile.orchardDrafts.stream().map(draft -> Map.of(
+            "id",draft.id(),"name",draft.name(),"observedFruitCount",draft.observedFruits().size(),
+            "toolItemId",draft.toolItemId(),"outputItemId",draft.outputItemId(),
+            "executionReady",false,"status","STORAGE_NOT_REGISTERED_DRAFT_ONLY")).toList());
         Map<String,Integer> byKind = new LinkedHashMap<>();
         for (PoiKind kind : PoiKind.values()) byKind.put(kind.name(),profile.pois(kind).size());
         registration.put("poisByKind",byKind);

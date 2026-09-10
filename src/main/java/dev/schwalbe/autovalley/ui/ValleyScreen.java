@@ -256,8 +256,10 @@ public final class ValleyScreen extends Screen {
         button(left + half + 6, 118, half, tr("pending.open", runtime.pendingMachineOutputs().size()), () -> {
             selectedPendingOutput = null; pendingResolution = null; page = 0; toolPage = ToolPage.PENDING_LIST; rebuild();
         }).setTooltip(Tooltip.create(tr("pending.persistent_hint")));
-        button(left, 144, half, tr("coordinates.open"), () -> minecraft.setScreen(new CoordinateScreen()));
-        button(left+half+6,144,half,Component.literal("와인 생산 구역"),()->minecraft.setScreen(new WineLinesScreen(this)));
+        int third=(panelWidth-12)/3;
+        button(left,144,third,tr("coordinates.open"),()->minecraft.setScreen(new CoordinateScreen()));
+        button(left+third+6,144,third,Component.literal("와인 생산 구역"),()->minecraft.setScreen(new WineLinesScreen(this)));
+        button(left+(third+6)*2,144,panelWidth-(third+6)*2,tr("orchard_draft.title"),()->minecraft.setScreen(new OrchardDraftsScreen(this)));
         text(169, tr("record.local").copy().append(" ").append(tr("record.contents")));
         text(180, tr("record.no_replay"));
         button(left,190,half,tr("work.import"),()->{runtime.importWorkDefinitions();rebuild();})

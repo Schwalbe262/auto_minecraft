@@ -11,8 +11,15 @@ public final class AdditionalWorkRules {
         if(p.cropStores==null)p.cropStores=new LinkedHashMap<>();
         if(p.artisanJobs==null)p.artisanJobs=new LinkedHashMap<>();
         if(p.fruitPatches==null)p.fruitPatches=new ArrayList<>();
+        if(p.orchardDrafts==null)p.orchardDrafts=new ArrayList<>();
         if(p.crops.size()>64 || p.commodityStores.size()>128 || p.artisanJobs.size()>128 || p.fruitPatches.size()>128)
             throw new IllegalArgumentException("Too many additional work definitions");
+        if(p.orchardDrafts.size()>OrchardDraft.MAX_DRAFTS)throw new IllegalArgumentException("Too many orchard drafts");
+        Set<String> draftIds=new HashSet<>();Set<Pos> draftFruits=new HashSet<>();
+        for(OrchardDraft draft:p.orchardDrafts) {
+            if(draft==null || !draft.valid() || !draftIds.add(draft.id()))throw new IllegalArgumentException("Invalid orchard draft");
+            for(Pos pos:draft.observedFruits())if(!draftFruits.add(pos))throw new IllegalArgumentException("Duplicate orchard observation");
+        }
         for(var entry:p.crops.entrySet())if(!CropRules.valid(entry.getValue()) || !entry.getKey().equals(entry.getValue().key()))
             throw new IllegalArgumentException("Invalid crop definition");
         for(Farm farm:p.farms)if(CropRules.definition(p,farm)==null || !CoordinateDestinationRules.validPosition(farm.first())
@@ -50,6 +57,7 @@ public final class AdditionalWorkRules {
         }
     }
     public static List<Pos> sites(Profile p) {
+        // Orchard drafts contain observations, never registered work locations or harvesting origins.
         List<Pos> result=new ArrayList<>();
         if(p.commodityStores!=null)p.commodityStores.values().stream().filter(s->s!=null && s.valid()).forEach(s->result.addAll(s.containers()));
         if(p.artisanJobs!=null)p.artisanJobs.values().stream().filter(Objects::nonNull).forEach(j->result.addAll(j.machines()));

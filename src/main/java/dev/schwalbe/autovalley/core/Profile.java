@@ -15,6 +15,8 @@ public final class Profile {
     public Map<String,CommodityStore> commodityStores = new LinkedHashMap<>();
     public Map<String,String> cropStores = new LinkedHashMap<>();
     public List<FruitPatch> fruitPatches = new ArrayList<>();
+    /** Inert recording observations; never promoted by creating a storage group or enabling a feature. */
+    public List<OrchardDraft> orchardDrafts = new ArrayList<>();
     public Map<String,CropDefinition> crops = CropRules.defaults();
     public List<LoggingPlot> loggingPlots = new ArrayList<>();
     public boolean loggingRunActive = false;
