@@ -14,6 +14,8 @@ The installed Forge 47.4.0 API and mapped Minecraft 1.20.1 MouseHandler/Keyboard
 
 The live profile also had `allowBackground=false`, which independently stops automation on focus loss. As requested, it was set true through the runtime's normal profile save at a clean native/menu/custody boundary. The maintenance pause retained current work; no pending operation was forcibly acknowledged or erased.
 
+The updated artifact was installed through a normal same-instance restart, with the previous JAR and profile backed up locally. The game rejoined the original server; the original profile retained its 96 ancient-wine machines and nextDueDay 599, plus the inert orange draft. The installed JAR SHA-256 is `6AD3712470F9702145ED83EDC3CDBAA568C1E8ED27FEE2E4184A0FC877821857`. The final test run covered 179 suites. The existing continuous automation was resumed after the maintenance pause; no physical desktop keystrokes were injected to simulate Alt+Tab.
+
 ## Independent ancient-wine status audit
 
 The prior game-day-593 pass ran while logging was resource-deferred, but performed no wine clicks: all 96 ancient-wine members were skipped as still producing, and latestFeedDay remained null. Finishing the all-skipped scheduled pass advanced nextDueDay to 599. At game day 597, a passive loaded-block read found **all 96 mature**, but the existing whole-rack date gate still waits until 599. Thus the immediate wait is the saved schedule, not logging ownership. The historical cached block observations do not prove when maturity changed. No production dates were edited in response to the status question; one-time realignment was offered separately to the operator.
