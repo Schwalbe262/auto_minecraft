@@ -171,6 +171,101 @@ class ArtisanModuleTest {
         assertEquals(0,f.opens.getOrDefault(f.input,0));assertEquals(3,f.profile.nextEligibleDay.size());
         assertTrue(f.profile.nextEligibleDay.values().stream().allMatch(d -> d==440));
     }
+    @Test void crystalCollectionWithNineNonJobHotbarItemsDefersBeforeAnyActionOrCheckpoint() {
+        Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);fillNonJobHotbar(f);f.failCheckpoint=true;
+        ItemData[] before=f.inventory.clone();ArtisanModule module=new ArtisanModule(f.recipe.feature());
+        WorkResult result=f.run(module,100);
+        assertEquals(WorkResult.State.DEFERRED,result.state(),result.message());assertTrue(result.message().contains("단축바에 빈칸 1개"));
+        assertTrue(result.message().contains("결정복제기"));assertFalse(result.message().contains("IllegalStateException"));
+        assertArrayEquals(before,f.inventory);assertTrue(f.history.isEmpty());assertEquals(0,f.uses);assertEquals(0,f.withdrawals);
+        assertTrue(f.profile.nextEligibleDay.isEmpty());assertTrue(module.sleepSafeDeferred(f.context()));
+    }
+    @Test void bothArtisanRecipesWithIngredientsOnlyInMainInventoryNeverBorrowToolsOrFood() {
+        for(ArtisanRecipe recipe:List.of(ArtisanRecipe.JADE_CRYSTAL,ArtisanRecipe.ANCIENT_SEED)) {
+            Fixture f=new Fixture(recipe,1);fillNonJobHotbar(f);f.inventory[9]=item(recipe.inputId(),recipe.inputCount(),2);f.failCheckpoint=true;
+            ItemData[] before=f.inventory.clone();WorkResult result=f.run(new ArtisanModule(recipe.feature()),100);
+            assertEquals(WorkResult.State.DEFERRED,result.state(),recipe.id()+": "+result.message());
+            assertTrue(result.message().contains("도구·음식·블록은 이동하지 않고"));assertArrayEquals(before,f.inventory);
+            assertTrue(f.history.isEmpty());assertEquals(0,f.uses);assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+    @Test void missingHotbarCapacityIsReportedBeforeOpeningOrWithdrawingFromTheSeedIngredientStore() {
+        Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);fillNonJobHotbar(f);
+        f.chests.get(f.input)[0]=item(f.recipe.inputId(),64,2);f.failCheckpoint=true;
+        ItemData[] before=f.inventory.clone();WorkResult result=f.run(new ArtisanModule(f.recipe.feature()),100);
+        assertEquals(WorkResult.State.DEFERRED,result.state(),result.message());assertTrue(result.message().contains("씨앗기"));
+        assertTrue(f.history.isEmpty());assertEquals(0,f.withdrawals);assertEquals(64,f.stored(f.input,f.recipe.inputId()));
+        assertArrayEquals(before,f.inventory);assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+    @Test void hotbarShortageDoesNotWaivePendingNativeCustodyCursorMenuOrOutputFences() {
+        for(String cause:List.of("busy","fence","lease","cursor","menu","output","airborne")) {
+            Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);fillNonJobHotbar(f);f.inventory[1]=ItemData.EMPTY;
+            ArtisanModule module=new ArtisanModule(f.recipe.feature());
+            // Reach EQUIP normally, before the preflight has sent a slot change or machine use.
+            for(int i=0;i<4;i++){assertEquals(WorkResult.State.BUSY,module.tick(f.context()).state());f.now++;}
+            fillNonJobHotbar(f);ItemData[] before=f.inventory.clone();assertTrue(f.history.isEmpty());
+            switch(cause) {
+                case "busy" -> f.actionBusy=true;
+                case "fence" -> f.actionFence="unconfirmed native reply";
+                case "lease" -> f.profile.loggingHotbarLease=new LoggingHotbarLease(12,1,item(ItemData.TOMATO,3,0),"a".repeat(64),LoggingHotbarLease.Stage.PARKED);
+                case "cursor" -> f.cursor=item("minecraft:diamond",1,0);
+                case "menu" -> {f.opened=f.input;f.menuId=1;}
+                case "output" -> {String id="11111111-1111-1111-1111-111111111111";f.profile.pendingMachineOutputs.put(id,
+                    new PendingMachineOutput(id,Feature.PRESERVES,new Pos(30,64,0),435,null,1,PendingMachineOutput.Phase.AWAITING_MACHINE_CONFIRMATION));}
+                case "airborne" -> f.grounded=false;
+                default -> throw new AssertionError(cause);
+            }
+            assertEquals(WorkResult.State.BLOCKED,module.tick(f.context()).state(),cause);assertFalse(module.sleepSafeDeferred(f.context()),cause);
+            assertArrayEquals(before,f.inventory);assertTrue(f.history.isEmpty());assertTrue(f.profile.nextEligibleDay.isEmpty());
+            if(cause.equals("lease"))assertNotNull(f.profile.loggingHotbarLease);
+            if(cause.equals("output"))assertEquals(1,f.profile.pendingMachineOutputs.size());
+        }
+    }
+    @Test void continuousHotbarShortageBacksOffWhileOtherWorkRunsAndLaterCapacityUsesTheNormalRecipe() {
+        Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);fillNonJobHotbar(f);f.profile.enabled.put(Feature.STARFRUIT,true);
+        int[] otherCalls={0};AutomationModule other=new AutomationModule(){
+            public Feature feature(){return Feature.STARFRUIT;}public int priority(){return 90;}
+            public WorkResult tick(Context c){otherCalls[0]++;return WorkResult.idle();}public void reset(){}
+        };
+        Context c=f.context();AutomationEngine engine=new AutomationEngine(List.of(new ArtisanModule(f.recipe.feature()),other));engine.start(c);
+        for(int i=0;i<100 && engine.state()!=AutomationEngine.State.WAITING;i++){engine.tick(c);f.now++;}
+        assertEquals(AutomationEngine.State.WAITING,engine.state(),engine.status());assertTrue(engine.status().contains("1200틱"));
+        int firstVisits=f.navigationTargets.size();assertTrue(firstVisits>0);int firstOthers=otherCalls[0];
+        for(int i=0;i<600;i++){engine.tick(c);f.now++;}
+        assertEquals(firstVisits,f.navigationTargets.size());assertTrue(otherCalls[0]>firstOthers);assertTrue(f.history.isEmpty());
+        for(int i=0;i<900 && !engine.status().contains("2400틱");i++){engine.tick(c);f.now++;}
+        assertTrue(engine.running(),engine.status());assertTrue(engine.status().contains("2400틱"),engine.status());
+        assertEquals(firstVisits*2,f.navigationTargets.size());assertTrue(f.history.isEmpty());assertTrue(f.profile.nextEligibleDay.isEmpty());
+        // A later inventory observation supplies capacity; the module itself never moves the old hotbar item.
+        ItemData old=f.inventory[1];f.inventory[10]=old;f.inventory[1]=ItemData.EMPTY;
+        for(int i=0;i<2600 && f.stored(f.output,f.recipe.outputId())==0;i++){engine.tick(c);f.now++;}
+        assertTrue(engine.running(),engine.status());assertEquals(2,f.uses);assertEquals(1,f.consumed);
+        assertEquals(1,f.stored(f.output,f.recipe.outputId()));assertEquals(old,f.inventory[10]);
+        assertEquals(List.of(440L),List.copyOf(f.profile.nextEligibleDay.values()));
+    }
+    @Test void oneShotHotbarWaitNeverRestartsAfterManualOffAndExplicitResumeUsesTheNewFreeSlot() {
+        for(ArtisanRecipe recipe:List.of(ArtisanRecipe.JADE_CRYSTAL,ArtisanRecipe.ANCIENT_SEED)) {
+            Fixture f=new Fixture(recipe,1);fillNonJobHotbar(f);
+            if(!recipe.sameInputAndOutput())f.inventory[9]=item(recipe.inputId(),recipe.inputCount(),0);
+            Context c=f.context();AutomationEngine engine=new AutomationEngine(List.of(new ArtisanModule(recipe.feature())));engine.startOnce(c,recipe.feature());
+            for(int i=0;i<100 && engine.state()!=AutomationEngine.State.WAITING;i++){engine.tick(c);f.now++;}
+            assertEquals(AutomationEngine.State.WAITING,engine.state(),engine.status());assertTrue(f.history.isEmpty());
+            engine.stop(c,AutomationEngine.State.OFF,"manual F8 OFF");
+            ItemData old=f.inventory[1];f.inventory[10]=old;f.inventory[1]=ItemData.EMPTY;
+            f.now+=5000;engine.tick(c);assertEquals(AutomationEngine.State.OFF,engine.state());assertTrue(f.history.isEmpty());
+            assertTrue(f.profile.nextEligibleDay.isEmpty());
+            engine.startOnce(c,recipe.feature());
+            for(int i=0;i<200 && engine.running();i++){engine.tick(c);f.now++;}
+            assertEquals(AutomationEngine.State.COMPLETE,engine.state(),engine.status());assertEquals(old,f.inventory[10]);
+            assertEquals(recipe.sameInputAndOutput()?2:1,f.uses);assertEquals(recipe.inputCount(),f.consumed);
+            assertEquals(1,f.profile.nextEligibleDay.size());
+        }
+    }
+    private static void fillNonJobHotbar(Fixture f) {
+        List<String> ids=List.of("minecraft:diamond_sword","minecraft:netherite_axe","minecraft:bread","minecraft:bricks",
+            "society:hearthstone","minecraft:torch","minecraft:carrot","minecraft:coal");
+        for(int i=1;i<9;i++)f.inventory[i]=item(ids.get(i-1),i,0);
+    }
     @Test void sameDayResetPreservesAlreadyAcknowledgedMachineDueDates() {
         Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,4);f.inventory[1]=item(f.recipe.inputId(),16,0);
         ArtisanModule module=new ArtisanModule(f.recipe.feature());
@@ -217,8 +312,10 @@ class ArtisanModuleTest {
     @Test void noHotbarToolsOrFoodAreBorrowedWhenNoOwnedOrEmptySlotExists() {
         Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.inventory[9]=item(f.recipe.inputId(),8,0);
         for(int i=1;i<9;i++) f.inventory[i]=item("minecraft:bread",1,0);
-        assertEquals(WorkResult.State.BLOCKED,f.run(new ArtisanModule(f.recipe.feature()),100).state());
+        ItemData[] before=f.inventory.clone();
+        assertEquals(WorkResult.State.DEFERRED,f.run(new ArtisanModule(f.recipe.feature()),100).state());
         assertEquals(0,f.uses);assertTrue(f.history.stream().noneMatch(Action.SwapHotbar.class::isInstance));
+        assertArrayEquals(before,f.inventory);assertTrue(f.profile.nextEligibleDay.isEmpty());
     }
     @Test void insufficientSourceYieldsWithoutPretendingThatAnUnfedMatureMachineCompleted() {
         Fixture f=new Fixture(ArtisanRecipe.ANCIENT_SEED,1);f.chests.get(f.input)[0]=item(f.recipe.inputId(),2,0);

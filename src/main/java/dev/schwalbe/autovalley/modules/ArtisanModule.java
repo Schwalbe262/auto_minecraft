@@ -7,6 +7,7 @@ import java.util.*;
 public final class ArtisanModule implements AutomationModule {
     private enum Stage { START, JOB, TARGET, CHOOSE, SOURCE, SNAPSHOT, FETCH_SOURCE, FETCH, APPROACH, EQUIP, VERIFY, PICKUP, OUTPUT, RETURN_INPUT }
     private enum Pending { CLOSE, OPEN_SCAN, OPEN_FETCH, WITHDRAW, SWAP, SELECT, USE }
+    private enum Equipment { READY, PENDING, NO_SLOT }
     private final Feature feature;
     private Stage stage=Stage.START,afterClose;
     private Pending pending;
@@ -101,10 +102,14 @@ public final class ArtisanModule implements AutomationModule {
             }
             case CHOOSE -> {
                 grade=carriedGrade(c);
+                boolean emptyHandCollection=grade<0 && recipe.sameInputAndOutput() && machine(c).flag("mature");
+                // Check capacity before surveying or withdrawing ingredients. Recheck
+                // again in EQUIP before dispatch; no tool is borrowed to create it.
+                if (chooseHotbar(c,!emptyHandCollection)<0) return deferHotbarShortage(c);
                 if (grade>=0) { feeding=true;stage=Stage.APPROACH;break; }
                 // A crystalarium already contains its seed crystal. Empty-hand
                 // collection can bootstrap the first refill without any source trip.
-                if (recipe.sameInputAndOutput() && machine(c).flag("mature")) {
+                if (emptyHandCollection) {
                     feeding=false;stage=Stage.APPROACH;break;
                 }
                 if (!stockReady || stockDay!=day(c)) {
@@ -171,7 +176,9 @@ public final class ArtisanModule implements AutomationModule {
                 BlockData block=machine(c);
                 if (block.flag("working")) { schedule(c,1);machineIndex++;stage=Stage.TARGET;break; }
                 if (feeding && ingredient(c,grade)==null) { stage=Stage.CHOOSE;break; }
-                if (!equip(c)) return WorkResult.busy(status("사용할 재료 준비"));
+                Equipment equipment=equip(c);
+                if (equipment==Equipment.NO_SLOT) return deferHotbarShortage(c);
+                if (equipment==Equipment.PENDING) return WorkResult.busy(status("사용할 재료 준비"));
                 collected=block.flag("mature");
                 if (!feeding && !collected) { stage=Stage.CHOOSE;break; }
                 if (collected && emptySlots(c)<1) return deferAfterCleanup(c,"완성품을 받을 빈 인벤토리 칸이 필요합니다");
@@ -353,22 +360,30 @@ public final class ArtisanModule implements AutomationModule {
         return menu!=null && menu.container() && menu.id()==containerId && menu.carried().empty()
             && source!=null && inputStore.containers().contains(source);
     }
-    private boolean equip(Context c) {
+    private Equipment equip(Context c) {
         ItemSlot prepared=feeding ? ingredient(c,grade) : null;
-        if (feeding && prepared==null) return false;
-        hotbar=chooseHotbar(c,prepared);
-        if (hotbar<0) throw new IllegalStateException("No empty or owned artisan hotbar slot; tools and food are not borrowed");
+        if (feeding && prepared==null) return Equipment.PENDING;
+        hotbar=chooseHotbar(c,feeding);
+        if (hotbar<0) return Equipment.NO_SLOT;
         ItemSlot current=null;
         for (ItemSlot slot:c.world().inventory()) if (slot.inventoryIndex()==hotbar) current=slot;
         if (feeding && (current==null || !input(current.item(),grade) || current.item().count()<recipe.inputCount()
                 || current.item().count()==recipe.inputCount() && prepared.item().count()>recipe.inputCount())) {
-            submit(c,new Action.SwapHotbar(prepared.inventoryIndex(),hotbar),Pending.SWAP);return false;
+            submit(c,new Action.SwapHotbar(prepared.inventoryIndex(),hotbar),Pending.SWAP);return Equipment.PENDING;
         }
-        if (c.world().player().selectedSlot()!=hotbar) { submit(c,new Action.SelectHotbar(hotbar),Pending.SELECT);return false; }
-        return true;
+        if (c.world().player().selectedSlot()!=hotbar) { submit(c,new Action.SelectHotbar(hotbar),Pending.SELECT);return Equipment.PENDING; }
+        return Equipment.READY;
     }
-    private int chooseHotbar(Context c,ItemSlot prepared) {
-        if (feeding) {
+    private WorkResult deferHotbarShortage(Context c) {
+        // This branch has sent neither a slot change nor a machine use. A free
+        // main-inventory cell does not authorize borrowing a player's hotbar item.
+        // Only the typed preflight shortage may take the clean feature retry path.
+        if (pending!=null || uncertaintySkipRejection(c)!=null)
+            return fail("단축바 빈칸 대기 전에 미확인 조작·메뉴·빌린 슬롯을 확인해야 합니다");
+        return deferClean(c,status("작업용 단축바에 빈칸 1개가 필요합니다. 도구·음식·블록은 이동하지 않고 이 작업만 보류합니다"));
+    }
+    private int chooseHotbar(Context c,boolean forFeeding) {
+        if (forFeeding) {
             ItemSlot carried=c.world().inventory().stream().filter(s -> s.inventoryIndex()>=0 && s.inventoryIndex()<9
                 && s.inventoryIndex()!=c.profile().hoeHotbarSlot && input(s.item(),grade) && s.item().count()>=recipe.inputCount())
                 .max(Comparator.comparingInt(s -> s.item().count())).orElse(null);
@@ -378,7 +393,7 @@ public final class ArtisanModule implements AutomationModule {
             if (index==c.profile().hoeHotbarSlot) continue;
             ItemData item=ItemData.EMPTY;
             for (ItemSlot slot:c.world().inventory()) if (slot.inventoryIndex()==index) item=slot.item();
-            if (item.empty() || feeding && (item.is(recipe.inputId()) || item.is(recipe.outputId()))) return index;
+            if (item.empty() || forFeeding && (item.is(recipe.inputId()) || item.is(recipe.outputId()))) return index;
         }
         return -1;
     }
