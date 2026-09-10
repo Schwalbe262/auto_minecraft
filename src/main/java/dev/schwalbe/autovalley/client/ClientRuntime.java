@@ -6,6 +6,7 @@ import dev.schwalbe.autovalley.modules.*;
 import dev.schwalbe.autovalley.navigation.LocalNavigator;
 import dev.schwalbe.autovalley.ui.ValleyScreen;
 import dev.schwalbe.autovalley.ui.LoggingLeafSettings;
+import dev.schwalbe.autovalley.ui.WineLineEditPolicy;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.network.Connection;
@@ -250,10 +251,16 @@ public final class ClientRuntime {
     public void openSettings() { pause("설정 중"); mc.setScreen(new ValleyScreen()); }
     public void toggleFeature(Feature feature) { pause("기능 설정 변경"); profile.enabled.put(feature,!profile.enabled(feature)); saveProfile(); }
     /** A local line setting never resets its dates, skips an ACK, or starts gameplay. */
-    public boolean wineLineSettingsEditable() {
-        return !running() && !recording() && profileKey!=null && persistenceError==null && !automationStartBlocked()
-            && world.player().connected() && world.menu()!=null && !world.menu().container() && world.menu().carried().empty()
-            && actions.settingsEditSafe() && !profile.loggingRunActive && !MachineOutputLedger.hasPending(context);
+    public boolean wineLineSettingsEditable() { return wineLineSettingsRejection()==null; }
+    /** Retained logging work does not own wine-only configuration; native in-flight actions still fence it. */
+    public String wineLineSettingsRejection() {
+        boolean connected=mc.player!=null && mc.level!=null && world.player().connected();
+        MenuData menu=world.menu();
+        return WineLineEditPolicy.rejection(new WineLineEditPolicy.Boundary(running(),recording(),
+            profileKey!=null && context!=null && context.profile()==profile,persistenceError==null,!automationStartBlocked(),connected,
+            connected && mc.player.containerMenu==mc.player.inventoryMenu && menu!=null && menu.id()==0 && !menu.container(),
+            menu!=null && menu.carried()!=null && menu.carried().empty(),actions.settingsEditSafe(),
+            context==null || MachineOutputLedger.hasPending(context)));
     }
     public boolean updateWineLine(String id,boolean enabled,int cycleDays) {
         if (!wineLineSettingsEditable() || cycleDays<1 || cycleDays>28) return false;

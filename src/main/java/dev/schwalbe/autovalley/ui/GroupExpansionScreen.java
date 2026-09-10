@@ -40,7 +40,8 @@ final class GroupExpansionScreen extends Screen {
     }
     private boolean current() {
         return snapshot.current(runtime.profile()) && runtime.world()==world && !runtime.running() && !runtime.recording()
-            && world.player().connected() && GroupExpansionRules.emptyCursor(world.menu());
+            && world.player().connected() && GroupExpansionRules.emptyCursor(world.menu())
+            && (target.kind()!=GroupExpansionRules.Kind.WINE_LINE || runtime.wineLineSettingsEditable());
     }
     private GroupExpansionRules.Candidate read(BlockData original) {
         if(original==null || !world.loaded(original.pos()))return null;

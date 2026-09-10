@@ -67,6 +67,7 @@ public final class ClientDiagnostics {
         report.put("recordingActive",runtime.recordingActive());
         report.put("recordingStatus",runtime.recordingStatus());
         report.put("status",runtime.status());
+        report.put("wineLineEditRejection",runtime.wineLineSettingsRejection());
         report.put("failureHistory",runtime.failureHistory());
         var workLease=runtime.profile().workHotbarLease;
         report.put("workHotbar",workLease==null ? Map.of() : Map.of("owner",workLease.owner().name(),

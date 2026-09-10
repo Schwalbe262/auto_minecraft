@@ -4,6 +4,7 @@ import dev.schwalbe.autovalley.client.ClientRuntime;
 import dev.schwalbe.autovalley.core.*;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import java.util.*;
@@ -16,6 +17,8 @@ final class WineLinesScreen extends Screen {
     private int index,left,panel;
     private String selectedId;
     private String feedback="";
+    private String editRejection,tooltipReason;
+    private Button toggleButton,lessButton,moreButton,expandButton;
     private WineProductionLine selected;
     WineLinesScreen(Screen parent) {this(parent,WineProductionRules.LEGACY_ID);}
     WineLinesScreen(Screen parent,String selectedId) {
@@ -30,6 +33,7 @@ final class WineLinesScreen extends Screen {
         rebuild();
     }
     private void rebuild() {
+        toggleButton=null;lessButton=null;moreButton=null;expandButton=null;tooltipReason=null;
         clearWidgets();List<WineProductionLine> lines=WineProductionRules.lines(runtime.profile());
         index=owner==runtime.profile()?WineFacilityListView.indexOf(lines,selectedId):-1;
         if(index<0) {
@@ -40,18 +44,34 @@ final class WineLinesScreen extends Screen {
         int half=(panel-6)/2;
         button(left,38,half,"이전 구역",()->select(lines.get(index-1).id())).active=index>0;
         button(left+half+6,38,half,"다음 구역",()->select(lines.get(index+1).id())).active=index+1<lines.size();
-        boolean legacy=WineProductionRules.LEGACY_ID.equals(selected.id());
-        button(left,142,half,"이 구역 생산·보관·판매: "+(selected.enabled()?"ON":"OFF"),
-            ()->change(!selected.enabled(),selected.cycleDays())).active=runtime.wineLineSettingsEditable();
+        toggleButton=button(left,142,half,"이 구역 생산·보관·판매: "+(selected.enabled()?"ON":"OFF"),
+            ()->change(!selected.enabled(),selected.cycleDays()));
         int quarter=(half-6)/2;
-        button(left+half+6,142,quarter,"주기 −1일",()->change(selected.enabled(),selected.cycleDays()-1)).active=selected.cycleDays()>1 && runtime.wineLineSettingsEditable();
-        button(left+half+quarter+12,142,quarter,"주기 +1일",()->change(selected.enabled(),selected.cycleDays()+1)).active=selected.cycleDays()<28 && runtime.wineLineSettingsEditable();
-        button(left,168,panel,"이 구역 와인통 증설 등록 — 주변 후보에서 선택",()-> {
+        lessButton=button(left+half+6,142,quarter,"주기 −1일",()->change(selected.enabled(),selected.cycleDays()-1));
+        moreButton=button(left+half+quarter+12,142,quarter,"주기 +1일",()->change(selected.enabled(),selected.cycleDays()+1));
+        expandButton=button(left,168,panel,"이 구역 와인통 증설 등록 — 주변 후보에서 선택",()-> {
             if(!current() || !runtime.wineLineSettingsEditable()) {changed();return;}
             minecraft.setScreen(new GroupExpansionScreen(this,GroupExpansionRules.Kind.WINE_LINE,selected.id(),
                 block->block,block->true,block->List.of(block.pos()),()->{}));
-        }).active=!legacy && runtime.wineLineSettingsEditable();
+        });
         button(left,height-28,panel,"돌아가기",this::onClose);
+        refreshControls();
+    }
+    @Override public void tick() {super.tick();refreshControls();}
+    /** Re-evaluate a transient pause/ACK fence without losing the selected line or keyboard focus. */
+    private void refreshControls() {
+        if(selected==null || toggleButton==null)return;
+        editRejection=current() ? runtime.wineLineSettingsRejection() : "선택한 생산 구역이 바뀌었습니다. 시설 목록에서 다시 선택하세요.";
+        boolean editable=editRejection==null,legacy=WineProductionRules.LEGACY_ID.equals(selected.id());
+        toggleButton.active=editable;lessButton.active=editable && selected.cycleDays()>1;
+        moreButton.active=editable && selected.cycleDays()<28;expandButton.active=editable && !legacy;
+        String reason=editRejection!=null ? editRejection : legacy ? "토마토 와인통은 저장된 위치의 와인통 구역에서 증설 등록하세요." : "";
+        if(!Objects.equals(reason,tooltipReason)) {
+            tooltipReason=reason;
+            Tooltip blocked=editRejection==null ? null : Tooltip.create(Component.literal(editRejection));
+            toggleButton.setTooltip(blocked);lessButton.setTooltip(blocked);moreButton.setTooltip(blocked);
+            expandButton.setTooltip(reason.isEmpty() ? null : Tooltip.create(Component.literal(reason)));
+        }
     }
     private boolean current() {return WineFacilityListView.current(owner,runtime.profile(),selected);}
     private void changed() {feedback="선택한 구역 또는 조작 상태가 바뀌었습니다. 다시 확인하세요.";rebuild();}
@@ -77,12 +97,13 @@ final class WineLinesScreen extends Screen {
         text(g,86,"재료: "+(legacy?"토마토 보관함":input==null?"미설정":input.name()+" ("+input.containers().size()+"개)")+" → "+selected.inputItemId());
         text(g,104,"완제품: "+(legacy?"기존 연식별 와인 보관함":output==null?"미설정":output.name()+" ("+output.containers().size()+"개)")+" → "+selected.outputItemId());
         text(g,122,schedule==null?"첫 실행 시 독립 주기를 시작합니다.":schedule.active()?"진행 중인 배치: 남은 설비 "+schedule.remaining().size()+"개":"다음 작업: "+Math.max(0,schedule.nextDueDay()-day)+"일 뒤 (게임 날짜 "+schedule.nextDueDay()+")");
-        int feedbackY=height-42;boolean showFeedback=!feedback.isBlank();
+        String shownFeedback=editRejection==null ? feedback : "편집 잠금: "+editRejection;
+        int feedbackY=height-42;boolean showFeedback=!shownFeedback.isBlank();
         if(!showFeedback || 196+font.lineHeight<feedbackY)
             text(g,196,"각 구역의 주기는 독립적입니다. 보관함을 먼저 채우고 꽉 찬 경우만 잉여 판매합니다.");
         if(!showFeedback || 214+font.lineHeight<feedbackY)
             text(g,214,"보관함 증설: Ctrl+F8 → 저장된 위치 → 해당 보관함 묶음 → 증설 등록");
-        if(showFeedback)text(g,feedbackY,feedback);
+        if(showFeedback)text(g,feedbackY,shownFeedback);
     }
     private void text(GuiGraphics g,int y,String text) {if(y<height-32)g.drawString(font,font.plainSubstrByWidth(text,panel),left,y,0xEEEEEE);}
     @Override public void onClose(){minecraft.setScreen(parent);}
