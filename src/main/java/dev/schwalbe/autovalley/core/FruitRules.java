@@ -3,6 +3,8 @@ package dev.schwalbe.autovalley.core;
 public final class FruitRules {
     public static final String BLOCK="pamhc2trees:pamstarfruit",ITEM="pamhc2trees:starfruititem";
     private FruitRules() { }
+    /** Inspection cadence is independent from the fruit's native growth rate. */
+    public static String inspectionKey(FruitPatch patch) { return "orchard:"+patch.id(); }
     public static boolean mature(BlockData block){return block!=null && BLOCK.equals(block.id()) && block.number("age",-1)==7;}
     public static FruitPatch patch(Profile profile,Pos pos) {
         if(profile.fruitPatches==null)return null;

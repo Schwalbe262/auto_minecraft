@@ -30,6 +30,47 @@ class NearbyTravelYieldTest {
         assertEquals(0,f.outcomes);assertEquals(0,f.cancels);assertEquals(0,f.inventoryReads);
     }
 
+    @Test void ownedDoorPendingAndSuccessfulRepliesAreReadOnlyUntilNavigationResumes()throws Exception {
+        DoorFixture f=new DoorFixture();f.beginDoor();Map<String,Object> before=fields(f.navigator);
+        int moves=f.moves,stops=f.stops;
+        for(ActionOutcome.State state:List.of(ActionOutcome.State.PENDING,ActionOutcome.State.SUCCEEDED)) {
+            f.reply=new ActionOutcome(state,"exact door reply");f.busy=!f.reply.done();
+            for(int n=0;n<4;n++)assertSame(f.reply,f.navigator.pendingInteractionOutcome(f.context));
+            assertEquals(before,fields(f.navigator),"Reading a door reply must not consume its ticket or reset its route");
+            assertEquals(moves,f.moves);assertEquals(stops,f.stops);assertEquals(1,f.submits);assertEquals(0,f.cancels);
+        }
+        assertEquals(8,f.outcomes);assertEquals(0,f.inventoryReads);
+        f.blocks.put(NEXT,new BlockData(NEXT,"minecraft:oak_door",Map.of("open","true")));
+        assertEquals(Navigation.Result.MOVING,f.navigator.moveTo(TARGET,.1,f.context));
+        assertEquals(1,f.submits);int consumed=f.outcomes;
+        assertNull(f.navigator.pendingInteractionOutcome(f.context));assertEquals(consumed,f.outcomes);
+    }
+
+    @Test void ownedDoorFailureRemainsVisibleWithoutAnotherActionOrMovement()throws Exception {
+        DoorFixture f=new DoorFixture();f.beginDoor();Map<String,Object> before=fields(f.navigator);
+        int moves=f.moves,stops=f.stops;f.reply=new ActionOutcome(ActionOutcome.State.FAILED,"door rejected");f.busy=false;
+        for(int n=0;n<4;n++)assertSame(f.reply,f.navigator.pendingInteractionOutcome(f.context));
+        assertEquals(before,fields(f.navigator));assertEquals(moves,f.moves);assertEquals(stops,f.stops);
+        assertEquals(1,f.submits);assertEquals(0,f.cancels);assertEquals(4,f.outcomes);assertEquals(0,f.inventoryReads);
+        assertEquals(Navigation.Result.BLOCKED,f.navigator.moveTo(TARGET,.1,f.context));
+        assertEquals(1,f.submits);int consumed=f.outcomes;
+        assertNull(f.navigator.pendingInteractionOutcome(f.context));assertEquals(consumed,f.outcomes);
+    }
+
+    @Test void aDoorReplyIsNeverExposedThroughAnotherWorldActionPortOrNavigator()throws Exception {
+        DoorFixture f=new DoorFixture();f.beginDoor();BaseFixture other=new BaseFixture();
+        Map<String,Object> before=fields(f.navigator);int moves=f.moves,stops=f.stops;
+        for(Context wrong:List.of(new Context(other,f,f.navigator,f.profile,f.context.session()),
+            new Context(f,other,f.navigator,f.profile,f.context.session()),
+            new Context(f,f,new LocalNavigator(),f.profile,f.context.session())))
+            assertNull(f.navigator.pendingInteractionOutcome(wrong));
+        assertNull(f.navigator.pendingInteractionOutcome(null));
+        assertNull(new LocalNavigator().pendingInteractionOutcome(f.context));
+        assertEquals(before,fields(f.navigator));assertEquals(moves,f.moves);assertEquals(stops,f.stops);
+        assertEquals(1,f.submits);assertEquals(0,f.outcomes);assertEquals(0,other.outcomes);assertEquals(0,f.cancels);
+        f.navigator.reset();assertNull(f.navigator.pendingInteractionOutcome(f.context));assertEquals(0,f.outcomes);
+    }
+
     @Test void realTerrainFollowingAlsoOptsInAfterItsBoundedSearchFinishes() {
         Fixture f=new Fixture();f.profile.navigationMode=NavigationMode.TERRAIN;
         for(int n=0;n<100;n++) {
@@ -230,5 +271,20 @@ class NearbyTravelYieldTest {
     private static final class Fixture extends BaseFixture {
         final Set<Pos> partial=new HashSet<>();boolean fullProof=true,throwProof;
         @Override public boolean fullFlatSupport(Pos p){if(throwProof)throw new IllegalStateException("Unavailable native shape");return fullProof&&!partial.contains(p);}
+    }
+    private static final class DoorFixture extends BaseFixture {
+        private static final long DOOR_TICKET=73;
+        ActionOutcome reply=new ActionOutcome(ActionOutcome.State.PENDING,"door pending");
+        void beginDoor() {
+            blocks.put(NEXT,new BlockData(NEXT,"minecraft:oak_door",Map.of("open","false")));
+            assertEquals(Navigation.Result.MOVING,navigator.moveTo(TARGET,.1,context));
+            assertEquals(1,submits);assertTrue(busy);
+        }
+        @Override public boolean canInteract(Pos p,double reach){return p.equals(NEXT)&&reach>=4.25;}
+        @Override public long submit(Action action) {
+            assertEquals(new Action.UseBlock(NEXT,Action.Use.DOOR),action);assertFalse(busy);
+            submits++;busy=true;return DOOR_TICKET;
+        }
+        @Override public ActionOutcome outcome(long ticket){assertEquals(DOOR_TICKET,ticket);outcomes++;return reply;}
     }
 }

@@ -2,7 +2,7 @@
   "autovalley.feature.commodity_storage": "품목 저장",
   "autovalley.feature.seed_maker": "씨앗 증식",
   "autovalley.feature.crystal_copy": "결정 복제",
-  "autovalley.feature.starfruit": "주변 스타프루트",
+  "autovalley.feature.starfruit": "과수원 수확 (스타프루트)",
   "autovalley.error.crop_target": "등록된 작물 종류의 블록을 바라보세요.",
   "autovalley.error.crop_mismatch": "두 모서리는 같은 작물 종류여야 합니다.",
   "autovalley.work.import": "작업 묶음 가져오기",

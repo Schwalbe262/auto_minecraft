@@ -2,7 +2,7 @@
   "autovalley.feature.commodity_storage": "Commodity storage",
   "autovalley.feature.seed_maker": "Seed making",
   "autovalley.feature.crystal_copy": "Crystal copying",
-  "autovalley.feature.starfruit": "Nearby starfruit",
+  "autovalley.feature.starfruit": "Orchard harvest (starfruit)",
   "autovalley.error.crop_target": "Look at a block matching a registered crop definition.",
   "autovalley.error.crop_mismatch": "Both field corners must use the same crop definition.",
   "autovalley.work.import": "Import work groups",

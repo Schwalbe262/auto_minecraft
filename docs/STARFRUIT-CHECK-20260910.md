@@ -2,6 +2,8 @@
 
 This was a read-only diagnosis, not a scheduling or registration change.
 
+The nearby-only behavior described here was subsequently replaced by the [independent orchard routine](ORCHARD-ROUTINE-20260910.md).
+
 ## Current behavior
 
 - There is no periodic trip to the trees. `StarfruitModule` starts when a registered, loaded, ripe fruit is within six blocks.

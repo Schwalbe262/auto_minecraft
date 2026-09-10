@@ -73,6 +73,10 @@ public final class LocalNavigator implements Navigation {
     }
     @Override public Pos failureDestination() { return failureKind==Failure.NONE ? null : destination; }
     @Override public String diagnosticStatus() { return diagnostic; }
+    @Override public ActionOutcome pendingInteractionOutcome(Context c) {
+        return c!=null && c.navigation()==this && c.world()==lastWorld && c.actions()==lastActions && doorTicket>=0
+            ? c.actions().outcome(doorTicket) : null;
+    }
     @Override public java.util.Map<String,Object> diagnostics() {
         java.util.Map<String,Object> report=new java.util.LinkedHashMap<>();
         report.put("state",diagnostic);report.put("mode",requestMode==null ? "NONE" : requestMode.name());

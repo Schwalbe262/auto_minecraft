@@ -167,16 +167,16 @@ class LogisticsTest {
         assertTrue(f.session.tomatoStockCache.completeSurvey(f.context(),token,snapshots));
     }
 
-    @Test void actualProductionReturnsFromFruitCohortWithItsAllocatedWarehouseStockAndTargetIntact() {
-        for(Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) productionFruitDetour(feature,"RETURN");
+    @Test void orchardSchedulingPreservesAllocatedWarehouseStockUntilProductionReturnsToItsTarget() {
+        for(Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) productionBeforeOrchard(feature,"RETURN");
     }
-    @Test void actualProductionContinuesItsPartiallyCountedSourcesAfterFruitCohortStorage() {
-        for(Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) productionFruitDetour(feature,"SOURCE");
+    @Test void orchardSchedulingWaitsForProductionToFinishItsPartiallyCountedSources() {
+        for(Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) productionBeforeOrchard(feature,"SOURCE");
     }
-    @Test void actualProductionDoesNotRefeedItsCompletedFirstMachineAfterFruitCohortStorage() {
-        for(Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) productionFruitDetour(feature,"MACHINE");
+    @Test void orchardSchedulingNeverInterruptsProductionOrRefeedsItsCompletedFirstMachine() {
+        for(Feature feature:List.of(Feature.WINE,Feature.PRESERVES)) productionBeforeOrchard(feature,"MACHINE");
     }
-    private static void productionFruitDetour(Feature feature,String suspendedStage) {
+    private static void productionBeforeOrchard(Feature feature,String travelStage) {
         Fixture f=new Fixture();f.equipHoe();f.reportConfirmedCount=true;int cost=feature==Feature.WINE?3:5;
         Pos source=f.chest(PoiKind.TOMATO_CHEST,0,null,tomato(2,cost*2));
         Pos otherSource=f.chest(PoiKind.TOMATO_CHEST,1,null,tomato(0,1));
@@ -184,59 +184,75 @@ class LogisticsTest {
         Pos first=f.machine(kind,10,true,true,false),second=f.machine(kind,11,true,true,false);
         Pos fruitStore=f.nearbyFruitPatch();MachineModule machine=new MachineModule(feature);StarfruitModule fruit=new StarfruitModule();
         AutomationEngine engine=new AutomationEngine(List.of(machine,fruit));Context context=f.context();
-        f.movingPredicate=switch(suspendedStage) {
+        f.movingPredicate=switch(travelStage) {
             case "RETURN" -> p->p.equals(first) && f.tomatoWithdrawals==1 && f.machineClicks()==0;
             case "SOURCE" -> p->p.equals(otherSource) && f.opens.getOrDefault(source,0)==1 && f.tomatoWithdrawals==0;
             case "MACHINE" -> p->p.equals(second) && f.machineClicks()==1;
-            default -> throw new AssertionError(suspendedStage);
+            default -> throw new AssertionError(travelStage);
         };
         engine.start(context);
-        for(int tick=0;tick<200 && storedField(engine,"nearbyOrigin")==null;tick++){engine.tick(context);f.advance();}
-        assertSame(machine,storedField(engine,"nearbyOrigin"),engine.status());assertSame(fruit,storedField(engine,"active"));
-        assertEquals(suspendedStage,String.valueOf(storedField(machine,"stage")));
+        for(int tick=0;tick<200 && !(f.lastTravelMoving && travelStage.equals(String.valueOf(storedField(machine,"stage"))));tick++) {
+            engine.tick(context);f.advance();
+        }
+        assertTrue(f.lastTravelMoving,engine.status());assertSame(machine,storedField(engine,"active"));
+        assertEquals(travelStage,String.valueOf(storedField(machine,"stage")));
         Map<String,Object> saved=productionProgress(machine);Map<Pos,Integer> opensBefore=Map.copyOf(f.opens);
         Map<String,Long> datesBefore=Map.copyOf(f.profile.nextEligibleDay);WineBatchSchedule wineBefore=f.profile.wineBatchSchedule;
         int feedsBefore=f.machineClicks(),tomatoesBefore=ModuleSupport.count(context,i->i.is(ItemData.TOMATO));
         int confirmationsBefore=f.confirmations.size();
         assertFalse(f.busy());assertFalse(f.menu().container());assertTrue(f.profile.pendingMachineOutputs.isEmpty());
-        for(int tick=0;tick<250 && storedField(engine,"nearbyOrigin")!=null;tick++){engine.tick(context);f.advance();}
-        assertNull(storedField(engine,"nearbyOrigin"),engine.status());assertSame(machine,storedField(engine,"active"));
-        assertEquals(saved,productionProgress(machine),"The exact production instance retains stage, target, grade and partial stock audit");
+        for(int tick=0;tick<40;tick++){engine.tick(context);f.advance();}
+        assertSame(machine,storedField(engine,"active"));
+        assertEquals(saved,productionProgress(machine),"Production keeps its stage, target, grade and partial stock audit while travel is pending");
         assertEquals(datesBefore,f.profile.nextEligibleDay);assertEquals(wineBefore,f.profile.wineBatchSchedule);
         assertEquals(feedsBefore,f.machineClicks());assertEquals(tomatoesBefore,ModuleSupport.count(context,i->i.is(ItemData.TOMATO)));
         assertEquals(opensBefore.getOrDefault(source,0),f.opens.getOrDefault(source,0));
         assertEquals(opensBefore.getOrDefault(otherSource,0),f.opens.getOrDefault(otherSource,0));
-        assertEquals(3,f.storedFruit(fruitStore));assertEquals(3,f.fruitClicks());assertEquals(1,f.opens.get(fruitStore));
-        assertEquals(3,f.confirmations.subList(confirmationsBefore,f.confirmations.size()).stream()
-            .filter(a->a.action() instanceof Action.QuickMove && a.outcome().success()).mapToInt(a->a.outcome().confirmedCount()).sum());
+        assertEquals(0,f.storedFruit(fruitStore));assertEquals(0,f.fruitClicks());assertFalse(f.opens.containsKey(fruitStore));
+        assertEquals(confirmationsBefore,f.confirmations.size(),"Orchard work cannot submit native actions during production travel");
         assertFalse(f.busy());assertFalse(f.menu().container());assertTrue(f.carried.empty());
         f.movingPredicate=p->false;
-        for(int tick=0;tick<300 && (f.machineClicks()<2 || storedField(machine,"stage").toString().equals("VERIFY") || storedField(machine,"stage").toString().equals("OUTPUT"));tick++) {
+        for(int tick=0;tick<350 && !f.profile.nextEligibleDay.containsKey("orchard:nearby-fruit");tick++) {
             engine.tick(context);f.advance();
         }
         for(int tick=0;tick<30;tick++){engine.tick(context);f.advance();}
         assertTrue(engine.running(),engine.status());assertEquals(2,f.machineClicks());assertEquals(cost*2,f.consumed);
         assertEquals(List.of(first,second),f.history.stream().filter(a->a instanceof Action.UseBlock use && use.purpose()==Action.Use.MACHINE).map(a->((Action.UseBlock)a).pos()).toList());
         assertEquals(List.of(2,2),f.usedGrades);assertEquals(1,f.tomatoWithdrawals);assertEquals(List.of(source),f.tomatoWithdrawalSources);
-        assertEquals(2,f.opens.get(source),"one audit plus one actual withdrawal, not a new audit after the detour");
+        assertEquals(2,f.opens.get(source),"one audit plus one actual withdrawal completes before the independent orchard routine");
         assertEquals(1,f.opens.get(otherSource));assertEquals(3,f.fruitClicks());assertEquals(3,f.storedFruit(fruitStore));
+        assertEquals(List.of(Action.Use.MACHINE,Action.Use.MACHINE,Action.Use.FRUIT,Action.Use.FRUIT,Action.Use.FRUIT),
+            f.history.stream().filter(a->a instanceof Action.UseBlock use && (use.purpose()==Action.Use.MACHINE || use.purpose()==Action.Use.FRUIT))
+                .map(a->((Action.UseBlock)a).purpose()).toList());
+        assertEquals(1,f.opens.get(fruitStore));assertEquals(1L,f.profile.nextEligibleDay.get("orchard:nearby-fruit"));
+        assertEquals(3,f.confirmations.stream().filter(a->a.action() instanceof Action.QuickMove && a.outcome().success())
+            .mapToInt(a->a.outcome().confirmedCount()).sum());
         assertTrue(f.blocks.get(first).flag("working"));assertTrue(f.blocks.get(second).flag("working"));assertTrue(f.profile.pendingMachineOutputs.isEmpty());
+        assertFalse(f.busy());assertFalse(f.menu().container());assertTrue(f.carried.empty());
         assertTrue(f.inventory[0].hoe());assertEquals(1,f.chests.get(otherSource)[0].count());assertEquals(0,ModuleSupport.count(context,i->i.is(FruitRules.ITEM)));
         if(feature==Feature.WINE){assertFalse(f.profile.wineBatchSchedule.active());assertTrue(f.profile.wineBatchSchedule.remaining().isEmpty());}
     }
-    @Test void actualSleepApproachWaitsForTheWholeNearbyCohortDepositThenUsesTheBedOnce() {
+    @Test void ordinarySleepStartsOnlyAfterTheIndependentOrchardDepositFinishesThenUsesTheBedOnce() {
         Fixture f=new Fixture();f.equipHoe();f.dayTime=13000;f.reportConfirmedCount=true;
         Pos fruitStore=f.nearbyFruitPatch(),bed=f.poi(PoiKind.BED,30,null);SleepModule sleep=new SleepModule();StarfruitModule fruit=new StarfruitModule();
         AutomationEngine engine=new AutomationEngine(List.of(sleep,fruit));Context context=f.context();
-        // Start outside the fruit's six-block query; the first actual bed travel enters its vicinity.
-        f.playerX=20.5;f.movingPredicate=p->{if(p.equals(bed)){f.playerX=.5;return true;}return false;};engine.start(context);
-        for(int tick=0;tick<100 && storedField(engine,"nearbyOrigin")==null;tick++){engine.tick(context);f.advance();}
-        assertSame(sleep,storedField(engine,"nearbyOrigin"),engine.status());
-        for(int tick=0;tick<250 && storedField(engine,"nearbyOrigin")!=null;tick++){engine.tick(context);f.advance();}
+        f.playerX=20.5;f.movingPredicate=bed::equals;engine.start(context);
+        for(int tick=0;tick<250 && storedField(engine,"active")!=sleep;tick++) {
+            engine.tick(context);f.advance();
+            if(f.navigationHistory.stream().anyMatch(visit->visit.target().equals(bed))) {
+                assertEquals(3,f.storedFruit(fruitStore),"All orchard fruit must be deposited before bed travel starts");
+                assertFalse(f.menu().container());assertTrue(f.carried.empty());
+                assertEquals(1L,f.profile.nextEligibleDay.get("orchard:nearby-fruit"));
+            }
+        }
         assertSame(sleep,storedField(engine,"active"));assertEquals(3,f.fruitClicks());assertEquals(3,f.storedFruit(fruitStore));
         assertFalse(f.sleeping);assertTrue(f.history.stream().noneMatch(a->a instanceof Action.UseBlock use && use.purpose()==Action.Use.SLEEP));
         assertEquals(3,f.confirmations.stream().filter(a->a.action() instanceof Action.QuickMove && a.outcome().success()).mapToInt(a->a.outcome().confirmedCount()).sum());
-        assertInstanceOf(Action.CloseContainer.class,f.history.get(f.history.size()-1));f.movingPredicate=p->false;
+        assertInstanceOf(Action.CloseContainer.class,f.history.get(f.history.size()-1));
+        int actionsBefore=f.history.size();
+        for(int tick=0;tick<30;tick++){engine.tick(context);f.advance();}
+        assertSame(sleep,storedField(engine,"active"));assertEquals(actionsBefore,f.history.size());assertEquals(3,f.fruitClicks());
+        f.movingPredicate=p->false;
         for(int tick=0;tick<25 && !f.sleeping;tick++){engine.tick(context);f.advance();}
         assertTrue(f.sleeping,engine.status());assertTrue(engine.running());
         assertEquals(1,f.history.stream().filter(a->a instanceof Action.UseBlock use && use.purpose()==Action.Use.SLEEP).count());

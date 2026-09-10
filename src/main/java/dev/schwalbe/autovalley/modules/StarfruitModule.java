@@ -3,10 +3,9 @@ package dev.schwalbe.autovalley.modules;
 import dev.schwalbe.autovalley.core.*;
 import java.util.*;
 
-/** Nearby activation, then this registered patch's initially loaded ripe cohort and one deposit. */
+/** Independent orchard pass: inspect registered patches, pick ripe fruit, and store each patch before the next. */
 public final class StarfruitModule implements AutomationModule {
-    private static final double NEARBY_REACH=6;
-    private static final int APPROACH_TICKS=100,PICKUP_TICKS=20;
+    private static final int APPROACH_TICKS=2400,PICKUP_TICKS=20;
     private enum Stage { FIND, APPROACH, EQUIP, VERIFY, PICKUP, STORE }
     private enum Pending { SELECT, FRUIT }
     private Stage stage=Stage.FIND;
@@ -17,7 +16,10 @@ public final class StarfruitModule implements AutomationModule {
     private FruitPatch patch;
     private Pos target;
     private CommodityStore passStore;
-    private final List<Pos> remainingNearby=new ArrayList<>();
+    private final List<Pos> remainingFruit=new ArrayList<>();
+    private List<FruitPatch> scheduledPatches=List.of();
+    private int patchIndex;
+    private boolean runStarted,passIncomplete;
     private boolean passPicked;
     private FruitPatch lastConfirmedPatch;
     private Pos lastConfirmedTarget;
@@ -28,15 +30,10 @@ public final class StarfruitModule implements AutomationModule {
     private static final int SKIP_TICKS=1200,MAX_SKIPPED_TARGETS=4096;
     private record SkippedFruit(FruitPatch patch,CommodityStore store,long day,long tick) { }
     private final Map<Pos,SkippedFruit> skippedTargets=new LinkedHashMap<>();
+    private final Map<String,SkippedFruit> skippedPatches=new LinkedHashMap<>();
 
     @Override public Feature feature() { return Feature.STARFRUIT; }
     @Override public int priority() { return 80; }
-
-    /** Read-only candidate query; it neither selects a target nor consumes same-day evidence. */
-    @Override public boolean hasNearbyWork(Context c) {
-        return stage==Stage.FIND && ticket<0 && !c.actions().busy() && c.session().allows(c.profile(),feature())
-            && clearMenu(c) && safeHotbar(c)>=0 && hasPickupRoom(c) && findNearby(c)!=null;
-    }
 
     @Override public WorkResult tick(Context c) {
         if (stage==Stage.FIND) {
@@ -46,12 +43,13 @@ public final class StarfruitModule implements AutomationModule {
             long today=Math.floorDiv(c.world().dayTime(),24000L);
             if (observedProfile!=c.profile()) {
                 lastConfirmedPatch=null;lastConfirmedTarget=null;lastConfirmedStore=null;
-                skippedTargets.clear();
+                skippedTargets.clear();skippedPatches.clear();
             }
             if (observedProfile!=c.profile() || confirmedDay!=today) {
                 confirmedToday.clear();observedProfile=c.profile();confirmedDay=today;
             }
             skippedTargets.entrySet().removeIf(e->!skipActive(c,e.getKey(),e.getValue()));
+            skippedPatches.entrySet().removeIf(e->!skipActive(c,e.getValue().patch().fruits().get(0),e.getValue()));
             if (lateFruitReady(c)) {
                 // This is an actual currently held item, not a pickup debt or a
                 // prediction. A delayed arrival can use the same still-registered
@@ -60,19 +58,27 @@ public final class StarfruitModule implements AutomationModule {
                 storage=new CommodityStorageModule(feature(),patch.storeId(),Set.of(FruitRules.ITEM));
                 stage=Stage.STORE;
             } else {
-                if (safeHotbar(c)<0 || !hasPickupRoom(c)) return WorkResult.idle();
-                chooseNearby(c);
-                if (target==null) return WorkResult.idle();
-                // Six blocks is only the activation trigger. Freeze the entire
-                // explicit patch's currently loaded ripe mask, including the far
-                // side of the same tree. Moving closer, ripening or loading must
-                // not add members to this pass, and no other patch is included.
-                passStore=CommodityStorageRules.store(c.profile(),patch.storeId());
-                passDay=today;
-                remainingNearby.clear();
-                for (Pos pos:patch.fruits()) if (!pos.equals(target) && eligibleRegistered(c,patch,pos))
-                    remainingNearby.add(pos);
-                approachSince=c.world().tick();stage=Stage.APPROACH;
+                if (!runStarted) {
+                    scheduledPatches=c.profile().fruitPatches==null ? List.of() : c.profile().fruitPatches.stream()
+                        .filter(p -> p!=null && p.valid() && validStore(c,p)
+                            && today>=c.profile().nextEligibleDay.getOrDefault(FruitRules.inspectionKey(p),Long.MIN_VALUE)
+                            && !skipActive(c,p.fruits().get(0),skippedPatches.get(p.id())))
+                        .sorted(Comparator.comparingDouble(p -> p.fruits().stream()
+                            .mapToDouble(pos -> c.world().player().distance(pos)).min().orElse(Double.POSITIVE_INFINITY)))
+                        .toList();
+                    runStarted=true;patchIndex=0;
+                }
+                if (patchIndex>=scheduledPatches.size()) { reset();return WorkResult.idle(); }
+                patch=scheduledPatches.get(patchIndex++);
+                if (!c.profile().fruitPatches.contains(patch) || !validStore(c,patch))
+                    return fail(c,"과수원 구역 또는 저장고 등록이 바뀌었습니다");
+                passStore=CommodityStorageRules.store(c.profile(),patch.storeId());passDay=today;
+                passPicked=false;passIncomplete=false;lateCleanup=false;
+                // Freeze explicit ownership, not a nearby/loaded mask. Distant and
+                // initially unloaded registered fruits are inspected by this pass.
+                remainingFruit.clear();remainingFruit.addAll(patch.fruits());
+                target=patch.fruits().get(0);
+                if (!chooseNextFruit(c)) return finishPatch(c);
             }
         }
         if (ticket>=0) {
@@ -83,6 +89,16 @@ public final class StarfruitModule implements AutomationModule {
             Pending completed=pending;pending=null;
             if (completed==Pending.FRUIT) { verifySince=c.world().tick();stage=Stage.VERIFY; }
         }
+        if (stage==Stage.APPROACH) {
+            // Long orchard trips may open a door. Await that navigator-owned
+            // receipt before inspecting/skipping the target or changing a route.
+            // An unrelated busy action still fails at the normal boundary below.
+            ActionOutcome travelAction=c.navigation().pendingInteractionOutcome(c);
+            if (travelAction!=null) {
+                if (!travelAction.done()) { c.actions().stopMovement();return WorkResult.busy("과수원 이동 중 문 조작 응답 대기"); }
+                if (!travelAction.success()) return fail(c,"과수원 이동 중 문 조작 실패: "+travelAction.message());
+            }
+        }
         if (!c.session().allows(c.profile(),feature()) || observedProfile!=c.profile() || !registered(c)) {
             // A registration edit cannot forget a submitted native operation.
             // Let a nested storage action settle, then stop before any next action.
@@ -92,8 +108,13 @@ public final class StarfruitModule implements AutomationModule {
         // The nested deposit owns its own action tickets and acknowledgement wait.
         if (stage==Stage.STORE) {
             WorkResult result=storage.tick(c);
-            if (result.state()!=WorkResult.State.BUSY) reset();
-            return result;
+            if (result.state()==WorkResult.State.BUSY) return result;
+            if (result.state()!=WorkResult.State.IDLE) { reset();return result; }
+            if (lateCleanup) {
+                storage=null;lateCleanup=false;stage=Stage.FIND;target=null;patch=null;passStore=null;
+                return WorkResult.busy("보유 과일 보관 완료 — 과수원 순회 확인");
+            }
+            return completePatch(c);
         }
         if (c.actions().busy()) return fail(c,"다른 조작 중이므로 스타프루트 작업을 중지했습니다");
         if (!clearMenu(c)) return fail(c,"스타프루트 작업 중 메뉴 또는 커서가 바뀌었습니다");
@@ -101,19 +122,29 @@ public final class StarfruitModule implements AutomationModule {
         // may settle too, but never grants a new use after the frozen day changes.
         if ((stage==Stage.APPROACH || stage==Stage.EQUIP) && !samePassDay(c)) {
             c.actions().stopMovement();c.navigation().reset();
-            return finishNearby(c);
+            passIncomplete=true;return finishPatch(c);
         }
 
         switch (stage) {
             case APPROACH -> {
-                if (!targetMature(c) || c.world().tick()-approachSince>=APPROACH_TICKS) return skip(c);
+                if (c.world().tick()-approachSince>=APPROACH_TICKS) return skip(c);
+                if (!c.world().loaded(target)) {
+                    Navigation.Result observed=c.navigation().moveToObserve(target,8,c);
+                    if (observed==Navigation.Result.BLOCKED) return skip(c);
+                    return WorkResult.busy("등록 과수원으로 이동·열매 상태 확인");
+                }
+                if (!knownFruitObservation(c.world().block(target),target)) return fail(c,"과수원 열매 상태가 아직 동기화되지 않았습니다");
+                if (!targetMature(c)) return inspected(c);
                 Navigation.Result result=c.navigation().moveTo(target,4,c);
                 if (result==Navigation.Result.BLOCKED) return skip(c);
                 if (result==Navigation.Result.ARRIVED) stage=Stage.EQUIP;
             }
             case EQUIP -> {
                 c.actions().stopMovement();
-                if (!targetMature(c) || !hasPickupRoom(c)) return skip(c);
+                if (!c.world().loaded(target)) { stage=Stage.APPROACH;break; }
+                if (!knownFruitObservation(c.world().block(target),target)) return fail(c,"과수원 열매 상태가 아직 동기화되지 않았습니다");
+                if (!targetMature(c)) return inspected(c);
+                if (!hasPickupRoom(c)) return skip(c);
                 int hotbar=safeHotbar(c);
                 if (hotbar<0) return skip(c);
                 if (c.world().player().selectedSlot()!=hotbar) {
@@ -148,8 +179,8 @@ public final class StarfruitModule implements AutomationModule {
             // Delayed ground delivery gets a bounded observation window, not a
             // persistent output debt. Already arrived fruit goes straight to storage.
             if (fruitCount(c)>fruitBefore || c.world().tick()-verifySince>=PICKUP_TICKS) {
-                if (chooseNextNearby(c)) return WorkResult.busy("등록 구역의 다음 익은 스타프루트에 접근");
-                return finishNearby(c);
+                if (chooseNextFruit(c)) return WorkResult.busy("과수원의 다음 등록 열매 확인");
+                return finishPatch(c);
             }
         }
         return WorkResult.busy(switch(stage) {
@@ -161,57 +192,60 @@ public final class StarfruitModule implements AutomationModule {
         });
     }
 
-    private void chooseNearby(Context c) {
-        Nearby nearby=findNearby(c);
-        target=nearby==null ? null : nearby.target();patch=nearby==null ? null : nearby.patch();
-    }
-    /** Recheck each frozen member, but never add a newly nearby/ripe member. */
-    private boolean chooseNextNearby(Context c) {
-        if (!samePassDay(c) || safeHotbar(c)<0 || !hasPickupRoom(c)) return false;
-        remainingNearby.removeIf(pos -> !eligibleRegistered(c,patch,pos));
-        Pos next=remainingNearby.stream().min(Comparator.comparingDouble(pos -> c.world().player().distance(pos))).orElse(null);
+    /** Inspect the frozen registration mask; unknown chunks are approached, never read speculatively. */
+    private boolean chooseNextFruit(Context c) {
+        if (!samePassDay(c)) { passIncomplete=true;return false; }
+        remainingFruit.removeIf(pos -> {
+            if (confirmedToday.contains(pos)) return true;
+            if (skipActive(c,pos,skippedTargets.get(pos))) { passIncomplete=true;return true; }
+            if (!c.world().loaded(pos)) return false;
+            BlockData block=c.world().block(pos);
+            return knownFruitObservation(block,pos) && !FruitRules.mature(block);
+        });
+        Pos next=remainingFruit.stream().min(Comparator.comparingDouble(pos -> c.world().player().distance(pos))).orElse(null);
         if (next==null) return false;
-        remainingNearby.remove(next);target=next;
+        if (safeHotbar(c)<0 || !hasPickupRoom(c)) { passIncomplete=true;return false; }
+        remainingFruit.remove(next);target=next;
         approachSince=c.world().tick();stage=Stage.APPROACH;
         return true;
     }
-    private WorkResult finishNearby(Context c) {
-        remainingNearby.clear();
-        if (!passPicked) { reset();return WorkResult.idle(); }
+    private WorkResult finishPatch(Context c) {
+        remainingFruit.clear();
+        if (!passPicked) return completePatch(c);
         storage=new CommodityStorageModule(feature(),patch.storeId(),Set.of(FruitRules.ITEM));
         stage=Stage.STORE;
         WorkResult result=storage.tick(c);
+        if (result.state()==WorkResult.State.IDLE) return completePatch(c);
         if (result.state()!=WorkResult.State.BUSY) reset();
         return result;
     }
-    private record Nearby(FruitPatch patch,Pos target) { }
-    private Nearby findNearby(Context c) {
-        Nearby chosen=null;
-        if (c.profile().fruitPatches==null) return null;
-        double nearest=NEARBY_REACH;
-        for (FruitPatch candidate:c.profile().fruitPatches) {
-            if (candidate==null || !candidate.valid() || !validStore(c,candidate)) continue;
-            for (Pos pos:candidate.fruits()) {
-                double distance=c.world().player().distance(pos);
-                if (eligibleNearby(c,candidate,pos,nearest)) {
-                    chosen=new Nearby(candidate,pos);nearest=distance;
-                }
+    private WorkResult completePatch(Context c) {
+        if (!registered(c)) return fail(c,"과수원 확인을 저장하기 전에 등록이 바뀌었습니다");
+        if (!clearMenu(c) || c.actions().busy() || c.actions().pauseReason()!=null)
+            return fail(c,"과수원 완료 전에 보관함과 조작 응답을 확인하세요");
+        if (!passIncomplete && samePassDay(c)) {
+            String key=FruitRules.inspectionKey(patch);
+            Long before=c.profile().nextEligibleDay.put(key,Math.addExact(passDay,1));
+            try { c.checkpoint().run(); }
+            catch (RuntimeException failure) {
+                if (before==null) c.profile().nextEligibleDay.remove(key);else c.profile().nextEligibleDay.put(key,before);
+                return fail(c,"과수원 점검일을 저장하지 못했습니다");
             }
+            skippedPatches.remove(patch.id());
+        } else {
+            // Whole-patch backoff prevents several incomplete patches from
+            // endlessly reacquiring BUSY ahead of sleep or later routines.
+            skippedPatches.put(patch.id(),new SkippedFruit(patch,passStore,
+                Math.floorDiv(c.world().dayTime(),24000L),c.world().tick()));
         }
-        return chosen;
+        if (patchIndex>=scheduledPatches.size()) { reset();return WorkResult.idle(); }
+        storage=null;stage=Stage.FIND;target=null;patch=null;passStore=null;passPicked=false;
+        return WorkResult.busy("과수원 구역 확인·보관 완료 — 다음 등록 구역 확인");
     }
-    private boolean eligibleNearby(Context c,FruitPatch candidate,Pos pos,double reach) {
-        return c.world().player().distance(pos)<=reach && eligibleRegistered(c,candidate,pos);
-    }
-    private boolean eligibleRegistered(Context c,FruitPatch candidate,Pos pos) {
-        boolean sameDay=observedProfile==c.profile() && confirmedDay==Math.floorDiv(c.world().dayTime(),24000L);
-        if (sameDay && confirmedToday.contains(pos)
-                || skipActive(c,pos,skippedTargets.get(pos)) || !c.world().loaded(pos)) return false;
-        // Never read unloaded native blocks; registration is an explicit mask,
-        // not permission to discover or expand to neighbouring trees.
-        BlockData block=c.world().block(pos);
-        return block!=null && pos.equals(block.pos()) && FruitRules.mature(block)
-            && candidate.equals(FruitRules.patch(c.profile(),pos));
+    private WorkResult inspected(Context c) {
+        c.actions().stopMovement();c.navigation().reset();
+        if (chooseNextFruit(c)) return WorkResult.busy("아직 익지 않은 열매는 두고 다음 등록 열매 확인");
+        return finishPatch(c);
     }
     private boolean registered(Context c) {
         return target!=null && patch!=null && patch.equals(FruitRules.patch(c.profile(),target)) && validStore(c,patch)
@@ -232,6 +266,11 @@ public final class StarfruitModule implements AutomationModule {
         if (!c.world().loaded(target)) return false;
         BlockData block=c.world().block(target);
         return block!=null && target.equals(block.pos()) && FruitRules.mature(block);
+    }
+    private static boolean knownFruitObservation(BlockData block,Pos pos) {
+        if (block==null || !pos.equals(block.pos()) || block.id()==null || block.id().isBlank()
+                || "autovalley:unloaded".equals(block.id())) return false;
+        return !FruitRules.BLOCK.equals(block.id()) || block.number("age",-1)>=0 && block.number("age",-1)<=7;
     }
     private static boolean clearMenu(Context c) {
         MenuData menu=c.world().menu();return menu!=null && !menu.container() && menu.carried().empty();
@@ -273,14 +312,16 @@ public final class StarfruitModule implements AutomationModule {
                 Math.floorDiv(c.world().dayTime(),24000L),c.world().tick()));
         }
         c.actions().stopMovement();c.navigation().reset();
-        if (chooseNextNearby(c)) return WorkResult.busy("접근할 수 없는 열매를 건너뛰고 같은 등록 구역의 스타프루트 확인");
-        return finishNearby(c);
+        passIncomplete=true;
+        if (chooseNextFruit(c)) return WorkResult.busy("접근할 수 없는 열매를 건너뛰고 같은 과수원 구역 확인");
+        return finishPatch(c);
     }
     private WorkResult fail(Context c,String message) { c.actions().stopMovement();c.navigation().reset();reset();return WorkResult.blocked(message); }
     @Override public void reset() {
         if (storage!=null) storage.reset();
         stage=Stage.FIND;pending=null;ticket=-1;target=null;patch=null;storage=null;lateCleanup=false;
-        remainingNearby.clear();passStore=null;passPicked=false;passDay=Long.MIN_VALUE;
+        remainingFruit.clear();passStore=null;passPicked=false;passDay=Long.MIN_VALUE;passIncomplete=false;
+        scheduledPatches=List.of();patchIndex=0;runStarted=false;
         // Confirmed same-day evidence and its destination survive scheduler/one-shot
         // reset. A late arrival is stored only when actually in inventory; no action,
         // borrowed inventory, debt, expected count, or persisted completion is retained.
