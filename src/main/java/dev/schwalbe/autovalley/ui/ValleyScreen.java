@@ -967,9 +967,8 @@ public final class ValleyScreen extends Screen {
         Farm replaced = before.contains(draftOriginal) ? draftOriginal : null;
         if (before.stream().anyMatch(f -> f != replaced && f.name().equals(label))) { error("error.label_used"); return; }
         if (before.stream().anyMatch(f -> f != replaced && RegistrationRules.overlap(f, candidate))) { error("error.farm_overlap"); return; }
-        if (replaced == null) runtime.profile().farms.add(candidate);
-        else runtime.profile().farms.set(before.indexOf(replaced), candidate);
-        if (persist(() -> { runtime.profile().farms.clear(); runtime.profile().farms.addAll(before); })) {
+        Runnable rollback=FarmRegistrationRules.apply(runtime.profile(),replaced,candidate);
+        if (persist(rollback)) {
             page = runtime.profile().farms.indexOf(candidate) / rowsFrom(110);
             draftFirst = null; draftSecond = null; draftName = ""; draftOriginal = null; farmEditor = false; showSuggestions = false; rebuild();
         }
