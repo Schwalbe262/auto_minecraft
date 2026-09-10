@@ -35,11 +35,20 @@ class HarvestAndStorageModuleTest {
         f.opened=null;f.failTransfer=false;f.start();f.run(100);
         assertEquals(AutomationEngine.State.COMPLETE,f.engine.state());assertEquals(1,f.harvests);assertEquals(2,f.stored(STORE,FRUIT));
     }
-    @Test void futureDueFarmSkipsCropUseButStillStoresExistingLinkedCommodity() {
+    @Test void futureDueUnripeFarmSkipsCropUseButStillStoresExistingLinkedCommodity() {
         Fixture f=new Fixture();f.profile.nextEligibleDay.put("harvest:Ancient",450L);f.inventory[1]=item(FRUIT,9,-1);
+        f.blocks.put(CROP,new BlockData(CROP,FRUIT,Map.of("age","1")));
         f.start();f.run(100);
         assertEquals(AutomationEngine.State.COMPLETE,f.engine.state());assertEquals(0,f.harvests);assertEquals(9,f.stored(STORE,FRUIT));
         assertEquals(450L,f.profile.nextEligibleDay.get("harvest:Ancient"));
+    }
+    @Test void futureDueButRipeAncientFruitIsHarvestedAndStoredAfterAllTomatoes() {
+        Fixture f=new Fixture();f.tomatoes();f.profile.nextEligibleDay.put("harvest:Ancient",450L);
+        f.requireTomatoStoredBeforeAncient=true;f.start();f.run(200);
+        assertEquals(AutomationEngine.State.COMPLETE,f.engine.state(),f.engine.status());
+        assertEquals(List.of(TOMATO_FIRST,TOMATO_SECOND,CROP),f.harvested());
+        assertEquals(4,f.stored(TOMATO_STORE,ItemData.TOMATO));assertEquals(2,f.stored(STORE,FRUIT));
+        assertEquals(0,f.count(FRUIT));assertEquals(451L,f.profile.nextEligibleDay.get("harvest:Ancient"));
     }
     @Test void immatureCropDoesNotGetClickedAndItsLinkedExistingProduceCanStillBeStored() {
         Fixture f=new Fixture();f.blocks.put(CROP,new BlockData(CROP,FRUIT,Map.of("age","9")));f.inventory[1]=item(FRUIT,3,2);

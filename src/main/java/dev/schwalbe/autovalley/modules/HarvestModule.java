@@ -13,6 +13,7 @@ public final class HarvestModule implements AutomationModule {
     private final Map<Pos,Integer> primaryLanes = new HashMap<>();
     private final Set<String> harvestedThisPass = new HashSet<>();
     private final Set<String> completedFields = new HashSet<>();
+    private final LoadedAncientHarvestProbe loadedAncientProbe=new LoadedAncientHarvestProbe();
     private Farm observingFarm;
     private CropDefinition observingCrop;
     private final ModuleSupport.ObservationWindow observationWindow=new ModuleSupport.ObservationWindow();
@@ -101,6 +102,7 @@ public final class HarvestModule implements AutomationModule {
                 || observingCrop!=null && !observingCrop.equals(CropRules.definition(profile,observingFarm))))
             return fail(context,"수확 중 밭 또는 작물 정의가 바뀌었습니다. 등록 내용을 다시 확인하세요.");
         if (!active) {
+            if(observingFarm==null)loadedAncientProbe.refresh(context,cropScope);
             if (observingFarm==null) observingFarm=profile.farms.stream()
                 .filter(this::inCropScope)
                 .filter(f -> !completedFields.contains(farmKey(f)) && profile.nextEligibleDay.getOrDefault(farmKey(f),Long.MIN_VALUE)<=gameDay(world))
@@ -311,7 +313,8 @@ public final class HarvestModule implements AutomationModule {
         pending.clear();
         Set<Pos> seen = new HashSet<>();
         for (Farm farm : observingFarm==null ? List.<Farm>of() : List.of(observingFarm)) {
-            if (context.profile().nextEligibleDay.getOrDefault(farmKey(farm),Long.MIN_VALUE) > gameDay(context.world())) continue;
+            // An admitted pass must finish its full A-B rescan, even if an earlier
+            // confirmed click has already forecast the next cohort's date.
             if (farm.volume() > 32768) return "밭 하나의 등록 범위는 32768블록 이하여야 합니다.";
             int matureCount = 0;
             int minX = Math.min(farm.first().x(), farm.second().x()), maxX = Math.max(farm.first().x(), farm.second().x());
@@ -334,8 +337,9 @@ public final class HarvestModule implements AutomationModule {
                     }
                 }
             }
-            if (matureCount == 0) context.profile().nextEligibleDay.put(farmKey(farm),gameDay(context.world())
-                + (harvestedThisPass.contains(farmKey(farm)) ? CropRules.cycleDays(context.profile(),farm) : 1));
+            if (matureCount == 0) context.profile().nextEligibleDay.put(farmKey(farm),
+                AncientHarvestTiming.nextCheckDay(context.profile(),farm,context.world(),gameDay(context.world()),
+                    harvestedThisPass.contains(farmKey(farm))));
         }
         return null;
     }
@@ -416,7 +420,8 @@ public final class HarvestModule implements AutomationModule {
                     }
                 }
             }
-            if (!remaining) context.profile().nextEligibleDay.put(farmKey(farm),gameDay(context.world()) + CropRules.cycleDays(context.profile(),farm));
+            if (!remaining) context.profile().nextEligibleDay.put(farmKey(farm),
+                AncientHarvestTiming.nextCheckDay(context.profile(),farm,context.world(),gameDay(context.world()),true));
         }
     }
 

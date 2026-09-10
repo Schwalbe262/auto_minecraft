@@ -20,12 +20,50 @@ class GenericHarvestModuleTest {
         assertEquals(WorkResult.State.IDLE,fixture.result.state());
     }
 
-    @Test void ancientAgeSevenIsNotMatureAndAnUnripeFieldChecksAgainTomorrow() {
+    @Test void ancientAgeSevenForecastsThreeDaysButAnObservedMatureCropCanBecomeReadyEarlier() {
         Fixture fixture=new Fixture();fixture.day=5*24000L+5000;
         fixture.farm("ancient",ORIGIN,ORIGIN,CropRules.ANCIENT_FRUIT);fixture.crop(ORIGIN,CropRules.ANCIENT_FRUIT,7);
-        fixture.run();assertTrue(fixture.clicked().isEmpty());assertEquals(6L,fixture.profile.nextEligibleDay.get("harvest:ancient"));
+        fixture.run();assertTrue(fixture.clicked().isEmpty());assertEquals(8L,fixture.profile.nextEligibleDay.get("harvest:ancient"));
         fixture.day=6*24000L+5000;fixture.crop(ORIGIN,CropRules.ANCIENT_FRUIT,10);fixture.run();
         assertEquals(List.of(ORIGIN),fixture.clicked());assertEquals(16L,fixture.profile.nextEligibleDay.get("harvest:ancient"));
+    }
+
+    @Test void legacyFutureDateCannotHideLoadedRipeAncientFruitInsideAB() {
+        Fixture f=new Fixture();f.day=603*24000L+5000;
+        Pos second=ORIGIN.offset(1,0,0),outside=ORIGIN.offset(2,0,0);
+        f.farm("ancient",ORIGIN,second,CropRules.ANCIENT_FRUIT);
+        f.crop(ORIGIN,CropRules.ANCIENT_FRUIT,10);f.crop(second,CropRules.ANCIENT_FRUIT,2);
+        f.crop(outside,CropRules.ANCIENT_FRUIT,10);
+        f.profile.nextEligibleDay.put("harvest:ancient",611L);
+        f.profile.nextEligibleDay.put("wine-line:ancient_wine",605L);f.run();
+        assertEquals(List.of(ORIGIN),f.clicked());assertEquals(10,f.block(outside).number("age",-1));
+        assertEquals(611L,f.profile.nextEligibleDay.get("harvest:ancient"));
+        assertEquals(605L,f.profile.nextEligibleDay.get("wine-line:ancient_wine"));
+        assertEquals(10,CropRules.definition(f.profile,CropRules.ANCIENT_FRUIT).cycleDays());
+    }
+
+    @Test void mixedAncientCohortsScheduleTheEarliestRemainingGrowthInsteadOfAnotherFullCycle() {
+        Fixture f=new Fixture();f.day=601*24000L+5000;Pos second=ORIGIN.offset(1,0,0);
+        f.farm("ancient",ORIGIN,second,CropRules.ANCIENT_FRUIT);
+        f.crop(ORIGIN,CropRules.ANCIENT_FRUIT,10);f.crop(second,CropRules.ANCIENT_FRUIT,8);f.run();
+        assertEquals(List.of(ORIGIN),f.clicked());assertEquals(603L,f.profile.nextEligibleDay.get("harvest:ancient"));
+        f.day=603*24000L+5000;f.crop(ORIGIN,CropRules.ANCIENT_FRUIT,2);f.crop(second,CropRules.ANCIENT_FRUIT,10);f.run();
+        assertEquals(List.of(ORIGIN,second),f.clicked());assertEquals(611L,f.profile.nextEligibleDay.get("harvest:ancient"));
+    }
+
+    @Test void anEarlyAncientReadinessObservationNeverReplacesTheNativeAcknowledgement() {
+        Fixture f=new Fixture();f.farm("ancient",ORIGIN,ORIGIN,CropRules.ANCIENT_FRUIT);
+        f.crop(ORIGIN,CropRules.ANCIENT_FRUIT,10);f.profile.nextEligibleDay.put("harvest:ancient",10L);
+        assertEquals(WorkResult.State.BUSY,f.module.tick(f.context).state());assertTrue(f.busy());
+        f.now++;assertEquals(WorkResult.State.BUSY,f.module.tick(f.context).state());
+        assertEquals(1,f.clicked().size());assertEquals(0L,f.profile.nextEligibleDay.get("harvest:ancient"));
+        f.completeUse();f.run();assertEquals(10L,f.profile.nextEligibleDay.get("harvest:ancient"));
+    }
+
+    @Test void explicitTomatoCooldownStillAppliesEvenWhenItsCropIsMature() {
+        Fixture f=new Fixture();f.farm("tomato",ORIGIN,ORIGIN,CropRules.TOMATO);
+        f.crop(ORIGIN,CropRules.TOMATO,3);f.profile.nextEligibleDay.put("harvest:tomato",2L);f.run();
+        assertTrue(f.clicked().isEmpty());assertEquals(2L,f.profile.nextEligibleDay.get("harvest:tomato"));
     }
 
     @Test void ancientFruitReusesTheSameAreaCentersAndObservedCropAcknowledgements() {
