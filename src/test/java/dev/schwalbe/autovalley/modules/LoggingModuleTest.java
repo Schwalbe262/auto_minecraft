@@ -1532,6 +1532,96 @@ class LoggingModuleTest {
         }
     }
 
+    @Test void supportedRestorationRefreshKeepsOnePendingTicketUntilALateFullProvesCustody() {
+        for (LoggingHotbarLease.Stage stage:List.of(LoggingHotbarLease.Stage.PREPARED,LoggingHotbarLease.Stage.PARKED)) {
+            Fixture f=manuallyRestoredLeaseFixture(stage); LoggingHotbarLease lease=f.profile.loggingHotbarLease;
+            f.inventoryRefreshSupported=true;
+            assertEquals(WorkResult.State.BUSY,f.step().state());
+            Action.RefreshInventory refresh=assertInstanceOf(Action.RefreshInventory.class,f.pending);
+            long ticket=f.sequence;
+            for (int i=0;i<f.profile.interactionTimeoutTicks+1200;i++) {
+                f.ticks++; assertEquals(WorkResult.State.BUSY,f.step().state());
+            }
+            assertSame(refresh,f.pending); assertEquals(ticket,f.sequence);
+            assertEquals(ActionOutcome.State.PENDING,f.outcome.state());
+            assertSame(lease,f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+            assertEquals(List.of(refresh),f.actions); assertTrue(f.events.isEmpty()); assertEquals(0,f.swaps);
+
+            f.advance(); // The fixture now delivers the actual refreshed server inventory.
+            assertEquals(WorkResult.State.BUSY,f.step().state());
+            assertNull(f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+            assertTrue(f.profile.nextEligibleDay.isEmpty()); assertEquals(ticket,f.sequence);
+            assertEquals(List.of(refresh),f.actions); assertEquals(0,f.swaps);
+            assertEquals(List.of("refresh:confirmed","checkpoint:active"),f.events);
+            assertEquals(WorkResult.State.IDLE,f.finish().state());
+            assertEquals(List.of(refresh),f.actions); assertEquals(lease.original(),f.inventory[lease.hotbarSlot()]);
+        }
+    }
+
+    @Test void acknowledgedRefreshWithoutRestorationProofFailsClosedWithoutAnotherRefresh() {
+        Fixture f=manuallyRestoredLeaseFixture(LoggingHotbarLease.Stage.PREPARED);
+        LoggingHotbarLease lease=f.profile.loggingHotbarLease;
+        f.inventoryRefreshSupported=true; f.refreshProvesRestoration=false;
+        assertEquals(WorkResult.State.BUSY,f.step().state());
+        Action.RefreshInventory refresh=assertInstanceOf(Action.RefreshInventory.class,f.pending);
+        f.advance();
+        assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        for (int i=0;i<1200;i++) { f.ticks++; assertEquals(WorkResult.State.BLOCKED,f.step().state()); }
+        assertEquals(List.of(refresh),f.actions); assertEquals(0,f.swaps);
+        assertSame(lease,f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+        assertTrue(f.profile.nextEligibleDay.isEmpty()); assertEquals(List.of("refresh:confirmed"),f.events);
+    }
+
+    @Test void rejectedRefreshCannotResendOrReplaceTheUnfinishedLease() {
+        Fixture f=manuallyRestoredLeaseFixture(LoggingHotbarLease.Stage.PARKED);
+        LoggingHotbarLease lease=f.profile.loggingHotbarLease; f.inventoryRefreshSupported=true;
+        f.step(); Action.RefreshInventory refresh=assertInstanceOf(Action.RefreshInventory.class,f.pending);
+        f.reject("refresh unavailable");
+        assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertEquals(List.of(refresh),f.actions); assertSame(lease,f.profile.loggingHotbarLease);
+        assertTrue(f.events.isEmpty()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void refreshedInventoryWithAnUnrestoredOrReplacedLeaseCannotBecomeANewSwap() {
+        for (boolean replaceLease:new boolean[]{false,true}) {
+            Fixture f=manuallyRestoredLeaseFixture(LoggingHotbarLease.Stage.PREPARED);
+            LoggingHotbarLease originalLease=f.profile.loggingHotbarLease; f.inventoryRefreshSupported=true;
+            f.step(); Action.RefreshInventory refresh=assertInstanceOf(Action.RefreshInventory.class,f.pending);
+            f.advance();
+            if (replaceLease) f.profile.loggingHotbarLease=originalLease.withStage(LoggingHotbarLease.Stage.PARKED);
+            else {
+                f.inventory[originalLease.sourceIndex()]=f.inventory[originalLease.hotbarSlot()];
+                f.inventory[originalLease.hotbarSlot()]=ItemData.EMPTY;
+            }
+            LoggingHotbarLease retained=f.profile.loggingHotbarLease;
+            assertEquals(WorkResult.State.BLOCKED,f.step().state());
+            assertEquals(WorkResult.State.BLOCKED,f.step().state());
+            assertEquals(List.of(refresh),f.actions); assertEquals(0,f.swaps);
+            assertSame(retained,f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+            assertTrue(f.profile.nextEligibleDay.isEmpty()); assertEquals(List.of("refresh:confirmed"),f.events);
+        }
+    }
+
+    @Test void manualStopDuringRefreshDoesNotResumeWhenServerCustodyProofArrivesLater() {
+        Fixture f=manuallyRestoredLeaseFixture(LoggingHotbarLease.Stage.PREPARED);
+        LoggingHotbarLease lease=f.profile.loggingHotbarLease; f.inventoryRefreshSupported=true;
+        AutomationEngine engine=new AutomationEngine(List.of(f.module));
+        engine.startOnce(f.context,Feature.LOGGING); engine.tick(f.context);
+        Action.RefreshInventory refresh=assertInstanceOf(Action.RefreshInventory.class,f.pending);
+        long ticket=f.sequence;
+        engine.stop(f.context,AutomationEngine.State.PAUSED,"manual F8 OFF");
+        assertEquals(ActionOutcome.State.CANCELLED,f.outcome.state());
+        f.authoritativeRestoredLease=lease; // Late passive evidence never starts the engine.
+        for (int i=0;i<1200;i++) { f.ticks++; engine.tick(f.context); }
+
+        assertEquals(AutomationEngine.State.PAUSED,engine.state()); assertEquals("manual F8 OFF",engine.status());
+        assertEquals(ActionOutcome.State.CANCELLED,f.outcome.state()); assertEquals(ticket,f.sequence);
+        assertEquals(List.of(refresh),f.actions); assertNull(f.pending); assertEquals(0,f.swaps);
+        assertSame(lease,f.profile.loggingHotbarLease); assertTrue(f.profile.loggingRunActive);
+        assertTrue(f.events.isEmpty()); assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
     @Test void serverRestorationProofCannotOverrideChangedLiveOriginalFingerprintOrForeignSourceItem() {
         for (int changed=0;changed<3;changed++) {
             Fixture f=manuallyRestoredLeaseFixture(LoggingHotbarLease.Stage.PREPARED);
@@ -1770,6 +1860,7 @@ class LoggingModuleTest {
         final Map<Pos,Pos> leafAtStance=new HashMap<>();final List<Pos> leafStanceVisits=new ArrayList<>();
         boolean grounded=true,forcedNativeBusy; String nativeFence; ItemData cursor=ItemData.EMPTY;
         LoggingHotbarLease authoritativeRestoredLease;
+        boolean inventoryRefreshSupported,refreshProvesRestoration=true;
         final Set<Pos> loggingTargets=new HashSet<>(); int loggingMoves;
         final Map<Pos,Integer> nativeChops=new HashMap<>(); int strokesPerTree=2;
         long ticks,day=10,sequence; int selected=4,moves,chops,plants,trashed,crafted,craftCalls,swaps,saplingDrops=8;
@@ -1818,6 +1909,9 @@ class LoggingModuleTest {
                 assertNotEquals(profile.hoeHotbarSlot,swap.hotbarSlot()); assertNotEquals(profile.loggingAxeHotbarSlot,swap.hotbarSlot());
                 ItemData old=inventory[swap.hotbarSlot()]; inventory[swap.hotbarSlot()]=inventory[swap.inventoryIndex()]; inventory[swap.inventoryIndex()]=old;
                 events.add("swap:"+(++swaps));
+            } else if(action instanceof Action.RefreshInventory) {
+                if (refreshProvesRestoration) authoritativeRestoredLease=profile.loggingHotbarLease;
+                events.add("refresh:confirmed");
             } else if(action instanceof Action.ClearLoggingLeaf leaf) {
                 assertEquals(2,selected);assertEquals(LoggingRules.AXE,inventory[selected].id());
                 assertEquals(leaf.pos(),nextLeaf(leaf.stump()));assertEquals(LoggingLeafRules.LEAVES,id(leaf.pos()));
@@ -1962,6 +2056,9 @@ class LoggingModuleTest {
         public String pauseReason() { return nativeFence; }
         public boolean loggingHotbarRestored(LoggingHotbarLease lease) {
             return authoritativeRestoredLease!=null ? authoritativeRestoredLease.equals(lease) : ActionPort.super.loggingHotbarRestored(lease);
+        }
+        public boolean supportsInventoryRefresh() {
+            return inventoryRefreshSupported || ActionPort.super.supportsInventoryRefresh();
         }
         public boolean supportsInventoryTrash() { return true; }
         public long submit(Action action) { assertNull(pending); actions.add(action); pending=action; outcome=new ActionOutcome(ActionOutcome.State.PENDING,""); return ++sequence; }

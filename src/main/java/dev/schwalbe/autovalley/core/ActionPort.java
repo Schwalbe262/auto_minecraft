@@ -20,6 +20,8 @@ public interface ActionPort {
      * This settles only the borrowed slot, never an old action outcome or permission to restart.
      */
     default boolean loggingHotbarRestored(LoggingHotbarLease lease) { return false; }
+    /** Requires a verified non-mutating normal-inventory request and a real server FULL reply. */
+    default boolean supportsInventoryRefresh() { return false; }
     /** Informational bounded same-ticket recovery; null does not clear any action fence. */
     default String recoveryStatus() { return null; }
     /** Target-scoped unconfirmed artisan use; does not stop unrelated automation. */

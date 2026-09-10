@@ -4,6 +4,8 @@ public sealed interface Action {
     record UseBlock(Pos pos, Use purpose) implements Action { }
     record SelectHotbar(int slot) implements Action { }
     record SwapHotbar(int inventoryIndex, int hotbarSlot) implements Action { }
+    /** One non-mutating native inventory synchronization request for logging custody recovery. */
+    record RefreshInventory() implements Action { }
     /** Cursor-free, owned-inventory-only native stack consolidation. */
     record ConsolidateInventory(ProductionMergePlanner.Plan plan, boolean optionalOutput) implements Action {
         public ConsolidateInventory(ProductionMergePlanner.Plan plan) { this(plan,false); }

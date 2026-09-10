@@ -52,6 +52,7 @@ public final class MinecraftActions implements ActionPort {
     private NativeLoggingActions loggingAction,lateLoggingAction;
     private NativeLoggingRecipe loggingRecipe,lateLoggingRecipe;
     private NativeLoggingSwap loggingSwap,lateLoggingSwap;
+    private NativeInventoryRefresh inventoryRefresh;
     private long lastHotbarSwapGeneration=-1,lastHotbarSwapSequence=-1;
     private String loggingFailure;
     private long loggingFailureGeneration;
@@ -63,6 +64,7 @@ public final class MinecraftActions implements ActionPort {
             // an explicit OFF never restarts just because its late reply arrived.
             if (loggingSwap!=null) loggingSwap.confirmed(observations);
             if (lateLoggingSwap!=null) lateLoggingSwap.confirmed(observations);
+            if (inventoryRefresh!=null) inventoryRefresh.confirmed(observations);
         });
     }
     public void context(Context context) { this.context=context; }
@@ -74,7 +76,7 @@ public final class MinecraftActions implements ActionPort {
             && consolidation==null && !consolidationInFlight && consolidationRecovery==null
             && lateInventoryReply==null && !lateInventoryReplyInFlight && consolidationFailure==null
             && trash==null && !trashInFlight && lateTrashReply==null && trashFailure==null
-            && loggingAction==null && loggingRecipe==null && loggingSwap==null
+            && loggingAction==null && loggingRecipe==null && loggingSwap==null && inventoryRefresh==null
             && lateLoggingAction==null && lateLoggingRecipe==null && lateLoggingSwap==null && loggingFailure==null
             && artisanAttempt==null && wineFeedAttempt==null && artisanAttempts.size()==0;
     }
@@ -83,6 +85,7 @@ public final class MinecraftActions implements ActionPort {
             ? "이 가공 기계의 이전 서버 응답이 아직 불확실합니다. 재클릭하지 않고 다른 작업을 진행합니다." : null;
     }
     @Override public boolean supportsMovingHarvest() { return true; }
+    @Override public boolean supportsInventoryRefresh() { return true; }
     @Override public boolean supportsInventoryTrash() { return NativeTrashSlot.available(); }
     @Override public String inventoryTrashRejection() { return NativeTrashSlot.preflightRejection(); }
     /** A manual slot/key event invalidates older custody views, without changing a ticket or lease. */
@@ -125,6 +128,8 @@ public final class MinecraftActions implements ActionPort {
         } catch (java.security.NoSuchAlgorithmException unavailable) { return null; }
     }
     @Override public String recoveryStatus() {
+        if (inventoryRefresh!=null && pending instanceof Action.RefreshInventory)
+            return "단축바 복원 확인용 인벤토리 동기화 중 — 아이템 이동 없이 서버 응답을 기다립니다";
         if (loggingSwap!=null && pending instanceof Action.SwapHotbar && context!=null
             && world.tick()-started>=context.profile().interactionTimeoutTicks)
             return "단축바 교환 서버 확인 대기 ("+Math.max(0,(world.tick()-started)/20)
@@ -239,6 +244,9 @@ public final class MinecraftActions implements ActionPort {
             var result=mc.gameMode.useItemOn(mc.player,InteractionHand.MAIN_HAND,hit);
             if (result.consumesAction()) mc.player.swing(InteractionHand.MAIN_HAND);
             // PASS does not trigger useItem(): eating/air-use is never a fallback.
+        } else if (action instanceof Action.RefreshInventory) {
+            inventoryRefresh=new NativeInventoryRefresh(observations);
+            inventoryRefresh.send(mc);
         } else if (action instanceof Action.SelectHotbar select) {
             mc.player.getInventory().selected=select.slot();
         } else if (action instanceof Action.SwapHotbar swap) {
@@ -298,6 +306,13 @@ public final class MinecraftActions implements ActionPort {
         if (!enabled || mc.player==null || (!context.profile().allowBackground && !mc.isWindowActive())) { cancel(); return; }
         if (world.tick()==started) return;
         MenuData menu=world.menu();
+        if (inventoryRefresh!=null) {
+            if (inventoryRefresh.generation!=observations.generation() || mc.player.containerMenu!=mc.player.inventoryMenu)
+                finish(ActionOutcome.State.FAILED,"인벤토리 동기화 중 접속 또는 메뉴가 변경됐습니다.");
+            else if (inventoryRefresh.confirmed(observations))
+                finish(ActionOutcome.State.SUCCEEDED,"아이템 이동 없이 서버 인벤토리를 다시 확인했습니다.");
+            stopMovement();return;
+        }
         if (pending instanceof Action.ConsolidateInventory) { tickConsolidation(); return; }
         if (pending instanceof Action.TrashRotten || pending instanceof Action.TrashLogging) { tickTrash(); return; }
         if (loggingAction!=null) { tickLogging(); return; }
@@ -764,6 +779,7 @@ public final class MinecraftActions implements ActionPort {
     }
     public ActionOutcome outcome(long ticket) { return outcomes.getOrDefault(ticket,new ActionOutcome(ActionOutcome.State.CANCELLED,"Expired action")); }
     private void finishLogging(ActionOutcome.State state,String message) {
+        inventoryRefresh=null; // A no-op refresh creates no item-mutation debt on cancellation.
         if (loggingAction==null && loggingRecipe==null && loggingSwap==null) return;
         if (state!=ActionOutcome.State.SUCCEEDED) {
             if (loggingAction!=null) {

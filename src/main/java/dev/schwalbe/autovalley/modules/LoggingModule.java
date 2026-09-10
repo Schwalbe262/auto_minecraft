@@ -12,9 +12,11 @@ public final class LoggingModule implements AutomationModule {
     private static final int CLEANUP_QUIET_TICKS=20,CLEANUP_QUIET_TIMEOUT=400;
     private static final int MINING_QUIET_TICKS=2,MINING_QUIET_TIMEOUT=100;
     private enum Stage { START, PLOT, CHOP, LEAF_SEARCH, LEAF_APPROACH, SETTLE, PLANT, WASTE, PARTIAL_CLEANUP, RESTORE, CRAFT_OPEN, CRAFT, CRAFT_CLOSE, WOOD, BERRIES, FINISH }
-    private enum Pending { SELECT, SWAP, BORROW, RESTORE, CHOP, LEAF, PLANT, TRASH, OPEN, CRAFT, CLOSE }
+    private enum Pending { SELECT, SWAP, BORROW, RESTORE, REFRESH, CHOP, LEAF, PLANT, TRASH, OPEN, CRAFT, CLOSE }
     private Stage stage=Stage.START;
     private boolean restoreBeforePlot;
+    private boolean restorationRefreshRequested;
+    private LoggingHotbarLease restorationRefreshLease;
     private record PartialCleanup(Profile profile,List<LoggingPlot> plots,List<Pos> remaining,List<Pos> replanting,Long due) { }
     private PartialCleanup partialCleanup;
     private Pending pending;
@@ -100,6 +102,11 @@ public final class LoggingModule implements AutomationModule {
                     stage=restoreBeforePlot ? Stage.PLOT : nextAfterWaste(c);
                     if (restoreBeforePlot) clearCleanupQuiet();
                     restoreBeforePlot=false;
+                } else if (completed==Pending.REFRESH) {
+                    LoggingHotbarLease lease=c.profile().loggingHotbarLease;
+                    if (lease==null || lease!=restorationRefreshLease || !restored(c,lease)
+                        || !c.actions().loggingHotbarRestored(lease))
+                        return fail("서버 인벤토리를 다시 받았지만 원래 단축바 아이템의 복원이 확인되지 않았습니다.");
                 } else if (completed==Pending.OPEN) {
                     if (!c.world().menu().container() || !c.world().loggingCraftingMenu()
                         || !c.world().loggingCraftingGridEmpty() || !c.world().menu().carried().empty())
@@ -132,6 +139,17 @@ public final class LoggingModule implements AutomationModule {
                     return once(c) ? fail("벌목할 2x2 식재 구역을 먼저 등록하세요.") : WorkResult.idle();
                 if (c.profile().loggingRunActive) {
                     validateRemaining(c);
+                    LoggingHotbarLease lease=c.profile().loggingHotbarLease;
+                    if (lease!=null && lease.stage()!=LoggingHotbarLease.Stage.RESTORING && restored(c,lease)
+                        && !c.actions().loggingHotbarRestored(lease) && c.actions().supportsInventoryRefresh()
+                        && !restorationRefreshRequested) {
+                        // A missing FULL may follow observer installation/reconnect.
+                        // Request it once; the existing ticket wait owns all later ticks.
+                        restorationRefreshRequested=true;
+                        restorationRefreshLease=lease;
+                        submit(c,new Action.RefreshInventory(),Pending.REFRESH);
+                        return busy("단축바 복원 상태의 서버 인벤토리 확인 요청");
+                    }
                     recoverLease(c);
                     stage=Stage.PLOT;
                     return busy("미완료 벌목·재식재 이어하기");
@@ -938,7 +956,8 @@ public final class LoggingModule implements AutomationModule {
     private static WorkResult busy(String text) { return WorkResult.busy("벌목: "+text); }
     private WorkResult fail(String text) { failure=text; return WorkResult.blocked(text); }
     @Override public void reset() {
-        stage=Stage.START; restoreBeforePlot=false; partialCleanup=null; pending=null; ticket=-1; actionPos=null; plot=null; table=null; craftingMenu=-1;
+        stage=Stage.START; restoreBeforePlot=false; restorationRefreshRequested=false; partialCleanup=null; pending=null; ticket=-1; actionPos=null; plot=null; table=null; craftingMenu=-1;
+        restorationRefreshLease=null;
         // Scheduler resets must not turn the bounded ALL_GROWN readiness poll into
         // a per-tick scan. Explicit one-shot and durable active resumes bypass it.
         chopStrokes=trashOperations=craftOperations=0; settleUntil=0; saplingWaitUntil=-1; saplingWaitRequired=0; failure=null;

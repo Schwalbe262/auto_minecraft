@@ -75,6 +75,10 @@ public final class SafetyPolicy {
                 ? "Only the registered logging recipe/table may craft fire logs" : null;
         if (action instanceof Action.SelectHotbar select)
             return select.slot()<0 || select.slot()>8 ? "Invalid hotbar slot" : null;
+        if (action instanceof Action.RefreshInventory)
+            return !LoggingRules.allowed(context) || !profile.loggingRunActive || profile.loggingHotbarLease==null
+                || menu.container() || menu.id()!=0 || !context.actions().supportsInventoryRefresh()
+                ? "Inventory refresh is limited to the pending logging hotbar restoration" : null;
         if (action instanceof Action.SwapHotbar swap)
             return menu.container() || swap.inventoryIndex()<0 || swap.inventoryIndex()>35 || swap.hotbarSlot()<0 || swap.hotbarSlot()>8
                 ? "Invalid inventory swap" : null;

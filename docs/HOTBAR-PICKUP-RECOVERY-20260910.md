@@ -65,3 +65,29 @@ Final combined `test build`: **2,094 tests / 154 suites**, zero failures/errors/
 
 Artifact SHA-256:
 `7841D85E6DB1CEFCC7298DDB87026881A6A86F0FAC428D8AFB244020A59E50EF`.
+
+## Live-discovered bootstrap gap
+
+The first deployment reconnected, but the next continuous run correctly refused
+custody settlement: a native inspection found zero retained FULL inventory
+packets after observer installation. Live fingerprints matched, but that alone
+was not promoted to server proof. This is an additional bootstrap gap, not a
+successful live recovery.
+
+Added a single logging-restoration `RefreshInventory` request. The inspected
+Minecraft 1.20.1 / Forge 47.4 handler accepts PICKUP slot `-1` and returns before
+slot/item access (distinct from the `-999` drop branch); a mismatched state ID
+then produces the ordinary server FULL response. Relevant installed inventory
+hooks were also inspected. There is no client inventory prediction or item click
+replay. Refresh capability defaults to false for unknown adapters.
+
+The native adapter requires the ordinary closed 46-slot inventory and empty
+cursor. It owns the same pending ticket until a newer same-generation raw FULL
+arrives, even when the inventory did not change. The module requests at most one
+refresh per recovery attempt and must then verify the same lease and exact
+restored custody. Missing proof, changed/replaced custody or rejection cannot
+loop into another request or inverse swap; manual OFF still revokes continuation.
+
+Combined verification: **2,101 tests / 155 suites**, zero failures/errors/skips.
+Final artifact SHA-256:
+`5E7002F0325024C638742661BDE8AFCE57E3EC35EFF34100A126B9DDC8800044`.
