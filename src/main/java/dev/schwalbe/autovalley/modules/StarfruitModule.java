@@ -27,6 +27,8 @@ public final class StarfruitModule implements AutomationModule {
     private boolean lateCleanup;
     private int fruitBefore;
     private CommodityStorageModule storage;
+    private final HotbarWorkspace workspace=new HotbarWorkspace(Feature.STARFRUIT);
+    private WorkResult afterRestore;
     private static final int SKIP_TICKS=1200,MAX_SKIPPED_TARGETS=4096;
     private record SkippedFruit(FruitPatch patch,CommodityStore store,long day,long tick) { }
     private final Map<Pos,SkippedFruit> skippedTargets=new LinkedHashMap<>();
@@ -36,6 +38,33 @@ public final class StarfruitModule implements AutomationModule {
     @Override public int priority() { return 80; }
 
     @Override public WorkResult tick(Context c) {
+        if(c.profile().workHotbarLease!=null && !workspace.owns(c))
+            return WorkResult.blocked("다른 작업의 임시 단축바 복원이 먼저 필요합니다");
+        if(workspace.owns(c) && c.session().workHotbarOwner!=feature()) {
+            WorkResult recovered=workspace.restore(c);
+            return recovered==null ? WorkResult.busy("이전 단축바 복원 완료 — 과수원 상태 재확인") : recovered;
+        }
+        WorkResult pendingWorkspace=workspace.pending(c);
+        if(pendingWorkspace!=null)return pendingWorkspace;
+        if(afterRestore!=null) {
+            WorkResult restoring=workspace.restore(c);
+            if(restoring!=null)return restoring;
+            WorkResult result=afterRestore;afterRestore=null;releaseWorkspaceOwner(c);return result;
+        }
+        WorkResult result=advance(c);
+        if(result.state()!=WorkResult.State.BUSY && workspace.owns(c)) {
+            afterRestore=result;
+            WorkResult restoring=workspace.restore(c);
+            if(restoring!=null)return restoring;
+            afterRestore=null;
+        }
+        releaseWorkspaceOwner(c);
+        return result;
+    }
+    private void releaseWorkspaceOwner(Context c) {
+        if(!workspace.owns(c) && c.session().workHotbarOwner==feature())c.session().workHotbarOwner=null;
+    }
+    private WorkResult advance(Context c) {
         if (stage==Stage.FIND) {
             // This module only receives scheduler boundaries. Even a direct caller
             // cannot make it touch an unrelated in-flight action or open menu.
@@ -68,7 +97,7 @@ public final class StarfruitModule implements AutomationModule {
                         .toList();
                     runStarted=true;patchIndex=0;
                 }
-                if (patchIndex>=scheduledPatches.size()) { reset();return WorkResult.idle(); }
+                if (patchIndex>=scheduledPatches.size()) { resetJob();return WorkResult.idle(); }
                 patch=scheduledPatches.get(patchIndex++);
                 if (!c.profile().fruitPatches.contains(patch) || !validStore(c,patch))
                     return fail(c,"과수원 구역 또는 저장고 등록이 바뀌었습니다");
@@ -109,7 +138,7 @@ public final class StarfruitModule implements AutomationModule {
         if (stage==Stage.STORE) {
             WorkResult result=storage.tick(c);
             if (result.state()==WorkResult.State.BUSY) return result;
-            if (result.state()!=WorkResult.State.IDLE) { reset();return result; }
+            if (result.state()!=WorkResult.State.IDLE) { resetJob();return result; }
             if (lateCleanup) {
                 storage=null;lateCleanup=false;stage=Stage.FIND;target=null;patch=null;passStore=null;
                 return WorkResult.busy("보유 과일 보관 완료 — 과수원 순회 확인");
@@ -146,7 +175,10 @@ public final class StarfruitModule implements AutomationModule {
                 if (!targetMature(c)) return inspected(c);
                 if (!hasPickupRoom(c)) return skip(c);
                 int hotbar=safeHotbar(c);
-                if (hotbar<0) return skip(c);
+                if (hotbar<0) {
+                    c.session().workHotbarOwner=feature();
+                    return workspace.prepare(c);
+                }
                 if (c.world().player().selectedSlot()!=hotbar) {
                     submit(c,new Action.SelectHotbar(hotbar),Pending.SELECT);break;
                 }
@@ -204,7 +236,7 @@ public final class StarfruitModule implements AutomationModule {
         });
         Pos next=remainingFruit.stream().min(Comparator.comparingDouble(pos -> c.world().player().distance(pos))).orElse(null);
         if (next==null) return false;
-        if (safeHotbar(c)<0 || !hasPickupRoom(c)) { passIncomplete=true;return false; }
+        if (safeHotbar(c)<0 && !workspace.canPrepare(c) || !hasPickupRoom(c)) { passIncomplete=true;return false; }
         remainingFruit.remove(next);target=next;
         approachSince=c.world().tick();stage=Stage.APPROACH;
         return true;
@@ -216,7 +248,7 @@ public final class StarfruitModule implements AutomationModule {
         stage=Stage.STORE;
         WorkResult result=storage.tick(c);
         if (result.state()==WorkResult.State.IDLE) return completePatch(c);
-        if (result.state()!=WorkResult.State.BUSY) reset();
+        if (result.state()!=WorkResult.State.BUSY) resetJob();
         return result;
     }
     private WorkResult completePatch(Context c) {
@@ -238,7 +270,7 @@ public final class StarfruitModule implements AutomationModule {
             skippedPatches.put(patch.id(),new SkippedFruit(patch,passStore,
                 Math.floorDiv(c.world().dayTime(),24000L),c.world().tick()));
         }
-        if (patchIndex>=scheduledPatches.size()) { reset();return WorkResult.idle(); }
+        if (patchIndex>=scheduledPatches.size()) { resetJob();return WorkResult.idle(); }
         storage=null;stage=Stage.FIND;target=null;patch=null;passStore=null;passPicked=false;
         return WorkResult.busy("과수원 구역 확인·보관 완료 — 다음 등록 구역 확인");
     }
@@ -316,14 +348,17 @@ public final class StarfruitModule implements AutomationModule {
         if (chooseNextFruit(c)) return WorkResult.busy("접근할 수 없는 열매를 건너뛰고 같은 과수원 구역 확인");
         return finishPatch(c);
     }
-    private WorkResult fail(Context c,String message) { c.actions().stopMovement();c.navigation().reset();reset();return WorkResult.blocked(message); }
+    private WorkResult fail(Context c,String message) { c.actions().stopMovement();c.navigation().reset();resetJob();return WorkResult.blocked(message); }
     @Override public void reset() {
+        workspace.reset();afterRestore=null;resetJob();
+    }
+    private void resetJob() {
         if (storage!=null) storage.reset();
         stage=Stage.FIND;pending=null;ticket=-1;target=null;patch=null;storage=null;lateCleanup=false;
         remainingFruit.clear();passStore=null;passPicked=false;passDay=Long.MIN_VALUE;passIncomplete=false;
         scheduledPatches=List.of();patchIndex=0;runStarted=false;
         // Confirmed same-day evidence and its destination survive scheduler/one-shot
-        // reset. A late arrival is stored only when actually in inventory; no action,
-        // borrowed inventory, debt, expected count, or persisted completion is retained.
+        // reset. A late arrival is stored only when actually in inventory. Durable
+        // work-slot custody is separate and is never forgotten by job cleanup.
     }
 }

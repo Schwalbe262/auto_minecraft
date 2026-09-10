@@ -381,7 +381,7 @@ class StarfruitModuleTest {
         assertEquals(4,f.stored);assertEquals(1,f.clicked().size());
     }
 
-    @Test void filledOrUnknownHotbarNeverBorrowsAnItem() {
+    @Test void filledOrUnknownHotbarWithoutNativeFingerprintNeverBorrowsAnItem() {
         for (boolean missing:List.of(false,true)) {
             Fixture f=new Fixture();
             if (missing) f.inventory.removeIf(s -> s.inventoryIndex()<9);
@@ -390,8 +390,99 @@ class StarfruitModuleTest {
         }
     }
 
+    @Test void fullHotbarWithNativeProofParksOneOriginalThenRestoresItAfterFruitStorage() {
+        Fixture f=new Fixture();f.fullHotbar();List<ItemData> before=f.hotbar();
+        f.untilAction(Action.SwapHotbar.class);
+        HotbarLease lease=f.profile.workHotbarLease;assertNotNull(lease);
+        assertEquals(Feature.STARFRUIT,lease.owner());assertEquals(HotbarLease.Stage.PREPARED,lease.stage());
+        assertNotEquals(f.profile.hoeHotbarSlot,lease.hotbarSlot());assertNotEquals(f.profile.loggingAxeHotbarSlot,lease.hotbarSlot());
+        assertEquals(before,f.hotbar());assertTrue(f.clicked().isEmpty());
+        int actions=f.submitted.size();
+        for(int i=0;i<8;i++)assertEquals(WorkResult.State.BUSY,f.step().state());
+        assertEquals(actions,f.submitted.size());assertTrue(f.clicked().isEmpty());
+        f.complete(true);f.run();
+        assertEquals(before,f.hotbar());assertEquals(1,f.stored);assertEquals(List.of(FRUIT),f.clicked());
+        assertNull(f.profile.workHotbarLease);assertNull(f.context.session().workHotbarOwner);
+        assertEquals(List.of(new Action.SwapHotbar(lease.sourceIndex(),lease.hotbarSlot()),
+            new Action.SwapHotbar(lease.sourceIndex(),lease.hotbarSlot())),f.swaps());
+        assertEquals(1L,f.profile.nextEligibleDay.get("orchard:nearby"));assertFalse(f.open);
+    }
+
+    @Test void completionCannotReleaseTheWorkspaceBeforeItsRestorationReply() {
+        Fixture f=new Fixture();f.fullHotbar();List<ItemData> before=f.hotbar();f.untilWorkspaceRestore();
+        HotbarLease lease=f.profile.workHotbarLease;assertEquals(HotbarLease.Stage.RESTORING,lease.stage());
+        assertEquals(1,f.stored);assertEquals(2,f.swaps().size());int actions=f.submitted.size();
+        for(int i=0;i<8;i++) {
+            assertEquals(WorkResult.State.BUSY,f.step().state());assertSame(lease,f.profile.workHotbarLease);
+            assertEquals(Feature.STARFRUIT,f.context.session().workHotbarOwner);
+        }
+        assertEquals(actions,f.submitted.size());assertEquals(lease.original(),f.inventory.get(lease.sourceIndex()).item());
+        f.complete(true);assertEquals(WorkResult.State.IDLE,f.step().state());
+        assertNull(f.profile.workHotbarLease);assertNull(f.context.session().workHotbarOwner);assertEquals(before,f.hotbar());
+    }
+
+    @Test void actualFruitPickupIntoTheBorrowedHandCanStillBeStoredAndRestored() {
+        Fixture f=new Fixture();f.fullHotbar();f.pickupIntoWorkHand=true;List<ItemData> before=f.hotbar();
+        f.run();assertEquals(1,f.stored);assertEquals(before,f.hotbar());
+        assertNull(f.profile.workHotbarLease);assertEquals(2,f.swaps().size());
+        assertEquals(List.of(FRUIT),f.clicked());assertEquals(1L,f.profile.nextEligibleDay.get("orchard:nearby"));
+    }
+
+    @Test void failedParkingRetainsPreparedCustodyAndNeverClicksTheFruitOrResendsTheSwap() {
+        Fixture f=new Fixture();f.fullHotbar();List<ItemData> before=f.hotbar();f.untilAction(Action.SwapHotbar.class);
+        HotbarLease lease=f.profile.workHotbarLease;f.complete(false);
+        for(int i=0;i<5;i++)assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertSame(lease,f.profile.workHotbarLease);assertEquals(HotbarLease.Stage.PREPARED,lease.stage());
+        assertEquals(before,f.hotbar());assertEquals(1,f.swaps().size());assertTrue(f.clicked().isEmpty());
+        assertTrue(f.profile.nextEligibleDay.isEmpty());f.module.reset();assertSame(lease,f.profile.workHotbarLease);
+    }
+
+    @Test void failedRestorationKeepsItsDurableRecordAcrossModuleResetWithoutInverseReplay() {
+        Fixture f=new Fixture();f.fullHotbar();f.untilWorkspaceRestore();HotbarLease lease=f.profile.workHotbarLease;
+        f.complete(false);int actions=f.submitted.size();
+        for(int i=0;i<5;i++)assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertSame(lease,f.profile.workHotbarLease);assertEquals(HotbarLease.Stage.RESTORING,lease.stage());
+        assertEquals(lease.original(),f.inventory.get(lease.sourceIndex()).item());assertEquals(actions,f.submitted.size());
+        f.module.reset();assertSame(lease,f.profile.workHotbarLease);assertEquals(actions,f.submitted.size());
+    }
+
+    @Test void aDayChangeAfterParkingRestoresTheOriginalWithoutHarvestingOrAdvancingTheOldDay() {
+        Fixture f=new Fixture();f.fullHotbar();List<ItemData> before=f.hotbar();f.untilAction(Action.SwapHotbar.class);
+        f.complete(true);f.day+=24000;f.run();
+        assertTrue(f.clicked().isEmpty());assertTrue(f.profile.nextEligibleDay.isEmpty());
+        assertEquals(before,f.hotbar());assertNull(f.profile.workHotbarLease);assertEquals(2,f.swaps().size());
+    }
+
+    @Test void aRemovedPatchAfterParkingRestoresFirstThenReturnsTheOriginalBlockedResult() {
+        Fixture f=new Fixture();f.fullHotbar();List<ItemData> before=f.hotbar();f.untilAction(Action.SwapHotbar.class);
+        f.complete(true);f.profile.fruitPatches=List.of();f.runUntilTerminal();
+        assertEquals(WorkResult.State.BLOCKED,f.result.state());assertTrue(f.clicked().isEmpty());
+        assertEquals(before,f.hotbar());assertNull(f.profile.workHotbarLease);assertEquals(2,f.swaps().size());
+        assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void anotherOwnersDurableWorkspaceCannotBeAdoptedByTheOrchard() {
+        Fixture f=new Fixture();f.fullHotbar();
+        HotbarLease lease=new HotbarLease(Feature.SEED_MAKER,9,2,f.food,"a".repeat(64));
+        f.profile.workHotbarLease=lease;f.context.session().workHotbarOwner=Feature.SEED_MAKER;
+        assertEquals(WorkResult.State.BLOCKED,f.step().state());
+        assertSame(lease,f.profile.workHotbarLease);assertEquals(Feature.SEED_MAKER,f.context.session().workHotbarOwner);
+        assertTrue(f.submitted.isEmpty());assertTrue(f.travel.isEmpty());assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void aParkedWorkspaceWithoutLiveOwnerRestoresBeforeResumingFruitWork() {
+        Fixture f=new Fixture();f.fullHotbar();f.untilAction(Action.SwapHotbar.class);f.complete(true);
+        f.untilAction(Action.SelectHotbar.class);f.complete(true);HotbarLease parked=f.profile.workHotbarLease;
+        assertEquals(HotbarLease.Stage.PARKED,parked.stage());
+        f.module.reset();f.context.session().workHotbarOwner=null;int actions=f.submitted.size();
+        assertEquals(WorkResult.State.BUSY,f.step().state());
+        assertEquals(actions+1,f.submitted.size());assertTrue(f.submitted.get(actions) instanceof Action.SwapHotbar);
+        assertEquals(HotbarLease.Stage.RESTORING,f.profile.workHotbarLease.stage());
+        assertTrue(f.clicked().isEmpty());assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
     @Test void fullInventoryDoesNotTurnTheOrchardHarvestIntoUncollectedOutput() {
-        Fixture f=new Fixture();for (int index=0;index<36;index++) f.put(index,f.food);
+        Fixture f=new Fixture();f.fingerprints=true;for (int index=0;index<36;index++) f.put(index,f.food);
         f.selected=2;f.put(2,f.product(63));
         f.run();assertTrue(f.submitted.isEmpty());assertTrue(f.profile.nextEligibleDay.isEmpty());
     }
@@ -730,9 +821,11 @@ class StarfruitModuleTest {
         final List<ItemSlot> inventory=new ArrayList<>();final List<Action> submitted=new ArrayList<>();
         final List<Integer> fruitUsesAtStoreOpen=new ArrayList<>();
         final Map<Long,ActionOutcome> outcomes=new HashMap<>();
+        final Map<Integer,ItemData> serverInventory=new HashMap<>();
         final ItemData tool=new ItemData("minecraft:iron_hoe",1,0,null,true,100),food=new ItemData("farmersdelight:fruit_salad",57,0,null,false,0);
         long now,day=5000,current,navigationTicket=-1;int selected,stored,stops,resets,scans,sleepUses;
         double x=.5;boolean open,externalBusy,changeAge=true,deliver=true,travelYield,sleeping,followArrivals,doorOnNextMove;
+        boolean fingerprints,workCustodyEvidence,pickupIntoWorkHand;
         ItemData cursor=ItemData.EMPTY;String actionFence;
         Navigation.Result navigationResult=Navigation.Result.ARRIVED;
         WorkResult result=WorkResult.busy("initial");
@@ -747,6 +840,9 @@ class StarfruitModuleTest {
         void fruit(Pos pos,int age){blocks.put(pos,new BlockData(pos,FruitRules.BLOCK,Map.of("age",String.valueOf(age))));}
         ItemData product(int count){return new ItemData(FruitRules.ITEM,count,0,null,false,0);}
         void put(int index,ItemData item){inventory.set(index,new ItemSlot(index,index,true,item));}
+        void fullHotbar(){fingerprints=true;for(int index=1;index<9;index++)put(index,food);}
+        List<ItemData> hotbar(){return inventory.stream().filter(s->s.inventoryIndex()<9).map(ItemSlot::item).toList();}
+        List<Action.SwapHotbar> swaps(){return submitted.stream().filter(Action.SwapHotbar.class::isInstance).map(Action.SwapHotbar.class::cast).toList();}
         List<Pos> clicked(){return submitted.stream().filter(a->a instanceof Action.UseBlock use&&use.purpose()==Action.Use.FRUIT).map(a->((Action.UseBlock)a).pos()).toList();}
         long storeOpens(){return submitted.stream().filter(a->a instanceof Action.UseBlock use&&use.purpose()==Action.Use.OPEN_CONTAINER).count();}
         WorkResult step(){result=module.tick(context);now++;return result;}
@@ -763,12 +859,38 @@ class StarfruitModuleTest {
             }
             fail("Expected "+type.getSimpleName());
         }
+        void untilWorkspaceRestore(){
+            for(int tick=0;tick<200;tick++) {
+                step();assertEquals(WorkResult.State.BUSY,result.state(),result.message());
+                if(busy()) {
+                    if(submitted.get(submitted.size()-1) instanceof Action.SwapHotbar
+                        && profile.workHotbarLease.stage()==HotbarLease.Stage.RESTORING)return;
+                    complete(true);
+                }
+            }
+            fail("Expected the exact workspace restoration swap");
+        }
+        void deliverFruit(){
+            if(pickupIntoWorkHand && profile.workHotbarLease!=null) {
+                int index=profile.workHotbarLease.hotbarSlot();ItemData item=inventory.get(index).item();
+                assertTrue(item.empty()||item.is(FruitRules.ITEM));put(index,product(item.count()+1));return;
+            }
+            for(int offset=0;offset<36;offset++) {
+                int index=(9+offset)%36;ItemData item=inventory.get(index).item();
+                if(item.empty() || item.is(FruitRules.ITEM) && item.count()<64) {put(index,product(item.count()+1));return;}
+            }
+            fail("The detached pickup model cannot overwrite a full inventory");
+        }
         void complete(boolean success) {
             Action action=submitted.get(submitted.size()-1);int moved=0;
             if(success) {
                 if(action instanceof Action.SelectHotbar select)selected=select.slot();
+                else if(action instanceof Action.SwapHotbar swap) {
+                    ItemData source=inventory.get(swap.inventoryIndex()).item(),hand=inventory.get(swap.hotbarSlot()).item();
+                    put(swap.inventoryIndex(),hand);put(swap.hotbarSlot(),source);workCustodyEvidence=true;
+                }
                 else if(action instanceof Action.UseBlock use) {
-                    if(use.purpose()==Action.Use.FRUIT){if(changeAge)fruit(use.pos(),0);if(deliver)put(9,product(inventory.get(9).item().count()+1));}
+                    if(use.purpose()==Action.Use.FRUIT){if(changeAge)fruit(use.pos(),0);if(deliver)deliverFruit();}
                     else if(use.purpose()==Action.Use.OPEN_CONTAINER)open=true;
                     else if(use.purpose()==Action.Use.SLEEP){sleepUses++;sleeping=true;}
                     else if(use.purpose()==Action.Use.DOOR)blocks.put(use.pos(),new BlockData(use.pos(),"minecraft:oak_door",Map.of("open","true")));
@@ -778,6 +900,7 @@ class StarfruitModuleTest {
                     moved=item.count();stored+=moved;put(source,ItemData.EMPTY);
                 } else if(action instanceof Action.CloseContainer)open=false;
                 else fail("Unexpected action "+action);
+                serverInventory.clear();for(ItemSlot slot:inventory)serverInventory.put(slot.inventoryIndex(),slot.item());
             }
             outcomes.put(current,new ActionOutcome(success?ActionOutcome.State.SUCCEEDED:ActionOutcome.State.FAILED,"native ack",moved));
         }
@@ -787,6 +910,19 @@ class StarfruitModuleTest {
         public boolean loaded(Pos pos){return !unloaded.contains(pos);}public boolean canStand(Pos pos){return true;}public boolean canTraverse(Pos from,Pos to){return true;}
         public List<BlockData> scan(Pos pos,int horizontal,int vertical){scans++;throw new AssertionError("Orchard inspection must not expand the registered fruit mask");}
         public List<ItemSlot> inventory(){return inventory;}
+        public String loggingItemFingerprint(int index){
+            if(!fingerprints || index<0 || index>=inventory.size())return null;
+            ItemData item=inventory.get(index).item();return item.empty()?null:item.is(food.id())?"a".repeat(64):"b".repeat(64);
+        }
+        private boolean custody(HotbarLease lease,int originalIndex){
+            return workCustodyEvidence && !busy() && actionFence==null && lease!=null && lease.valid()
+                && lease.original().equals(inventory.get(originalIndex).item())
+                && lease.fingerprint().equals(loggingItemFingerprint(originalIndex))
+                && Objects.equals(serverInventory.get(lease.sourceIndex()),inventory.get(lease.sourceIndex()).item())
+                && Objects.equals(serverInventory.get(lease.hotbarSlot()),inventory.get(lease.hotbarSlot()).item());
+        }
+        public boolean workHotbarParked(HotbarLease lease){return custody(lease,lease.sourceIndex());}
+        public boolean workHotbarRestored(HotbarLease lease){return custody(lease,lease.hotbarSlot());}
         public MenuData menu(){
             if(!open)return new MenuData(0,0,inventory,cursor,false);
             List<ItemSlot> slots=new ArrayList<>();for(int index=0;index<27;index++)slots.add(new ItemSlot(index,-1,false,index==0&&stored>0?product(stored):ItemData.EMPTY));
@@ -796,6 +932,7 @@ class StarfruitModuleTest {
         public boolean mayPlace(int slot,ItemData item){return slot>=0&&slot<27;}
         public boolean canInteract(Pos pos,double reach){return !uninteractable.contains(pos)&&(!followArrivals||player().distance(pos)<=reach);}
         public boolean busy(){return externalBusy||current>0&&!outcomes.get(current).done();}
+        public boolean ownsContainer(){return open;}
         public String pauseReason(){return actionFence;}
         public long submit(Action action){assertFalse(busy());assertNull(SafetyPolicy.rejection(action,context));
             if(action instanceof Action.UseBlock use&&use.purpose()==Action.Use.OPEN_CONTAINER)fruitUsesAtStoreOpen.add(clicked().size());
