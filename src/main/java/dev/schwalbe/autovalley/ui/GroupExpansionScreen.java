@@ -31,7 +31,7 @@ final class GroupExpansionScreen extends Screen {
                          Predicate<BlockData> pairReady,Function<BlockData,List<Pos>> physical,Runnable saved) {
         super(tr("title"));this.parent=parent;this.canonical=canonical;this.pairReady=pairReady;this.physical=physical;this.saved=saved;
         snapshot=GroupExpansionRules.capture(runtime.profile());world=runtime.world();
-        target=switch(kind) {case MACHINE->GroupExpansionRules.machine(snapshot,id);case TOMATO->GroupExpansionRules.tomato(snapshot);case COMMODITY->GroupExpansionRules.commodity(snapshot,id);};
+        target=switch(kind) {case MACHINE->GroupExpansionRules.machine(snapshot,id);case TOMATO->GroupExpansionRules.tomato(snapshot);case COMMODITY->GroupExpansionRules.commodity(snapshot,id);case WINE_LINE->GroupExpansionRules.wineLine(snapshot,id);};
     }
     @Override protected void init() {
         runtime.pause(Component.translatable("autovalley.settings.paused").getString());
@@ -40,11 +40,11 @@ final class GroupExpansionScreen extends Screen {
     }
     private boolean current() {
         return snapshot.current(runtime.profile()) && runtime.world()==world && !runtime.running() && !runtime.recording()
-            && world.player().connected();
+            && world.player().connected() && GroupExpansionRules.emptyCursor(world.menu());
     }
     private GroupExpansionRules.Candidate read(BlockData original) {
         if(original==null || !world.loaded(original.pos()))return null;
-        if(target.kind()==GroupExpansionRules.Kind.MACHINE) {
+        if(target.machine()) {
             String id=target.machineKind()==PoiKind.WINE_KEG ? "society:wine_keg" : "society:preserves_jar";
             if(!id.equals(original.id()))return null;
         } else if(!StorageSurveyRules.ordinaryStorage(original))return null;
@@ -76,10 +76,11 @@ final class GroupExpansionScreen extends Screen {
         clearWidgets();int half=(panelWidth-6)/2;
         button(left,54,panelWidth,tr("back"),this::onClose);
         if(preview) {
-            button(left,94,panelWidth,target.kind()==GroupExpansionRules.Kind.MACHINE ? tr("machine_confirm_hint")
+            button(left,94,panelWidth,target.machine() ? tr("machine_confirm_hint")
                 : tr("contents",Component.translatable("autovalley."+(contentsChecked?"on":"off"))),()->{
-                    if(target.kind()!=GroupExpansionRules.Kind.MACHINE){contentsChecked=!contentsChecked;rebuild();}
-                }).setTooltip(Tooltip.create(tr("contents_hint",String.join(", ",new TreeSet<>(target.items())))));
+                    if(!target.machine()){contentsChecked=!contentsChecked;rebuild();}
+                }).setTooltip(Tooltip.create(target.machine() ? tr("machine_confirm_hint")
+                    : tr("contents_hint",String.join(", ",new TreeSet<>(target.items())))));
         } else {
             button(left,94,half,tr("rescan"),this::scan);
             button(left+half+6,94,half,tr(batchRows?"show_individual":"show_batches"),()->{batchRows=!batchRows;page=0;rebuild();});
@@ -108,7 +109,7 @@ final class GroupExpansionScreen extends Screen {
             if(preview){confirm();return;}
             if(selected.isEmpty()){feedback=tr("select_first").getString();return;}
             preview=true;page=0;contentsChecked=false;feedback=tr("preview_hint").getString();rebuild();
-        }).active=!selected.isEmpty() && (!preview || target.kind()==GroupExpansionRules.Kind.MACHINE || contentsChecked);
+        }).active=!selected.isEmpty() && (!preview || target.machine() || contentsChecked);
     }
     private void confirm() {
         if(!preview || !current()){feedback=tr("changed").getString();return;}
@@ -123,11 +124,13 @@ final class GroupExpansionScreen extends Screen {
             profile.pois.clear();profile.pois.addAll(changes.pois());
             profile.machineGroups.clear();profile.machineGroups.putAll(changes.machines());
             profile.commodityStores.clear();profile.commodityStores.putAll(changes.stores());
+            profile.wineProductionLines.clear();profile.wineProductionLines.putAll(changes.wineLines());
             try {runtime.saveProfile();}
             catch(RuntimeException failed) {
                 profile.pois.clear();profile.pois.addAll(snapshot.pois());
                 profile.machineGroups.clear();profile.machineGroups.putAll(snapshot.machines());
                 profile.commodityStores.clear();profile.commodityStores.putAll(snapshot.stores());
+                profile.wineProductionLines.clear();profile.wineProductionLines.putAll(snapshot.wineLines());
                 feedback=Component.translatable("autovalley.error.save").getString();return;
             }
             saved.run();onClose();

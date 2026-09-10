@@ -6,20 +6,38 @@ import java.util.*;
 /** Pure, explicit registration plans. Scanning and checkbox selection grant no action permission. */
 public final class GroupExpansionRules {
     private GroupExpansionRules() { }
-    public enum Kind { MACHINE, TOMATO, COMMODITY }
-    public record Snapshot(Profile owner,List<Poi> pois,Map<String,MachineGroup> machines,Map<String,CommodityStore> stores) {
-        public Snapshot { pois=List.copyOf(pois);machines=Collections.unmodifiableMap(new LinkedHashMap<>(machines));stores=Collections.unmodifiableMap(new LinkedHashMap<>(stores)); }
-        public boolean current(Profile profile) {return profile==owner && pois.equals(profile.pois) && machines.equals(profile.machineGroups) && stores.equals(profile.commodityStores);}
+    public enum Kind { MACHINE, TOMATO, COMMODITY, WINE_LINE }
+    public record Snapshot(Profile owner,List<Poi> pois,Map<String,MachineGroup> machines,Map<String,CommodityStore> stores,
+                           Map<String,WineProductionLine> wineLines,Map<String,ArtisanJob> artisanJobs) {
+        public Snapshot(Profile owner,List<Poi> pois,Map<String,MachineGroup> machines,Map<String,CommodityStore> stores) {
+            this(owner,pois,machines,stores,owner.wineProductionLines,owner.artisanJobs);
+        }
+        public Snapshot(Profile owner,List<Poi> pois,Map<String,MachineGroup> machines,Map<String,CommodityStore> stores,Map<String,WineProductionLine> wineLines) {
+            this(owner,pois,machines,stores,wineLines,owner.artisanJobs);
+        }
+        public Snapshot {
+            pois=List.copyOf(pois);machines=Collections.unmodifiableMap(new LinkedHashMap<>(machines));stores=Collections.unmodifiableMap(new LinkedHashMap<>(stores));
+            wineLines=Collections.unmodifiableMap(new LinkedHashMap<>(wineLines));artisanJobs=Collections.unmodifiableMap(new LinkedHashMap<>(artisanJobs));
+        }
+        public boolean current(Profile profile) {
+            return profile==owner && pois.equals(profile.pois) && machines.equals(profile.machineGroups) && stores.equals(profile.commodityStores)
+                && wineLines.equals(profile.wineProductionLines) && artisanJobs.equals(profile.artisanJobs);
+        }
     }
     public record Target(Kind kind,String id,String name,PoiKind machineKind,List<Pos> members,Set<String> items) {
         public Target {members=List.copyOf(members);items=Collections.unmodifiableSet(new LinkedHashSet<>(items));}
+        public boolean machine() {return kind==Kind.MACHINE || kind==Kind.WINE_LINE;}
     }
     /** Both physical halves are supplied by the existing native chest-pair check. */
     public record Candidate(BlockData block,List<Pos> physicalCells) {
         public Candidate {block=new BlockData(block.pos(),block.id(),Map.copyOf(block.properties()));physicalCells=List.copyOf(physicalCells);}
     }
-    public record Changes(List<Poi> pois,Map<String,MachineGroup> machines,Map<String,CommodityStore> stores) {
-        public Changes {pois=List.copyOf(pois);machines=Collections.unmodifiableMap(new LinkedHashMap<>(machines));stores=Collections.unmodifiableMap(new LinkedHashMap<>(stores));}
+    public record Changes(List<Poi> pois,Map<String,MachineGroup> machines,Map<String,CommodityStore> stores,Map<String,WineProductionLine> wineLines) {
+        public Changes(List<Poi> pois,Map<String,MachineGroup> machines,Map<String,CommodityStore> stores) {this(pois,machines,stores,Map.of());}
+        public Changes {
+            pois=List.copyOf(pois);machines=Collections.unmodifiableMap(new LinkedHashMap<>(machines));stores=Collections.unmodifiableMap(new LinkedHashMap<>(stores));
+            wineLines=Collections.unmodifiableMap(new LinkedHashMap<>(wineLines));
+        }
     }
     public static Snapshot capture(Profile profile) {return new Snapshot(profile,profile.pois,profile.machineGroups,profile.commodityStores);}
     public static int rows(int height) {return Math.max(1,(height-201)/23);}
@@ -27,6 +45,12 @@ public final class GroupExpansionRules {
         MachineGroup group=snapshot.machines().get(id);
         require(group!=null && MachineGroupRules.supported(group.kind()));
         return new Target(Kind.MACHINE,id,group.name(),group.kind(),group.members(),Set.of());
+    }
+    public static Target wineLine(Snapshot snapshot,String id) {
+        WineProductionLine line=snapshot.wineLines().get(id);
+        require(line!=null && id.equals(line.id()) && !WineProductionRules.LEGACY_ID.equals(id) && line.valid()
+            && WineProductionRules.supportedRecipe(line.inputItemId(),line.outputItemId()));
+        return new Target(Kind.WINE_LINE,id,line.name(),PoiKind.WINE_KEG,line.machines(),Set.of());
     }
     public static Target tomato(Snapshot snapshot) {
         List<Pos> positions=snapshot.pois().stream().filter(p->p.kind()==PoiKind.TOMATO_CHEST).map(Poi::pos).toList();require(!positions.isEmpty());
@@ -38,19 +62,22 @@ public final class GroupExpansionRules {
     }
     private static void targetCurrent(Snapshot snapshot,Target target) {
         require(snapshot.current(snapshot.owner()));
-        Target actual=switch(target.kind()) {case MACHINE->machine(snapshot,target.id());case TOMATO->tomato(snapshot);case COMMODITY->commodity(snapshot,target.id());};
+        Target actual=switch(target.kind()) {case MACHINE->machine(snapshot,target.id());case TOMATO->tomato(snapshot);case COMMODITY->commodity(snapshot,target.id());case WINE_LINE->wineLine(snapshot,target.id());};
         require(actual.equals(target));
     }
     public static boolean accepts(Target target,Candidate candidate) {
         if(target==null || candidate==null || candidate.block()==null || candidate.physicalCells().isEmpty() || candidate.physicalCells().size()>2
             || !candidate.physicalCells().contains(candidate.block().pos()) || new HashSet<>(candidate.physicalCells()).size()!=candidate.physicalCells().size()
             || candidate.physicalCells().stream().anyMatch(p->!CoordinateDestinationRules.validPosition(p)))return false;
-        if(target.kind()!=Kind.MACHINE)return StorageSurveyRules.ordinaryStorage(candidate.block());
+        if(!target.machine())return StorageSurveyRules.ordinaryStorage(candidate.block());
         return candidate.physicalCells().size()==1 && (target.machineKind()==PoiKind.WINE_KEG ? "society:wine_keg" : "society:preserves_jar").equals(candidate.block().id());
     }
     public static List<Candidate> available(Snapshot snapshot,Target target,List<Candidate> scanned) {
         targetCurrent(snapshot,target);require(scanned!=null && scanned.size()<=4096);
         Set<Pos> reserved=new HashSet<>();snapshot.pois().forEach(p->reserved.add(p.pos()));snapshot.stores().values().forEach(s->reserved.addAll(s.containers()));
+        snapshot.machines().values().forEach(group->reserved.addAll(group.members()));
+        snapshot.wineLines().values().forEach(line->reserved.addAll(line.machines()));
+        snapshot.artisanJobs().values().forEach(job->reserved.addAll(job.machines()));
         Map<Pos,Candidate> result=new TreeMap<>(Comparator.comparingInt(Pos::x).thenComparingInt(Pos::y).thenComparingInt(Pos::z));
         for(Candidate candidate:scanned)if(accepts(target,candidate) && Collections.disjoint(reserved,candidate.physicalCells())) {
             Candidate previous=result.putIfAbsent(candidate.block().pos(),candidate);require(previous==null || previous.equals(candidate));
@@ -60,13 +87,13 @@ public final class GroupExpansionRules {
     public static boolean sameGeometry(Target target,Candidate before,Candidate now) {
         if(!accepts(target,before) || !accepts(target,now) || !before.block().pos().equals(now.block().pos())
             || !before.block().id().equals(now.block().id()) || !before.physicalCells().equals(now.physicalCells()))return false;
-        if(target.kind()==Kind.MACHINE)return true; // Ripeness/working changes are not a different registration.
+        if(target.machine())return true; // Ripeness/working changes are not a different registration.
         for(String property:List.of("facing","type","container"))if(!Objects.equals(before.block().properties().get(property),now.block().properties().get(property)))return false;
         return true;
     }
     public static Changes expand(Snapshot snapshot,Target target,List<Candidate> preview,Set<Pos> selected,List<Candidate> fresh,boolean contentsChecked) {
         targetCurrent(snapshot,target);require(selected!=null && !selected.isEmpty() && selected.size()<=4096);
-        require(target.kind()==Kind.MACHINE || contentsChecked);
+        require(target.machine() || contentsChecked);
         Map<Pos,Candidate> before=new HashMap<>(),now=new HashMap<>();
         available(snapshot,target,preview).forEach(c->before.put(c.block().pos(),c));available(snapshot,target,fresh).forEach(c->now.put(c.block().pos(),c));
         List<Pos> additions=new ArrayList<>();Set<Pos> physical=new HashSet<>();
@@ -76,16 +103,25 @@ public final class GroupExpansionRules {
         }
         require(additions.size()==selected.size() && target.members().size()+additions.size()<=4096);
         List<Poi> pois=new ArrayList<>(snapshot.pois());Map<String,MachineGroup> machines=new LinkedHashMap<>(snapshot.machines());Map<String,CommodityStore> stores=new LinkedHashMap<>(snapshot.stores());
+        Map<String,WineProductionLine> wineLines=new LinkedHashMap<>(snapshot.wineLines());
         List<Pos> members=new ArrayList<>(target.members());members.addAll(additions);
         if(target.kind()==Kind.COMMODITY)stores.put(target.id(),new CommodityStore(target.id(),target.name(),target.items(),members));
+        else if(target.kind()==Kind.WINE_LINE) {
+            WineProductionLine line=wineLines.get(target.id());
+            wineLines.put(target.id(),new WineProductionLine(line.id(),line.name(),line.inputItemId(),line.outputItemId(),
+                line.inputStoreId(),line.outputStoreId(),members,line.cycleDays(),line.enabled()));
+            // Existing remaining/skipped members and due days belong to the current persisted pass.
+            // Only a subsequent pass takes its full membership from the expanded line.
+        }
         else {
             require(pois.size()+additions.size()<=4096);PoiKind kind=target.kind()==Kind.TOMATO ? PoiKind.TOMATO_CHEST : target.machineKind();
             int ordinal=target.members().size()+1;
             for(Pos pos:additions)pois.add(new Poi(pos,kind,(target.kind()==Kind.TOMATO ? "Tomato storage" : target.name())+" "+ordinal++,null));
             if(target.kind()==Kind.MACHINE)machines.put(target.id(),new MachineGroup(target.name(),target.machineKind(),members));
         }
-        return new Changes(pois,machines,stores);
+        return new Changes(pois,machines,stores,wineLines);
     }
+    public static boolean emptyCursor(MenuData menu) {return menu!=null && menu.carried()!=null && menu.carried().empty();}
     /** Optional bulk checkbox rows; every batch starts unselected and is previewed before saving. */
     public static List<List<Candidate>> batches(List<Candidate> candidates) {
         require(candidates!=null && candidates.size()<=4096);Map<Pos,Candidate> remaining=new LinkedHashMap<>();candidates.forEach(c->remaining.put(c.block().pos(),c));

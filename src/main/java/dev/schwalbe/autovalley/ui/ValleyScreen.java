@@ -256,7 +256,8 @@ public final class ValleyScreen extends Screen {
         button(left + half + 6, 118, half, tr("pending.open", runtime.pendingMachineOutputs().size()), () -> {
             selectedPendingOutput = null; pendingResolution = null; page = 0; toolPage = ToolPage.PENDING_LIST; rebuild();
         }).setTooltip(Tooltip.create(tr("pending.persistent_hint")));
-        button(left, 144, panelWidth, tr("coordinates.open"), () -> minecraft.setScreen(new CoordinateScreen()));
+        button(left, 144, half, tr("coordinates.open"), () -> minecraft.setScreen(new CoordinateScreen()));
+        button(left+half+6,144,half,Component.literal("와인 생산 구역"),()->minecraft.setScreen(new WineLinesScreen(this)));
         text(169, tr("record.local").copy().append(" ").append(tr("record.contents")));
         text(180, tr("record.no_replay"));
         button(left,190,half,tr("work.import"),()->{runtime.importWorkDefinitions();rebuild();})
@@ -440,6 +441,7 @@ public final class ValleyScreen extends Screen {
         text(84, tr("schedule.wine"));
         EditBox wine = input(left + panelWidth - 58, 80, 58, tr("schedule.wine"), 2);
         wine.setValue(Integer.toString(runtime.profile().wineCycleDays));
+        wine.setTooltip(Tooltip.create(Component.literal("토마토 와인에만 적용됩니다. 추가 와인은 실행·기록 → 와인 생산 구역에서 각각 설정하세요.")));
         text(113, tr("schedule.preserves"));
         EditBox preserves = input(left + panelWidth - 58, 109, 58, tr("schedule.preserves"), 2);
         preserves.setValue(Integer.toString(runtime.profile().preservesCycleDays));
@@ -454,7 +456,7 @@ public final class ValleyScreen extends Screen {
         button(left + third + 6, 179, third, tr("schedule.clear"), () -> {
             Map<String, Long> before = new HashMap<>(runtime.profile().nextEligibleDay);
             var beforeWineBatch = runtime.profile().wineBatchSchedule;
-            runtime.profile().nextEligibleDay.clear();
+            runtime.profile().nextEligibleDay.keySet().removeIf(key->!key.startsWith("wine-line:"));
             runtime.profile().wineBatchSchedule = null;
             if (persist(() -> { runtime.profile().nextEligibleDay.putAll(before); runtime.profile().wineBatchSchedule = beforeWineBatch; })) { success("schedule.cleared"); rebuild(); }
         });
