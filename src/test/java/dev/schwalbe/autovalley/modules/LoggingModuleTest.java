@@ -867,6 +867,107 @@ class LoggingModuleTest {
         assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.profile.nextEligibleDay.isEmpty());
     }
 
+    @Test void anotherConsumersTripsCanUnloadTheCurrentVisibilityWaitAndReloadItThreeTimesWithoutStopping() {
+        Fixture f=visibilityFixture();Pos current=f.profile.loggingPlots.get(0).corner();
+        f.rejectUnloadedBlockReads=true;f.retryableObserve=true;
+        boolean[] travel={false};int[] consumers={0};f.profile.enabled.put(Feature.SHIPPING,true);
+        AutomationModule consumer=resourceNeighbour(Feature.SHIPPING,40,c->{
+            consumers[0]++;
+            if(travel[0]) {
+                travel[0]=false;f.playerX=128;f.unloaded.add(current);
+                c.actions().submit(new Action.SelectHotbar(4));
+            }
+            return c.actions().busy()?WorkResult.busy("other consumer owns its acknowledgement"):WorkResult.idle();
+        });
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,consumer));engine.start(f.context);
+        engineUntil(f,engine,()->consumers[0]>0);
+        for(int trip=0;trip<3;trip++) {
+            int rays=f.chopRays;f.observeLoads=false;travel[0]=true;f.ticks+=20;engine.tick(f.context);
+            assertInstanceOf(Action.SelectHotbar.class,f.pending);assertTrue(f.unloaded.contains(current));
+            int actions=f.actions.size();
+            for(int i=0;i<5;i++){f.ticks++;engine.tick(f.context);}
+            assertTrue(engine.running(),engine.status());assertEquals(actions,f.actions.size());assertEquals(rays,f.chopRays);
+            f.advance();engine.tick(f.context);f.ticks++;engine.tick(f.context);
+            assertTrue(engine.running(),engine.status());assertEquals(AutomationEngine.State.WAITING,engine.state());
+            assertFalse(f.module.sleepSafeResourceWait(f.context));assertEquals(rays,f.chopRays);
+            int before=consumers[0];f.ticks+=20;engine.tick(f.context);assertTrue(consumers[0]>before);
+            assertEquals(actions,f.actions.size());assertTrue(f.profile.loggingRunActive);
+            f.observeLoads=true;before=consumers[0];final int granted=before;f.ticks+=1200;
+            engineUntil(f,engine,()->consumers[0]>granted);
+            assertTrue(engine.running(),engine.status());assertFalse(f.unloaded.contains(current));
+            assertTrue(f.observed.contains(current));assertTrue(f.chopRays>rays,"Reload must run a fresh finite visibility scan");
+            assertEquals(actions,f.actions.size());assertEquals(0,f.chops);assertEquals(0,f.plants);
+            assertEquals(2,f.profile.loggingRemainingPlots.size());assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+        assertEquals(3,f.actions.size());assertTrue(f.profile.enabled(Feature.LOGGING));
+    }
+
+    @Test void aReloadedVisibleTreeStillNeedsItsWholeTreeNativePermissionBeforeAnyChop() {
+        Fixture f=visibilityFixture();Pos current=f.profile.loggingPlots.get(0).corner();int[] consumers={0};
+        f.profile.enabled.put(Feature.SHIPPING,true);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module,
+            resourceNeighbour(Feature.SHIPPING,40,c->{consumers[0]++;return WorkResult.idle();})));
+        engine.start(f.context);engineUntil(f,engine,()->consumers[0]>0);
+        f.unloaded.add(current);f.rejectUnloadedBlockReads=true;f.observeLoads=true;
+        f.occludedChopping.clear();f.treeRejection="connected structure outside the registered 2x2";
+        assertEquals(AutomationModule.ResourceReadiness.READY,f.module.resourceReadiness(f.context));
+        assertFalse(f.module.sleepSafeResourceWait(f.context));f.ticks+=20;
+        engineUntil(f,engine,()->engine.state()==AutomationEngine.State.PAUSED);
+        assertTrue(f.observed.contains(current));assertTrue(engine.status().contains("connected structure"));
+        assertTrue(f.actions.stream().noneMatch(a->a instanceof Action.ChopTree));assertEquals(0,f.chops);
+        assertTrue(f.profile.loggingRunActive);assertEquals(2,f.profile.loggingRemainingPlots.size());
+        assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void changedCurrentOrOtherNegativeObservationsWakeInspectionWithoutGrantingDestruction() {
+        for(int changedIndex:new int[]{0,1})for(String change:List.of("partial stump","foreign block","empty base")) {
+            Fixture f=new Fixture(2);f.continuous();f.profile.loggingRunActive=true;
+            f.profile.loggingRemainingPlots.addAll(f.profile.loggingPlots.stream().map(LoggingPlot::corner).toList());
+            f.profile.loggingPlots.forEach(plot->f.occludedChopping.addAll(plot.plantingPositions()));f.blockAllChopRays=true;
+            int[] consumers={0};f.profile.enabled.put(Feature.SHIPPING,true);
+            AutomationEngine engine=new AutomationEngine(List.of(f.module,
+                resourceNeighbour(Feature.SHIPPING,40,c->{consumers[0]++;return WorkResult.idle();})));
+            engine.start(f.context);engineUntil(f,engine,()->consumers[0]>0);
+            LoggingPlot changed=f.profile.loggingPlots.get(changedIndex);
+            if(change.equals("empty base"))f.setPlot(changedIndex,"minecraft:air");
+            else f.blocks.put(changed.corner(),change.equals("partial stump")?LoggingRules.CHOPPED_LOG:"minecraft:stone_bricks");
+            int rays=f.chopRays,checkpoints=f.events.size(),before=consumers[0];
+            assertEquals(AutomationModule.ResourceReadiness.READY,f.module.resourceReadiness(f.context),change);
+            assertFalse(f.module.sleepSafeResourceWait(f.context));
+            assertEquals(rays,f.chopRays);assertEquals(checkpoints,f.events.size());assertTrue(f.actions.isEmpty());
+            f.ticks+=20;engine.tick(f.context);assertTrue(engine.running(),engine.status());
+            engineUntil(f,engine,()->consumers[0]>before);
+            assertTrue(engine.running(),engine.status());assertTrue(f.actions.isEmpty());
+            assertEquals(0,f.chops);assertEquals(0,f.plants);assertTrue(f.profile.loggingRunActive);
+            assertEquals(2,f.profile.loggingRemainingPlots.size());assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+
+    @Test void unloadedVisibilityCannotWaiveTheGrantedWaitsRegistrationOrNativeCustodyBoundaries() {
+        for(String change:List.of("other registration","remaining","replanting","due","busy","fence","lease","cursor","airborne")) {
+            Fixture f=visibilityFixture();int[] consumers={0};f.profile.enabled.put(Feature.SHIPPING,true);
+            AutomationEngine engine=new AutomationEngine(List.of(f.module,
+                resourceNeighbour(Feature.SHIPPING,40,c->{consumers[0]++;return WorkResult.idle();})));
+            engine.start(f.context);engineUntil(f,engine,()->consumers[0]>0);int before=consumers[0];
+            f.unloaded.add(f.profile.loggingPlots.get(0).corner());f.rejectUnloadedBlockReads=true;
+            switch(change) {
+                case "other registration"->f.profile.loggingPlots.set(1,new LoggingPlot("changed registration",f.profile.loggingPlots.get(1).corner()));
+                case "remaining"->f.profile.loggingRemainingPlots.remove(1);
+                case "replanting"->f.profile.loggingReplantingPlots.clear();
+                case "due"->f.profile.nextEligibleDay.put(LoggingRules.DUE_KEY,99L);
+                case "busy"->f.forcedNativeBusy=true;
+                case "fence"->f.nativeFence="unconfirmed native action";
+                case "lease"->f.profile.loggingHotbarLease=new LoggingHotbarLease(9,0,item("minecraft:torch",5),"a".repeat(64),LoggingHotbarLease.Stage.PARKED);
+                case "cursor"->f.cursor=item(LoggingRules.SAPLING,1);
+                case "airborne"->f.grounded=false;
+                default->throw new AssertionError(change);
+            }
+            assertEquals(AutomationModule.ResourceReadiness.UNSAFE,f.module.resourceReadiness(f.context),change);
+            f.ticks+=20;engine.tick(f.context);assertEquals(AutomationEngine.State.PAUSED,engine.state(),change);
+            assertEquals(before,consumers[0]);assertTrue(f.actions.isEmpty());assertTrue(f.profile.loggingRunActive);
+        }
+    }
+
     @Test void visibilitySkipRestoresTheBorrowedHotbarBeforeSelectingAnotherPlotWithoutCleanup() {
         Fixture f=parkedVisibilityFixture(); ItemData original=f.profile.loggingHotbarLease.original();
         f.until(() -> f.pending instanceof Action.SwapHotbar);
@@ -1140,8 +1241,8 @@ class LoggingModuleTest {
         assertEquals(2,f.profile.loggingRemainingPlots.size()); assertTrue(f.actions.isEmpty());
     }
 
-    @Test void visibilityWaitReadinessRejectsUncertaintyOrChangedBaseBeforeAnotherConsumerRuns() {
-        for(String unsafe:List.of("busy","lease","cursor","airborne","native fence","changed plot","unloaded plot")) {
+    @Test void visibilityWaitReadinessRejectsNativeOrCustodyUncertaintyBeforeAnotherConsumerRuns() {
+        for(String unsafe:List.of("busy","lease","cursor","airborne","native fence")) {
             Fixture f=visibilityFixture(); assertEquals(WorkResult.State.RESOURCE_WAIT,f.finish().state());
             switch(unsafe) {
                 case "busy" -> f.forcedNativeBusy=true;
@@ -1149,8 +1250,6 @@ class LoggingModuleTest {
                 case "cursor" -> f.cursor=item(LoggingRules.SAPLING,1);
                 case "airborne" -> f.grounded=false;
                 case "native fence" -> f.nativeFence="unconfirmed action";
-                case "changed plot" -> f.blocks.put(f.profile.loggingPlots.get(0).corner(),LoggingRules.CHOPPED_LOG);
-                case "unloaded plot" -> f.unloaded.add(f.profile.loggingPlots.get(0).corner());
                 default -> throw new AssertionError(unsafe);
             }
             assertEquals(AutomationModule.ResourceReadiness.UNSAFE,f.module.resourceReadiness(f.context),unsafe);
@@ -1158,14 +1257,16 @@ class LoggingModuleTest {
         }
     }
 
-    @Test void aChangedWaitingBaseRevokesTheEngineGrantBeforeOtherWorkResumes() {
+    @Test void aChangedWaitingBaseRevokesTheOldNegativeAndRescansBeforeOtherWorkResumes() {
         Fixture f=visibilityFixture(); int[] consumers={0}; f.profile.enabled.put(Feature.SHIPPING,true);
         AutomationEngine engine=new AutomationEngine(List.of(f.module,
             resourceNeighbour(Feature.SHIPPING,40,c -> { consumers[0]++; return WorkResult.idle(); })));
         engine.start(f.context); engineUntil(f,engine,() -> consumers[0]>0); int before=consumers[0];
         f.blocks.put(f.profile.loggingPlots.get(0).corner(),LoggingRules.CHOPPED_LOG); f.ticks+=20;
-        engine.tick(f.context); assertEquals(AutomationEngine.State.PAUSED,engine.state());
+        int rays=f.chopRays;engine.tick(f.context); assertTrue(engine.running(),engine.status());
         assertEquals(before,consumers[0]); assertTrue(f.profile.loggingRunActive); assertEquals(2,f.profile.loggingRemainingPlots.size());
+        engineUntil(f,engine,()->consumers[0]>before);
+        assertTrue(engine.running(),engine.status());assertTrue(f.chopRays>rays);assertTrue(f.actions.isEmpty());
     }
 
     @Test void unloadedPreflightGeometryAllowsOnlyDelayedReobservationAndNeverClaimsSafeVisibilityOrSleep() {
@@ -1900,6 +2001,240 @@ class LoggingModuleTest {
         assertTrue(f.events.indexOf("plant:24")<f.events.indexOf("trash:"+LoggingRules.TWIG));
     }
 
+    @Test void nativeProvedParkedFireLogsGrowSixToNineToTwelveWithoutStoppingOrLosingTheLease() {
+        Fixture f=parkedGrowingFireLogsFixture(); f.nativeGrowthSupported=true; f.growthReceiptAvailable=true;
+        f.inventory[11]=item(LoggingRules.FIRE_LOG,9);
+        assertEquals(WorkResult.State.BUSY,f.step().state());
+        assertEquals(9,f.profile.loggingHotbarLease.original().count());
+        assertEquals(f.loggingItemFingerprint(11),f.profile.loggingHotbarLease.fingerprint());
+        assertEquals(item(LoggingRules.SAPLING,14),f.inventory[0]); assertTrue(f.actions.isEmpty());
+        f.inventory[11]=item(LoggingRules.FIRE_LOG,12); f.advance();
+        assertEquals(WorkResult.State.BUSY,f.step().state());
+        assertEquals(12,f.profile.loggingHotbarLease.original().count());
+        assertEquals(LoggingHotbarLease.Stage.PARKED,f.profile.loggingHotbarLease.stage());
+        assertTrue(f.profile.loggingRunActive); assertEquals(1,f.profile.loggingRemainingPlots.size());
+        assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertNull(f.profile.loggingHotbarLease); assertEquals(1,f.swaps);
+        assertEquals(16,f.stored(LoggingRules.FIRE_LOG),"All twelve originals, two drops and two crafted logs survive");
+        assertEquals(2,f.chops); assertEquals(4,f.plants);
+    }
+
+    @Test void parkedGrowthAfterReconnectRequestsOneServerRefreshAndKeepsItsSingleTicket() {
+        Fixture f=parkedGrowingFireLogsFixture(); f.nativeGrowthSupported=true; f.inventoryRefreshSupported=true;
+        f.inventory[11]=item(LoggingRules.FIRE_LOG,9); f.restart();
+        LoggingHotbarLease old=f.profile.loggingHotbarLease;
+        assertEquals(WorkResult.State.BUSY,f.step().state());
+        Action.RefreshInventory refresh=assertInstanceOf(Action.RefreshInventory.class,f.pending);long ticket=f.sequence;
+        for(int i=0;i<100;i++) { f.ticks++; assertEquals(WorkResult.State.BUSY,f.step().state()); }
+        assertEquals(List.of(refresh),f.actions);assertEquals(ticket,f.sequence);assertSame(old,f.profile.loggingHotbarLease);
+        f.advance();assertEquals(WorkResult.State.BUSY,f.step().state());
+        assertEquals(9,f.profile.loggingHotbarLease.original().count());assertEquals(0,f.swaps);
+        assertEquals(List.of(refresh),f.actions);assertTrue(f.profile.loggingRunActive);
+        assertEquals(WorkResult.State.IDLE,f.finish().state());assertEquals(13,f.stored(LoggingRules.FIRE_LOG));
+    }
+
+    @Test void pickupInAnAcknowledgedBorrowRebasesBeforeParkingWithoutSendingTheBorrowTwice() {
+        for(boolean needsRefresh:List.of(false,true)) {
+            Fixture f=fireLogsBorrowFixture();f.nativeGrowthSupported=true;f.growthReceiptAvailable=!needsRefresh;
+            f.inventoryRefreshSupported=needsRefresh;
+            f.until(()->f.pending instanceof Action.SwapHotbar); f.advance();
+            assertEquals(LoggingHotbarLease.Stage.PREPARED,f.profile.loggingHotbarLease.stage());
+            f.inventory[11]=item(LoggingRules.FIRE_LOG,9);f.step();
+            if(needsRefresh) {
+                assertInstanceOf(Action.RefreshInventory.class,f.pending);
+                assertEquals(6,f.profile.loggingHotbarLease.original().count());
+                assertEquals(LoggingHotbarLease.Stage.PREPARED,f.profile.loggingHotbarLease.stage());
+                f.advance();f.step();
+            }
+            assertEquals(9,f.profile.loggingHotbarLease.original().count());
+            assertEquals(LoggingHotbarLease.Stage.PARKED,f.profile.loggingHotbarLease.stage());
+            assertEquals(1,f.actions.stream().filter(a->a instanceof Action.SwapHotbar).count());
+            assertEquals(WorkResult.State.IDLE,f.finish().state());assertEquals(2,f.swaps);
+            assertEquals(9,f.stored(LoggingRules.FIRE_LOG));assertEquals(4,f.plants);assertEquals(0,f.chops);
+        }
+    }
+
+    @Test void pickupInAnAcknowledgedRestorePreservesAllNineAndDoesNotReplayTheInverse() {
+        for(boolean needsRefresh:List.of(false,true)) {
+            Fixture f=parkedGrowingFireLogsFixture();f.profile.loggingRemainingPlots.clear();f.setPlot(0,LoggingRules.SAPLING);
+            f.nativeGrowthSupported=true;f.growthReceiptAvailable=!needsRefresh;f.inventoryRefreshSupported=needsRefresh;
+            f.until(()->f.pending instanceof Action.SwapHotbar); f.advance();
+            assertEquals(LoggingHotbarLease.Stage.RESTORING,f.profile.loggingHotbarLease.stage());
+            f.inventory[0]=item(LoggingRules.FIRE_LOG,9);f.step();
+            if(needsRefresh) {
+                assertInstanceOf(Action.RefreshInventory.class,f.pending);
+                assertEquals(6,f.profile.loggingHotbarLease.original().count());
+                assertEquals(LoggingHotbarLease.Stage.RESTORING,f.profile.loggingHotbarLease.stage());
+                f.advance();f.step();
+            }
+            assertNull(f.profile.loggingHotbarLease);assertEquals(1,f.swaps);
+            assertEquals(WorkResult.State.IDLE,f.finish().state());assertEquals(9,f.stored(LoggingRules.FIRE_LOG));
+            assertEquals(1,f.actions.stream().filter(a->a instanceof Action.SwapHotbar).count());
+        }
+    }
+
+    @Test void anotherPickupDuringAnExistingRestorationRefreshKeepsItsCustodyContinuation() {
+        Fixture f=parkedGrowingFireLogsFixture();LoggingHotbarLease original=f.profile.loggingHotbarLease;
+        f.profile.loggingRemainingPlots.clear();f.setPlot(0,LoggingRules.SAPLING);
+        f.inventory[11]=item(LoggingRules.SAPLING,14);f.inventory[0]=original.original();
+        f.nativeGrowthSupported=true;f.inventoryRefreshSupported=true;
+        f.step();assertInstanceOf(Action.RefreshInventory.class,f.pending);
+        f.inventory[0]=item(LoggingRules.FIRE_LOG,9);f.advance();
+        assertEquals(WorkResult.State.BUSY,f.step().state());
+        assertNull(f.profile.loggingHotbarLease);assertEquals(0,f.swaps);
+        assertEquals(1,f.actions.size());assertEquals(WorkResult.State.IDLE,f.finish().state());
+        assertEquals(9,f.stored(LoggingRules.FIRE_LOG));
+    }
+
+    @Test void airborneBorrowRestoreAndRefreshAcknowledgementsKeepTheirExactTicketUntilLanding() {
+        for(String operation:List.of("borrow","restore","growth refresh","restoration refresh")) {
+            Fixture f=acknowledgedGrowingCustodyFixture(operation);
+            LoggingHotbarLease saved=f.profile.loggingHotbarLease;ActionOutcome acknowledged=f.outcome;
+            int sent=f.actions.size();long ticket=f.sequence;f.grounded=false;
+            for(int i=0;i<20;i++) {
+                f.ticks++;WorkResult result=f.step();assertEquals(WorkResult.State.BUSY,result.state(),operation+": "+result.message());
+                assertTrue(result.message().contains("착지"));assertSame(saved,f.profile.loggingHotbarLease);
+                assertSame(acknowledged,f.outcome);assertEquals(ticket,f.sequence);assertEquals(sent,f.actions.size());
+                assertNull(f.pending);assertEquals(6,saved.original().count());
+            }
+            f.grounded=true;assertEquals(WorkResult.State.BUSY,f.step().state(),operation);
+            if(operation.equals("borrow") || operation.equals("growth refresh")) {
+                assertEquals(9,f.profile.loggingHotbarLease.original().count());
+                assertEquals(LoggingHotbarLease.Stage.PARKED,f.profile.loggingHotbarLease.stage());
+            } else assertNull(f.profile.loggingHotbarLease);
+            assertEquals(WorkResult.State.IDLE,f.finish().state(),operation);
+            assertEquals(operation.equals("growth refresh")?13:9,f.stored(LoggingRules.FIRE_LOG),operation);
+            assertEquals(operation.equals("borrow")?2:operation.equals("restoration refresh")?0:1,f.swaps,operation);
+        }
+    }
+
+    @Test void acknowledgedLandingWaitCannotHideANewNativeMenuOrCustodyFence() {
+        for(String changed:List.of("cursor","container","busy","fence","lease","registration","work lease")) {
+            Fixture f=acknowledgedGrowingCustodyFixture("borrow");f.grounded=false;
+            LoggingHotbarLease saved=f.profile.loggingHotbarLease;int sent=f.actions.size();
+            switch(changed) {
+                case "cursor"->f.cursor=item("minecraft:diamond",1);
+                case "container"->{f.opened=f.woodPos;f.containerId=1;}
+                case "busy"->f.forcedNativeBusy=true;
+                case "fence"->f.nativeFence="unconfirmed native mutation";
+                case "lease"->f.profile.loggingHotbarLease=null;
+                case "registration"->f.profile.loggingPlots.set(0,new LoggingPlot("changed registration",f.profile.loggingPlots.get(0).corner()));
+                case "work lease"->f.profile.workHotbarLease=new HotbarLease(Feature.STARFRUIT,12,1,item("minecraft:torch",2),"a".repeat(64),HotbarLease.Stage.PARKED);
+                default->throw new AssertionError(changed);
+            }
+            assertEquals(WorkResult.State.BLOCKED,f.step().state(),changed);assertEquals(sent,f.actions.size());
+            assertEquals(1,f.swaps);assertTrue(f.profile.loggingRunActive);
+            if(!changed.equals("lease"))assertSame(saved,f.profile.loggingHotbarLease);
+            f.grounded=true;assertEquals(WorkResult.State.BLOCKED,f.step().state());assertEquals(sent,f.actions.size());
+        }
+    }
+
+    @Test void stoppingDuringAcknowledgedLandingWaitRequiresExplicitResumeAndNeverReplaysBorrow() {
+        Fixture f=fireLogsBorrowFixture();f.continuous();f.nativeGrowthSupported=true;f.growthReceiptAvailable=true;
+        AutomationEngine engine=new AutomationEngine(List.of(f.module));engine.start(f.context);
+        engineUntil(f,engine,()->f.pending instanceof Action.SwapHotbar);f.advance();f.inventory[11]=item(LoggingRules.FIRE_LOG,9);
+        f.grounded=false;engine.tick(f.context);assertTrue(engine.running(),engine.status());
+        LoggingHotbarLease saved=f.profile.loggingHotbarLease;int sent=f.actions.size();
+        engine.stop(f.context,AutomationEngine.State.OFF,"manual F8 OFF");f.grounded=true;
+        for(int i=0;i<20;i++){f.ticks++;engine.tick(f.context);}
+        assertEquals(AutomationEngine.State.OFF,engine.state());assertSame(saved,f.profile.loggingHotbarLease);
+        assertEquals(sent,f.actions.size());assertEquals(1,f.swaps);
+        engine.start(f.context);engineUntil(f,engine,()->!f.profile.loggingRunActive);
+        assertTrue(engine.running(),engine.status());assertEquals(9,f.stored(LoggingRules.FIRE_LOG));
+        assertEquals(2,f.swaps);assertEquals(4,f.plants);assertEquals(0,f.chops);
+    }
+
+    private static Fixture acknowledgedGrowingCustodyFixture(String operation) {
+        Fixture f=operation.equals("borrow")?fireLogsBorrowFixture():parkedGrowingFireLogsFixture();
+        f.nativeGrowthSupported=true;f.growthReceiptAvailable=operation.equals("borrow") || operation.equals("restore");
+        f.inventoryRefreshSupported=!f.growthReceiptAvailable;
+        if(operation.equals("restore") || operation.equals("restoration refresh")) {
+            f.profile.loggingRemainingPlots.clear();f.setPlot(0,LoggingRules.SAPLING);
+        }
+        if(operation.equals("restoration refresh")) {
+            f.inventory[0]=f.profile.loggingHotbarLease.original();f.inventory[11]=item(LoggingRules.SAPLING,14);
+            f.step();assertInstanceOf(Action.RefreshInventory.class,f.pending);f.inventory[0]=item(LoggingRules.FIRE_LOG,9);f.advance();
+        } else if(operation.equals("growth refresh")) {
+            f.inventory[11]=item(LoggingRules.FIRE_LOG,9);f.step();assertInstanceOf(Action.RefreshInventory.class,f.pending);f.advance();
+        } else {
+            f.until(()->f.pending instanceof Action.SwapHotbar);f.advance();
+            f.inventory[operation.equals("borrow")?11:0]=item(LoggingRules.FIRE_LOG,9);
+        }
+        assertEquals(ActionOutcome.State.SUCCEEDED,f.outcome.state());assertNull(f.pending);return f;
+    }
+
+    @Test void failedGrowthCheckpointRollsBackTheExactOriginalAndSendsNoRestoreOrOtherAction() {
+        Fixture f=parkedGrowingFireLogsFixture();LoggingHotbarLease original=f.profile.loggingHotbarLease;
+        f.nativeGrowthSupported=true;f.growthReceiptAvailable=true;f.inventory[11]=item(LoggingRules.FIRE_LOG,9);
+        f.failNextCheckpoint=true;
+        assertEquals(WorkResult.State.BLOCKED,f.step().state());assertSame(original,f.profile.loggingHotbarLease);
+        assertEquals(item(LoggingRules.FIRE_LOG,9),f.inventory[11]);assertTrue(f.actions.isEmpty());
+        assertTrue(f.profile.loggingRunActive);assertEquals(1,f.profile.loggingRemainingPlots.size());
+        assertTrue(f.profile.nextEligibleDay.isEmpty());
+    }
+
+    @Test void growingProjectionWithNoNativeProofCannotRenewRefreshOrStartAnInverse() {
+        for(boolean rejected:List.of(false,true)) {
+            Fixture f=parkedGrowingFireLogsFixture();LoggingHotbarLease original=f.profile.loggingHotbarLease;
+            f.nativeGrowthSupported=true;f.inventoryRefreshSupported=true;f.refreshProvesGrowth=false;
+            f.inventory[11]=item(LoggingRules.FIRE_LOG,9);f.step();
+            Action.RefreshInventory refresh=assertInstanceOf(Action.RefreshInventory.class,f.pending);
+            if(rejected)f.reject("no raw inventory receipt");else f.advance();
+            for(int i=0;i<100;i++){f.ticks++;assertEquals(WorkResult.State.BLOCKED,f.step().state());}
+            assertSame(original,f.profile.loggingHotbarLease);assertEquals(List.of(refresh),f.actions);
+            assertEquals(0,f.swaps);assertTrue(f.profile.loggingRunActive);assertTrue(f.profile.nextEligibleDay.isEmpty());
+        }
+    }
+
+    @Test void growthEvidenceCannotOverrideShrinkWrongNativeTagsForeignPartnerOrAnUnconfirmedAction() {
+        for(String unsafe:List.of("shrink","item","tags","foreign partner","same item partner","busy","fence")) {
+            Fixture f=parkedGrowingFireLogsFixture();LoggingHotbarLease original=f.profile.loggingHotbarLease;
+            f.nativeGrowthSupported=true;f.growthReceiptAvailable=true;f.inventory[11]=item(LoggingRules.FIRE_LOG,9);
+            switch(unsafe) {
+                case "shrink"->f.inventory[11]=item(LoggingRules.FIRE_LOG,5);
+                case "item"->f.inventory[11]=item("minecraft:diamond",9);
+                case "tags"->f.fingerprintEpoch++;
+                case "foreign partner"->f.inventory[0]=item("minecraft:diamond",14);
+                case "same item partner"->f.inventory[0]=item(LoggingRules.FIRE_LOG,14);
+                case "busy"->f.forcedNativeBusy=true;
+                case "fence"->f.nativeFence="unconfirmed swap";
+                default->throw new AssertionError(unsafe);
+            }
+            assertEquals(WorkResult.State.BLOCKED,f.step().state(),unsafe);
+            assertSame(original,f.profile.loggingHotbarLease,unsafe);assertTrue(f.actions.isEmpty(),unsafe);
+            assertEquals(0,f.swaps);assertTrue(f.profile.loggingRunActive);
+        }
+    }
+
+    @Test void manualOffDuringGrowthRefreshStaysOffUntilExplicitResumeThenUsesTheNewServerProof() {
+        Fixture f=parkedGrowingFireLogsFixture();f.continuous();f.nativeGrowthSupported=true;f.inventoryRefreshSupported=true;
+        f.inventory[11]=item(LoggingRules.FIRE_LOG,9);
+        AutomationEngine engine=new AutomationEngine(List.of(f.module));engine.start(f.context);engine.tick(f.context);
+        assertInstanceOf(Action.RefreshInventory.class,f.pending);LoggingHotbarLease original=f.profile.loggingHotbarLease;
+        engine.stop(f.context,AutomationEngine.State.OFF,"manual F8 OFF");f.growthReceiptAvailable=true;
+        for(int i=0;i<100;i++){f.ticks++;engine.tick(f.context);}
+        assertEquals(AutomationEngine.State.OFF,engine.state());assertSame(original,f.profile.loggingHotbarLease);
+        assertEquals(1,f.actions.size());assertEquals(0,f.swaps);
+        engine.start(f.context);engine.tick(f.context);
+        assertTrue(engine.running(),engine.status());assertTrue(f.profile.enabled(Feature.LOGGING));
+        assertEquals(9,f.profile.loggingHotbarLease.original().count());assertEquals(1,f.actions.size());
+        engineUntil(f,engine,()->!f.profile.loggingRunActive);
+        assertTrue(engine.running(),engine.status());assertEquals(13,f.stored(LoggingRules.FIRE_LOG));
+    }
+
+    private static Fixture parkedGrowingFireLogsFixture() {
+        Fixture f=new Fixture(1);f.inventory[11]=item(LoggingRules.FIRE_LOG,6);f.inventory[0]=item(LoggingRules.SAPLING,14);
+        f.profile.loggingRunActive=true;f.profile.loggingRemainingPlots.add(f.profile.loggingPlots.get(0).corner());
+        f.profile.loggingHotbarLease=new LoggingHotbarLease(11,0,f.inventory[11],f.loggingItemFingerprint(11),LoggingHotbarLease.Stage.PARKED);
+        return f;
+    }
+    private static Fixture fireLogsBorrowFixture() {
+        Fixture f=new Fixture(1);f.fillHotbar();f.setPlot(0,"minecraft:air");
+        f.inventory[0]=item(LoggingRules.FIRE_LOG,6);f.inventory[11]=item(LoggingRules.SAPLING,14);
+        f.profile.loggingRunActive=true;f.profile.loggingRemainingPlots.add(f.profile.loggingPlots.get(0).corner());
+        f.profile.loggingReplantingPlots.add(f.profile.loggingPlots.get(0).corner());return f;
+    }
+
     @Test void parkedHotbarLeaseSurvivesReconnectAndManualSlotChangesBlockAnInverseSwap() {
         Fixture f=new Fixture(1); f.fillHotbar();
         f.until(() -> f.profile.loggingHotbarLease!=null && f.profile.loggingHotbarLease.stage()==LoggingHotbarLease.Stage.PARKED);
@@ -2287,6 +2622,7 @@ class LoggingModuleTest {
         boolean grounded=true,forcedNativeBusy; String nativeFence; ItemData cursor=ItemData.EMPTY;
         LoggingHotbarLease authoritativeRestoredLease;
         boolean inventoryRefreshSupported,refreshProvesRestoration=true;
+        boolean nativeGrowthSupported,growthReceiptAvailable,refreshProvesGrowth=true,growthRestorationProven;
         final Set<Pos> loggingTargets=new HashSet<>(),blockedNavigation=new HashSet<>(); int loggingMoves;
         Navigation.Failure navigationFailure=Navigation.Failure.NONE;ActionOutcome navigationOutcome;boolean safeNavigationFailure;
         final Map<Pos,Integer> nativeChops=new HashMap<>(); int strokesPerTree=2;
@@ -2338,6 +2674,9 @@ class LoggingModuleTest {
                 events.add("swap:"+(++swaps));
             } else if(action instanceof Action.RefreshInventory) {
                 if (refreshProvesRestoration) authoritativeRestoredLease=profile.loggingHotbarLease;
+                if(nativeGrowthSupported && refreshProvesGrowth) {
+                    growthReceiptAvailable=true;growthRestorationProven=refreshProvesRestoration;
+                }
                 events.add("refresh:confirmed");
             } else if(action instanceof Action.ClearLoggingLeaf leaf) {
                 assertEquals(2,selected);assertEquals(LoggingRules.AXE,inventory[selected].id());
@@ -2487,7 +2826,25 @@ class LoggingModuleTest {
         public boolean busy() { return pending!=null || forcedNativeBusy; }
         public String pauseReason() { return nativeFence; }
         public boolean loggingHotbarRestored(LoggingHotbarLease lease) {
-            return authoritativeRestoredLease!=null ? authoritativeRestoredLease.equals(lease) : ActionPort.super.loggingHotbarRestored(lease);
+            return growthRestorationProven && lease.original().equals(inventory[lease.hotbarSlot()])
+                && lease.fingerprint().equals(loggingItemFingerprint(lease.hotbarSlot()))
+                || (authoritativeRestoredLease!=null ? authoritativeRestoredLease.equals(lease) : ActionPort.super.loggingHotbarRestored(lease));
+        }
+        public LoggingHotbarLease loggingHotbarGrowth(LoggingHotbarLease lease) {
+            assertNull(pending,"An inventory proof cannot settle a pending native action");
+            if(!nativeGrowthSupported || !growthReceiptAvailable || !lease.fingerprint().equals(fingerprint(lease.original())))return null;
+            for(int index:new int[]{lease.sourceIndex(),lease.hotbarSlot()}) {
+                ItemData current=inventory[index],working=inventory[index==lease.sourceIndex()?lease.hotbarSlot():lease.sourceIndex()];
+                if(current.count()<=lease.original().count() || current.count()>64 || !current.is(lease.original().id())
+                    || !LoggingRules.temporaryHotbarItem(working) || working.is(lease.original().id()))continue;
+                if(!lease.original().equals(new ItemData(current.id(),lease.original().count(),current.quality(),current.year(),current.hoe(),current.durability())))continue;
+                return new LoggingHotbarLease(lease.sourceIndex(),lease.hotbarSlot(),current,loggingItemFingerprint(index),lease.stage());
+            }
+            return null;
+        }
+        private String fingerprint(ItemData item) {
+            try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest((item.toString()+fingerprintEpoch).getBytes(StandardCharsets.UTF_8)));}
+            catch(Exception e){throw new AssertionError(e);}
         }
         public boolean supportsInventoryRefresh() {
             return inventoryRefreshSupported || ActionPort.super.supportsInventoryRefresh();

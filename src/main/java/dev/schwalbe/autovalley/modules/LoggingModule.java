@@ -12,13 +12,17 @@ public final class LoggingModule implements AutomationModule {
     private static final int CLEANUP_QUIET_TICKS=20,CLEANUP_QUIET_TIMEOUT=400;
     private static final int MINING_QUIET_TICKS=2,MINING_QUIET_TIMEOUT=100;
     private enum Stage { START, PLOT, CHOP, LEAF_SEARCH, LEAF_APPROACH, SETTLE, PLANT, WASTE, PARTIAL_CLEANUP, RESTORE, CRAFT_OPEN, CRAFT, CRAFT_CLOSE, WOOD, BERRIES, FINISH }
-    private enum Pending { SELECT, SWAP, BORROW, RESTORE, REFRESH, CHOP, LEAF, PLANT, TRASH, OPEN, CRAFT, CLOSE }
+    private enum Pending { SELECT, SWAP, BORROW, RESTORE, REFRESH, GROWTH_REFRESH, CHOP, LEAF, PLANT, TRASH, OPEN, CRAFT, CLOSE }
     private Stage stage=Stage.START;
     private boolean restoreBeforePlot;
     private boolean restorationRefreshRequested;
     private LoggingHotbarLease restorationRefreshLease;
+    private LoggingHotbarLease growthRefreshLease,growthRefreshAttemptLease;
+    private Pending growthRefreshCompletion;
     private record PartialCleanup(Profile profile,List<LoggingPlot> plots,List<Pos> remaining,List<Pos> replanting,Long due) { }
     private PartialCleanup partialCleanup;
+    private record RetainedWait(WorldAccess world,PartialCleanup obligations) { }
+    private RetainedWait retainedWait;
     /** An observed plot obstruction carries no native failure or completion receipt. */
     private static final class PlotObstruction extends RuntimeException {
         PlotObstruction(String message) { super(message); }
@@ -80,6 +84,10 @@ public final class LoggingModule implements AutomationModule {
         // revokes quiet approval, but an uninterrupted stationary next stroke need not sleep.
         sampleMiningPose(c);
         try {
+            if (retainedWait!=null) {
+                if (!retainedWaitMatches(c)) return fail("벌목 대기 중 등록 또는 미완료 기록이 바뀌었습니다. 남은 작업을 보존했습니다.");
+                retainedWait=null;
+            }
             if (localRetryWait!=null) {
                 ResourceReadiness readiness=localRetryWaitReadiness(c);
                 if(readiness==ResourceReadiness.UNSAFE) return fail("벌목 재시도 전 미확인 조작·등록 변경을 확인해야 합니다. 미완료 기록은 보존했습니다.");
@@ -98,9 +106,46 @@ public final class LoggingModule implements AutomationModule {
             if (ticket>=0) {
                 ActionOutcome outcome=c.actions().outcome(ticket);
                 if (!outcome.done()) return busy("서버 응답 확인 중");
+                if (outcome.success() && custodyReceipt(pending) && !c.world().player().onGround()) {
+                    // The server ACK is already real, but its custody continuation
+                    // still needs the ordinary grounded boundary. Retain this exact
+                    // ticket until landing; neither replay the swap nor consume its
+                    // ACK and then reject a legitimate pickup against the old count.
+                    if (c.actions().busy() || c.actions().pauseReason()!=null || c.world().menu()==null
+                        || c.world().menu().container() || !c.world().menu().carried().empty()
+                        || !c.profile().loggingRunActive || c.profile().loggingHotbarLease==null
+                        || c.profile().workHotbarLease!=null || MachineOutputLedger.hasPending(c))
+                        return fail("단축바 확인 응답 후 착지 대기 중 조작 경계가 바뀌었습니다. 복원 의무를 보존했습니다.");
+                    validateRemaining(c);
+                    if (plot!=null && (!c.profile().loggingPlots.contains(plot) || !c.profile().loggingRemainingPlots.contains(plot.corner()))
+                        || pending==Pending.GROWTH_REFRESH && c.profile().loggingHotbarLease!=growthRefreshLease
+                        || pending==Pending.REFRESH && c.profile().loggingHotbarLease!=restorationRefreshLease)
+                        return fail("단축바 확인 응답 후 착지 대기 중 등록 또는 복원 기록이 바뀌었습니다.");
+                    c.actions().stopMovement();
+                    return busy("단축바 서버 확인 응답을 보존하고 정상 착지 대기");
+                }
                 ticket=-1;
                 if (!outcome.success()) return fail("벌목 작업 응답 실패: "+outcome.message());
                 Pending completed=pending; pending=null;
+                if (completed==Pending.GROWTH_REFRESH) {
+                    if (c.profile().loggingHotbarLease!=growthRefreshLease)
+                        return fail("단축바 수량 확인 중 복원 기록이 바뀌었습니다. 같은 교환을 재전송하지 않습니다.");
+                    Pending continuation=growthRefreshCompletion;
+                    WorkResult growth=reconcileLeaseGrowth(c,continuation);
+                    if (growth!=null) return growth;
+                    if (c.profile().loggingHotbarLease==growthRefreshLease)
+                        return fail("서버 인벤토리를 다시 받았지만 원래 단축바 아이템의 수량 증가가 확인되지 않았습니다.");
+                    if (continuation==Pending.REFRESH) restorationRefreshLease=c.profile().loggingHotbarLease;
+                    completed=continuation; growthRefreshLease=null; growthRefreshCompletion=null;
+                } else if (completed==Pending.BORROW || completed==Pending.RESTORE || completed==Pending.REFRESH) {
+                    if (completed==Pending.REFRESH && c.profile().loggingHotbarLease!=restorationRefreshLease)
+                        return fail("단축바 복원 확인 중 복원 기록이 바뀌었습니다. 복원 의무를 보존했습니다.");
+                    // The swap's actual ACK may include a pickup into the displaced
+                    // original. Update custody before comparing the exact endpoints.
+                    WorkResult growth=reconcileLeaseGrowth(c,completed);
+                    if (growth!=null) return growth;
+                    if (completed==Pending.REFRESH) restorationRefreshLease=c.profile().loggingHotbarLease;
+                }
                 if (completed==Pending.CHOP) {
                     if (outcome.confirmedCount()<=0) return fail("벌목 진행이 서버에서 확인되지 않았습니다.");
                     if (++chopStrokes>512) return fail("한 나무의 벌목 진행 횟수가 한도를 넘었습니다. 밑동을 확인하세요.");
@@ -144,6 +189,8 @@ public final class LoggingModule implements AutomationModule {
                     craftingMenu=-1; stage=Stage.WOOD;
                 }
             }
+            WorkResult growth=reconcileLeaseGrowth(c,null);
+            if (growth!=null) return growth;
             if (partialCleanup!=null && !partialCleanupMatches(c)) {
                 if (c.actions().busy()) return busy("기존 정리 조작의 서버 확인을 기다립니다");
                 return fail("중간 목재 정리 중 벌목 등록·미완료 기록이 바뀌었습니다. 남은 작업을 완료 처리하지 않습니다.");
@@ -474,6 +521,9 @@ public final class LoggingModule implements AutomationModule {
         }
         throw new IllegalStateException("Unknown logging stage");
     }
+    private static boolean custodyReceipt(Pending completed) {
+        return completed==Pending.BORROW || completed==Pending.RESTORE || completed==Pending.REFRESH || completed==Pending.GROWTH_REFRESH;
+    }
 
     private boolean approach(Context c,Pos target,double reach) {
         approachResult=null;
@@ -604,7 +654,7 @@ public final class LoggingModule implements AutomationModule {
                 fail("벌목 시야 대기의 안전한 작업 경계를 확인할 수 없습니다. 미완료 구역을 보존하고 중지합니다.");
             else if (beginPartialCleanup(c))
                 approachResult=busy("시야가 막힌 구역은 남겨 두고 이미 수거한 목재부터 정리");
-            else approachResult=WorkResult.resourceWait("벌목 시야 대기: 등록한 2x2 밑동을 볼 수 있는 안전한 격자 위치가 없습니다. "
+            else approachResult=retainResourceWait(c,"벌목 시야 대기: 등록한 2x2 밑동을 볼 수 있는 안전한 격자 위치가 없습니다. "
                 +"미완료 구역을 보존한 채 "+(once(c) ? "이 작업은 대기하고 " : "다른 작업을 진행하고 ")
                 +"1200틱 후 다시 확인합니다. 잎·다른 블록은 임의로 제거하지 않습니다.");
         }
@@ -649,6 +699,13 @@ public final class LoggingModule implements AutomationModule {
         return true;
     }
     private WorkResult observePlot(Context c,LoggingPlot target) {
+        if (stage==Stage.CHOP && target.equals(plot) && choppingApproach!=null
+            && choppingApproach.status()==LoggingApproachSearch.Status.NO_VISIBLE_STANCE) {
+            // The other routine may have unloaded this site. Its old negative
+            // cannot replace a fresh visibility scan after ordinary observation.
+            invisiblePlots.remove(target.corner()); choppingApproach=null; visibilityRetryAt=-1;
+            clearMiningQuiet(); leafApproach=null; leafTarget=null; leafBase=null;
+        }
         Pos missing=target.plantingPositions().stream().filter(p -> !c.world().loaded(p)).findFirst().orElse(target.corner());
         WorkResult result=stage==Stage.START || stage==Stage.WASTE
             ? observationWindow.observe(c,missing,8,"벌목 구역 "+target.name()+" 관측")
@@ -788,7 +845,7 @@ public final class LoggingModule implements AutomationModule {
             if (retainedResourceReadiness(c)!=ResourceReadiness.WAITING)
                 return fail("재식재 재료 대기 상태를 안전하게 확인할 수 없습니다. 미완료 구역을 보존했습니다.");
             if (beginPartialCleanup(c)) return busy("재식재용 묘목은 보존하고 수거한 목재부터 정리");
-            return WorkResult.resourceWait("벌목 재식재 보류: 가문비나무 묘목 "+available+"/"+required
+            return retainResourceWait(c,"벌목 재식재 보류: 가문비나무 묘목 "+available+"/"+required
                 +"개. 2x2 미완료 구역을 보존하며 묘목 보충 후 다시 확인합니다.");
         }
         return busy("가문비나무 묘목 도착 대기 ("+available+"/"+required+"개, "+((saplingWaitUntil-c.world().tick()+19)/20)+"초 남음)");
@@ -802,7 +859,21 @@ public final class LoggingModule implements AutomationModule {
     }
     @Override public boolean sleepSafeResourceWait(Context c) {
         return localRetryWait!=null ? localRetryWait.environment() && localRetryWaitReadiness(c)!=ResourceReadiness.UNSAFE
-            : retainedResourceReadiness(c)!=ResourceReadiness.UNSAFE;
+            : retainedResourceReadiness(c)==ResourceReadiness.WAITING;
+    }
+    private WorkResult retainResourceWait(Context c,String message) {
+        retainedWait=new RetainedWait(c.world(),new PartialCleanup(c.profile(),List.copyOf(c.profile().loggingPlots),
+            List.copyOf(c.profile().loggingRemainingPlots),List.copyOf(c.profile().loggingReplantingPlots),
+            c.profile().nextEligibleDay.get(LoggingRules.DUE_KEY)));
+        return WorkResult.resourceWait(message);
+    }
+    private boolean retainedWaitMatches(Context c) {
+        if (retainedWait==null) return true;
+        PartialCleanup saved=retainedWait.obligations();
+        return retainedWait.world()==c.world() && saved.profile()==c.profile()
+            && saved.plots().equals(c.profile().loggingPlots) && saved.remaining().equals(c.profile().loggingRemainingPlots)
+            && saved.replanting().equals(c.profile().loggingReplantingPlots)
+            && Objects.equals(saved.due(),c.profile().nextEligibleDay.get(LoggingRules.DUE_KEY));
     }
     @Override public boolean sleepSafeDeferred(Context c) {
         return environmentDeferred && stage==Stage.START && failure==null && !c.profile().loggingRunActive
@@ -832,7 +903,7 @@ public final class LoggingModule implements AutomationModule {
     private ResourceReadiness retainedResourceReadiness(Context c) {
         // No menu actions, world changes, saved deadlines or ground-item guesses here.
         if (failure!=null || stage!=Stage.PLANT && stage!=Stage.CHOP || pending!=null || ticket>=0 || plot==null
-            || !plotRestoreBoundary(c) || c.profile().loggingHotbarLease!=null || !navigationRetryBoundary(c))
+            || !plotRestoreBoundary(c) || c.profile().loggingHotbarLease!=null || !navigationRetryBoundary(c) || !retainedWaitMatches(c))
             return ResourceReadiness.UNSAFE;
         try { validateRemaining(c); }
         catch (RuntimeException invalid) { return ResourceReadiness.UNSAFE; }
@@ -860,10 +931,14 @@ public final class LoggingModule implements AutomationModule {
                 || choppingApproach.status()!=LoggingApproachSearch.Status.NO_VISIBLE_STANCE
                 || !c.world().player().onGround() || c.actions().busy() || c.actions().pauseReason()!=null
                 || c.world().menu()==null || c.world().menu().container() || !c.world().menu().carried().empty()
-                || MachineOutputLedger.hasPending(c) || plot.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p)))
+                || MachineOutputLedger.hasPending(c))
                 return ResourceReadiness.UNSAFE;
+            // Unknown/changed terrain revokes only this negative observation.
+            // READY transfers back to the ordinary observe/inspect/native-proof
+            // path; it never grants a chop, planting receipt or safe sleep.
+            if (plot.plantingPositions().stream().anyMatch(p -> !c.world().loaded(p))) return ResourceReadiness.READY;
             List<Pos> stumps=plot.plantingPositions().stream().filter(p -> LoggingRules.stump(c.world().block(p))).toList();
-            if (!choppingApproach.matches(c.world(),stumps)) return ResourceReadiness.UNSAFE;
+            if (!choppingApproach.matches(c.world(),stumps)) return ResourceReadiness.READY;
         } else if (!c.profile().loggingReplantingPlots.contains(plot.corner())) return ResourceReadiness.UNSAFE;
         boolean unprocessed=false,unobservedNegative=false;
         for (Pos corner:c.profile().loggingRemainingPlots) {
@@ -876,7 +951,7 @@ public final class LoggingModule implements AutomationModule {
                 continue;
             }
             if (negative!=null && !negative.matches(c.world(),candidate.plantingPositions().stream()
-                .filter(p -> LoggingRules.stump(c.world().block(p))).toList())) return ResourceReadiness.UNSAFE;
+                .filter(p -> LoggingRules.stump(c.world().block(p))).toList())) return ResourceReadiness.READY;
             try { inspect(c,candidate); }
             catch (RuntimeException changed) { return ResourceReadiness.UNSAFE; }
             long trunks=candidate.plantingPositions().stream().filter(p -> c.world().block(p).id().equals(LoggingRules.LOG)).count();
@@ -1052,6 +1127,44 @@ public final class LoggingModule implements AutomationModule {
             && lease.fingerprint().equals(c.world().loggingItemFingerprint(lease.hotbarSlot()))
             && LoggingRules.temporaryHotbarItem(item(c,lease.sourceIndex()));
     }
+    /** A larger live projection requests evidence; only the native receipt can change custody. */
+    private WorkResult reconcileLeaseGrowth(Context c,Pending continuation) {
+        LoggingHotbarLease lease=c.profile().loggingHotbarLease;
+        if (lease==null || parked(c,lease) || restored(c,lease) || !idleActionBoundary(c)) return null;
+        ItemData source=item(c,lease.sourceIndex()),hotbar=item(c,lease.hotbarSlot());
+        boolean atSource=lease.stage()!=LoggingHotbarLease.Stage.RESTORING && projectedGrowth(lease.original(),source)
+            && distinctTemporary(hotbar,lease.original());
+        boolean atHotbar=projectedGrowth(lease.original(),hotbar) && distinctTemporary(source,lease.original());
+        if (!atSource && !atHotbar) return null;
+        LoggingHotbarLease candidate=c.actions().loggingHotbarGrowth(lease);
+        if (candidate!=null) {
+            if (candidate.sourceIndex()!=lease.sourceIndex() || candidate.hotbarSlot()!=lease.hotbarSlot()
+                || candidate.stage()!=lease.stage() || !projectedGrowth(lease.original(),candidate.original())
+                || candidate.fingerprint()==null || !candidate.fingerprint().matches("[0-9a-fA-F]{64}")
+                || !(atSource && parked(c,candidate) || atHotbar && restored(c,candidate)))
+                return fail("서버가 확인한 단축바 수량과 현재 복원 기록이 다릅니다. 복원 의무를 보존했습니다.");
+            saveLease(c,candidate);
+            clearCleanupQuiet();
+            return null;
+        }
+        if (c.actions().supportsInventoryRefresh() && growthRefreshAttemptLease!=lease) {
+            // One non-mutating FULL request per unchanged lease; this never
+            // resends the already acknowledged borrow/restore operation.
+            growthRefreshAttemptLease=lease; growthRefreshLease=lease; growthRefreshCompletion=continuation;
+            c.actions().stopMovement();
+            submit(c,new Action.RefreshInventory(),Pending.GROWTH_REFRESH);
+            return busy("단축바 원래 아이템의 증가한 수량을 서버 인벤토리로 확인");
+        }
+        return fail("단축바 원래 아이템의 증가한 수량을 서버에서 확인할 수 없습니다. 복원 의무를 보존했습니다.");
+    }
+    private static boolean projectedGrowth(ItemData original,ItemData current) {
+        return original!=null && current!=null && !original.empty() && !current.empty()
+            && current.count()>original.count() && current.count()<=64
+            && original.equals(new ItemData(current.id(),original.count(),current.quality(),current.year(),current.hoe(),current.durability()));
+    }
+    private static boolean distinctTemporary(ItemData working,ItemData original) {
+        return LoggingRules.temporaryHotbarItem(working) && (working.empty() || !working.is(original.id()));
+    }
     private static void saveLease(Context c,LoggingHotbarLease lease) {
         LoggingHotbarLease before=c.profile().loggingHotbarLease; c.profile().loggingHotbarLease=lease;
         try { c.checkpoint().run(); }
@@ -1090,7 +1203,8 @@ public final class LoggingModule implements AutomationModule {
     private WorkResult fail(String text) { failure=text; return WorkResult.blocked(text); }
     @Override public void reset() {
         stage=Stage.START; restoreBeforePlot=false; restorationRefreshRequested=false; partialCleanup=null; pending=null; ticket=-1; actionPos=null; plot=null; table=null; craftingMenu=-1;
-        restorationRefreshLease=null; localRetryWait=null; environmentDeferred=false;
+        restorationRefreshLease=null; growthRefreshLease=null; growthRefreshAttemptLease=null; growthRefreshCompletion=null; retainedWait=null;
+        localRetryWait=null; environmentDeferred=false;
         // Scheduler resets must not turn the bounded ALL_GROWN readiness poll into
         // a per-tick scan. Explicit one-shot and durable active resumes bypass it.
         chopStrokes=trashOperations=craftOperations=0; settleUntil=0; saplingWaitUntil=-1; saplingWaitRequired=0; failure=null;
