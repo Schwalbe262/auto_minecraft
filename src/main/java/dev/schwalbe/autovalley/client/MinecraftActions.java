@@ -80,6 +80,11 @@ public final class MinecraftActions implements ActionPort {
             && lateLoggingAction==null && lateLoggingRecipe==null && lateLoggingSwap==null && loggingFailure==null
             && artisanAttempt==null && wineFeedAttempt==null && artisanAttempts.size()==0;
     }
+    @Override public String manualWorkHotbarResolutionRejection() {
+        // Do not call startRejection()/pauseReason(): those may reconcile late
+        // replies or clear failures. Manual cleanup is never an action receipt.
+        return settingsEditSafe() ? null : "자동화를 끄고 미확인 조작·서버 응답이 해결된 뒤 수동 정리를 확인해 주세요";
+    }
     @Override public String artisanRejection(Pos target) {
         return artisanAttempts.blocked(target,observations.generation(),attempt->attempt.confirmed(observations))
             ? "이 가공 기계의 이전 서버 응답이 아직 불확실합니다. 재클릭하지 않고 다른 작업을 진행합니다." : null;

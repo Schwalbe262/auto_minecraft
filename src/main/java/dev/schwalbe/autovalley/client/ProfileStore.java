@@ -195,6 +195,7 @@ public final class ProfileStore {
         if (workLease!=null && (!workLease.valid() || workLease.hotbarSlot()==profile.hoeHotbarSlot
                 || workLease.hotbarSlot()==profile.loggingAxeHotbarSlot || profile.loggingHotbarLease!=null))
             throw new IllegalArgumentException("Invalid or overlapping work hotbar restoration obligation");
+        ManualWorkHotbarResolution.validate(profile);
         CoordinateDestinationRules.validate(profile);
         AdditionalWorkRules.validate(profile);
         WineProductionRules.validate(profile);
@@ -203,6 +204,6 @@ public final class ProfileStore {
         // drafts or logging obligations. A work lease requires schema 7 so an older
         // client cannot silently discard its custody record. Do not downgrade after
         // restoration; unchanged legacy profiles remain schema 6. Load never rewrites disk.
-        profile.schemaVersion=Math.max(profile.schemaVersion,workLease==null ? 6 : 7);
+        profile.schemaVersion=Math.max(profile.schemaVersion,workLease==null && profile.manualWorkHotbarResolutions.isEmpty() ? 6 : 7);
     }
 }

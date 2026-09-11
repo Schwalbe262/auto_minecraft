@@ -27,6 +27,8 @@ public final class Profile {
     public LoggingHotbarLease loggingHotbarLease = null;
     /** Owner OFF does not waive restoration of this one temporarily relocated hotbar item. */
     public HotbarLease workHotbarLease = null;
+    /** Explicit operator acknowledgements only; never native restoration or action-completion evidence. */
+    public List<ManualWorkHotbarResolution.Entry> manualWorkHotbarResolutions = new ArrayList<>();
     public Map<Feature, Boolean> enabled = new EnumMap<>(Feature.class);
     public boolean allowBackground = true;
     public boolean continueHarvestWhenFull = true;

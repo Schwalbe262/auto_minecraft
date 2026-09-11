@@ -16,6 +16,8 @@ public interface ActionPort {
     default String pauseReason() { return null; }
     /** Explicit manual resume may clear an already-resolved failure, never a late-ACK fence. */
     default String startRejection() { return pauseReason(); }
+    /** Explicit operator cleanup must not reconcile a late reply or clear any native failure. */
+    default String manualWorkHotbarResolutionRejection() { return "Manual work hotbar resolution requires a read-only native safety check"; }
     /**
      * Read-only server proof of current restored custody for this exact lease, with no unresolved action.
      * The native FULL must follow same-connection swap dispatch/manual slot input and match the live endpoints.
