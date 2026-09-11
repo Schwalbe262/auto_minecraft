@@ -4,6 +4,7 @@ run/
 .tools/
 .local/
 *.log
+/logs/
 *.hprof
 config/autovalley/
 **/recordings/*.jsonl
