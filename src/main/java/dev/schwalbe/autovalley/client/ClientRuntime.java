@@ -7,6 +7,7 @@ import dev.schwalbe.autovalley.navigation.LocalNavigator;
 import dev.schwalbe.autovalley.ui.ValleyScreen;
 import dev.schwalbe.autovalley.ui.LoggingLeafSettings;
 import dev.schwalbe.autovalley.ui.ManualWorkHotbarConfirmation;
+import dev.schwalbe.autovalley.ui.ManualLoggingHotbarConfirmation;
 import dev.schwalbe.autovalley.ui.WineLineEditPolicy;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
@@ -320,6 +321,25 @@ public final class ClientRuntime {
             return true;
         } catch (RuntimeException failure) {
             notifyUser("수동 정리 확인을 저장하지 못했습니다. 기존 임시 단축바 기록을 보존합니다."); return false;
+        }
+    }
+    /** Explicit logging-custody acknowledgement; retained plots and every native fence remain intact. */
+    public String manualLoggingHotbarConfirmationRejection(String expectedKey) {
+        if (!ManualLoggingHotbarConfirmation.editable(profile,loggingLeafSettingBoundary()))
+            return "자동화와 기록을 멈추고 연결·메뉴·커서·진행 중 조작·저장 상태를 확인하세요.";
+        return ManualLoggingHotbarResolution.rejection(context,expectedKey);
+    }
+    public boolean acknowledgeManualLoggingHotbar(String expectedKey) {
+        String rejection=manualLoggingHotbarConfirmationRejection(expectedKey);
+        if (rejection!=null) { notifyUser(rejection); return false; }
+        try {
+            if (!ManualLoggingHotbarResolution.confirm(context,expectedKey)) {
+                notifyUser("선택한 벌목 임시 단축바 기록이 바뀌었습니다. 다시 확인해 주세요."); return false;
+            }
+            notifyUser(Component.translatable("autovalley.logging_hotbar.manual_saved").getString());
+            return true;
+        } catch (RuntimeException failure) {
+            notifyUser("수동 정리 확인을 저장하지 못했습니다. 기존 벌목 임시 단축바와 남은 작업을 보존합니다."); return false;
         }
     }
     public void saveProfile() {

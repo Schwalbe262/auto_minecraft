@@ -112,7 +112,7 @@ class HotbarLeaseProfileStoreTest {
         for(int cause=0;cause<3;cause++) {
             Profile p=new Profile();p.workHotbarLease=cause==0 ? lease().withStage(null) : cause==1
                 ? new HotbarLease(Feature.HARVEST,12,1,ORIGINAL,FINGERPRINT) : lease();
-            p.schemaVersion=cause==2 ? 9 : 7;String bytes=json.toJson(p);Files.writeString(file,bytes);
+            p.schemaVersion=cause==2 ? 10 : 7;String bytes=json.toJson(p);Files.writeString(file,bytes);
             assertThrows(IOException.class,()->store.load(key));assertEquals(bytes,Files.readString(file));
         }
     }

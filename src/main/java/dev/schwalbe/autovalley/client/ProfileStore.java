@@ -159,7 +159,7 @@ public final class ProfileStore {
         return directory.resolve(key+".json");
     }
     public static void validate(Profile profile) {
-        if (profile==null || profile.schemaVersion<1 || profile.schemaVersion>8 || profile.pois==null || profile.farms==null || profile.enabled==null
+        if (profile==null || profile.schemaVersion<1 || profile.schemaVersion>9 || profile.pois==null || profile.farms==null || profile.enabled==null
             || profile.nextEligibleDay==null || profile.disposalDirections==null) throw new IllegalArgumentException("Unsupported or incomplete profile");
         if(profile.strictHarvestTimingVersion<0 || profile.strictHarvestTimingVersion>1)
             throw new IllegalArgumentException("Unsupported harvest timing policy");
@@ -196,6 +196,7 @@ public final class ProfileStore {
                 || workLease.hotbarSlot()==profile.loggingAxeHotbarSlot || profile.loggingHotbarLease!=null))
             throw new IllegalArgumentException("Invalid or overlapping work hotbar restoration obligation");
         ManualWorkHotbarResolution.validate(profile);
+        ManualLoggingHotbarResolution.validate(profile);
         CrystalRefillRules.validate(profile);
         CoordinateDestinationRules.validate(profile);
         AdditionalWorkRules.validate(profile);
@@ -207,5 +208,6 @@ public final class ProfileStore {
         // restoration; unchanged legacy profiles remain schema 6. Load never rewrites disk.
         profile.schemaVersion=Math.max(profile.schemaVersion,workLease==null && profile.manualWorkHotbarResolutions.isEmpty() ? 6 : 7);
         if(!profile.crystalRefills.isEmpty())profile.schemaVersion=Math.max(profile.schemaVersion,8);
+        if(!profile.manualLoggingHotbarResolutions.isEmpty())profile.schemaVersion=Math.max(profile.schemaVersion,9);
     }
 }

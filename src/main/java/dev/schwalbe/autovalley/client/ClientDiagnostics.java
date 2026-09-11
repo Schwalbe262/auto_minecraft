@@ -70,6 +70,20 @@ public final class ClientDiagnostics {
         report.put("wineLineEditRejection",runtime.wineLineSettingsRejection());
         report.put("failureHistory",runtime.failureHistory());
         report.put("crystals",runtime.crystalReport());
+        Profile loggingProfile=runtime.profile();
+        Map<String,Object> logging=new LinkedHashMap<>();
+        logging.put("enabled",loggingProfile.enabled(Feature.LOGGING));
+        logging.put("active",loggingProfile.loggingRunActive);
+        logging.put("remainingPlots",List.copyOf(loggingProfile.loggingRemainingPlots));
+        logging.put("replantingPlots",List.copyOf(loggingProfile.loggingReplantingPlots));
+        logging.put("hotbarLease",loggingProfile.loggingHotbarLease);
+        logging.put("nextEligibleDay",loggingProfile.nextEligibleDay.get(LoggingRules.DUE_KEY));
+        if (ManualLoggingHotbarResolution.validLease(loggingProfile.loggingHotbarLease)) {
+            String key=ManualLoggingHotbarResolution.confirmationKey(loggingProfile.loggingHotbarLease);
+            logging.put("manualConfirmationKey",key);
+            logging.put("manualConfirmationRejection",runtime.manualLoggingHotbarConfirmationRejection(key));
+        }
+        report.put("logging",logging);
         var workLease=runtime.profile().workHotbarLease;
         report.put("workHotbar",workLease==null ? Map.of() : Map.of("owner",workLease.owner().name(),
             "stage",workLease.stage().name(),"hotbarSlot",workLease.hotbarSlot(),"parkedInventorySlot",workLease.sourceIndex()));

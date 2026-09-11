@@ -31,6 +31,8 @@ public final class Profile {
     public HotbarLease workHotbarLease = null;
     /** Explicit operator acknowledgements only; never native restoration or action-completion evidence. */
     public List<ManualWorkHotbarResolution.Entry> manualWorkHotbarResolutions = new ArrayList<>();
+    /** Operator release of a logging slot only; remaining plots and replanting obligations stay active. */
+    public List<ManualLoggingHotbarResolution.Entry> manualLoggingHotbarResolutions = new ArrayList<>();
     public Map<Feature, Boolean> enabled = new EnumMap<>(Feature.class);
     public boolean allowBackground = true;
     public boolean continueHarvestWhenFull = true;

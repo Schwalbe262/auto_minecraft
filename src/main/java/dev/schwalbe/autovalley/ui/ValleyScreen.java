@@ -83,6 +83,7 @@ public final class ValleyScreen extends Screen {
     private PendingMachineOutput selectedPendingOutput;
     private MachineOutputLedger.Resolution pendingResolution;
     private ManualWorkHotbarConfirmation.Selection selectedWorkHotbar;
+    private ManualLoggingHotbarConfirmation.Selection selectedLoggingHotbar;
     private EditBox nameInput, classifierInput;
     private String feedback = "";
     private boolean feedbackError;
@@ -264,11 +265,13 @@ public final class ValleyScreen extends Screen {
         button(left+(third+6)*2,144,panelWidth-(third+6)*2,tr("orchard_draft.title"),()->minecraft.setScreen(new OrchardDraftsScreen(this)));
         Button manual=button(left,167,panelWidth,tr("work_hotbar.manual_open"),()->{
             selectedWorkHotbar=ManualWorkHotbarConfirmation.capture(runtime.profile());
-            if(selectedWorkHotbar==null){error("work_hotbar.changed");return;}
+            selectedLoggingHotbar=selectedWorkHotbar==null?ManualLoggingHotbarConfirmation.capture(runtime.profile()):null;
+            if(selectedWorkHotbar==null && selectedLoggingHotbar==null){error("work_hotbar.changed");return;}
             toolPage=ToolPage.WORK_HOTBAR_CONFIRM;rebuild();
         });
         ManualWorkHotbarConfirmation.Selection available=ManualWorkHotbarConfirmation.capture(runtime.profile());
-        String manualRejection=available==null?tr("work_hotbar.changed").getString():runtime.manualWorkHotbarConfirmationRejection(available.key());
+        ManualLoggingHotbarConfirmation.Selection availableLogging=available==null?ManualLoggingHotbarConfirmation.capture(runtime.profile()):null;
+        String manualRejection=manualHotbarRejection(available,availableLogging);
         manual.active=manualRejection==null;
         manual.setTooltip(Tooltip.create(manualRejection==null?tr("work_hotbar.manual_hint")
             :Component.literal(manualRejection).append("\n").append(tr("work_hotbar.manual_hint"))));
@@ -280,28 +283,42 @@ public final class ValleyScreen extends Screen {
 
     private void manualWorkHotbarConfirmation() {
         text(55,tr("work_hotbar.manual_open"));
-        boolean current=selectedWorkHotbar!=null && selectedWorkHotbar.matches(runtime.profile());
+        boolean logging=selectedLoggingHotbar!=null && selectedWorkHotbar==null;
+        boolean current=logging?selectedLoggingHotbar.matches(runtime.profile())
+            :selectedWorkHotbar!=null && selectedWorkHotbar.matches(runtime.profile());
         if(current) {
-            HotbarLease lease=selectedWorkHotbar.lease();
-            text(77,tr("work_hotbar.selected",lease.original().id(),lease.original().count()));
-            text(95,tr("work_hotbar.slots",Component.translatable(lease.owner().translationKey()),lease.hotbarSlot()+1,lease.sourceIndex()+1));
+            ItemData original=logging?selectedLoggingHotbar.lease().original():selectedWorkHotbar.lease().original();
+            Feature owner=logging?Feature.LOGGING:selectedWorkHotbar.lease().owner();
+            int hotbar=logging?selectedLoggingHotbar.lease().hotbarSlot():selectedWorkHotbar.lease().hotbarSlot();
+            int source=logging?selectedLoggingHotbar.lease().sourceIndex():selectedWorkHotbar.lease().sourceIndex();
+            text(77,tr("work_hotbar.selected",original.id(),original.count()));
+            text(95,tr("work_hotbar.slots",Component.translatable(owner.translationKey()),hotbar+1,source+1));
         } else text(77,tr("work_hotbar.changed"));
         text(120,tr("work_hotbar.manual_statement"));
-        text(138,tr("work_hotbar.manual_effect"));
+        text(138,tr(logging?"logging_hotbar.manual_effect":"work_hotbar.manual_effect"));
         text(154,tr("work_hotbar.no_actions"));
-        button(left,168,panelWidth,tr("back"),()->{selectedWorkHotbar=null;toolPage=ToolPage.MENU;rebuild();});
+        button(left,168,panelWidth,tr("back"),()->{selectedWorkHotbar=null;selectedLoggingHotbar=null;toolPage=ToolPage.MENU;rebuild();});
         // The final acknowledgement is lower than the first-stage menu button.
         Button confirm=button(left,193,panelWidth,tr("work_hotbar.manual_confirm"),()->{
-            if(selectedWorkHotbar==null || !selectedWorkHotbar.matches(runtime.profile())){error("work_hotbar.changed");rebuild();return;}
-            if(runtime.acknowledgeManualWorkHotbar(selectedWorkHotbar.key())) {
-                selectedWorkHotbar=null;toolPage=ToolPage.MENU;success("work_hotbar.manual_saved");
+            if(manualHotbarRejection(selectedWorkHotbar,selectedLoggingHotbar)!=null){error("work_hotbar.manual_blocked");rebuild();return;}
+            boolean confirmed=logging?runtime.acknowledgeManualLoggingHotbar(selectedLoggingHotbar.key())
+                :runtime.acknowledgeManualWorkHotbar(selectedWorkHotbar.key());
+            if(confirmed) {
+                selectedWorkHotbar=null;selectedLoggingHotbar=null;toolPage=ToolPage.MENU;
+                success(logging?"logging_hotbar.manual_saved":"work_hotbar.manual_saved");
             } else error("work_hotbar.manual_blocked");
             rebuild();
         });
-        String rejection=current?runtime.manualWorkHotbarConfirmationRejection(selectedWorkHotbar.key()):tr("work_hotbar.changed").getString();
+        String rejection=current?manualHotbarRejection(selectedWorkHotbar,selectedLoggingHotbar):tr("work_hotbar.changed").getString();
         confirm.active=rejection==null;
         confirm.setTooltip(Tooltip.create(rejection==null?tr("work_hotbar.manual_hint")
             :Component.literal(rejection).append("\n").append(tr("work_hotbar.manual_hint"))));
+    }
+
+    private String manualHotbarRejection(ManualWorkHotbarConfirmation.Selection work,ManualLoggingHotbarConfirmation.Selection logging) {
+        if(work!=null && logging==null && work.matches(runtime.profile()))return runtime.manualWorkHotbarConfirmationRejection(work.key());
+        if(logging!=null && work==null && logging.matches(runtime.profile()))return runtime.manualLoggingHotbarConfirmationRejection(logging.key());
+        return tr("work_hotbar.changed").getString();
     }
 
     private void recordingName() {

@@ -375,6 +375,8 @@
   "autovalley.work_hotbar.manual_saved": "Manual resolution saved. Automation stays OFF; press F8 separately to start.",
   "autovalley.work_hotbar.manual_blocked": "Cannot confirm. Check the connection, open menus, unconfirmed actions, and saving state.",
   "autovalley.work_hotbar.changed": "The temporary-hotbar entry is missing or changed. Go back and select it again.",
+  "autovalley.logging_hotbar.manual_effect": "Release only the hotbar return record; retain unfinished logging and replanting.",
+  "autovalley.logging_hotbar.manual_saved": "Logging hotbar manual resolution saved. Unfinished logging and replanting remain; automation stays OFF.",
   "key.categories.autovalley": "Auto Valley",
   "key.autovalley.toggle": "Start / pause automation",
   "key.autovalley.settings": "Open Auto Valley settings",

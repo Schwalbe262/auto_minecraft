@@ -104,7 +104,7 @@ class NavigationProfileStoreTest {
 
     @Test void UnknownModeNullDraftCollectionAndFutureSchemaAreRejectedReadOnly() throws Exception {
         String key = ProfileStore.key("broken coordinate format"); Path file = directory.resolve(key + ".json");
-        for (String json : List.of("{\"schemaVersion\":9}", "{\"schemaVersion\":4,\"navigationMode\":\"UNKNOWN\"}",
+        for (String json : List.of("{\"schemaVersion\":10}", "{\"schemaVersion\":4,\"navigationMode\":\"UNKNOWN\"}",
                 "{\"schemaVersion\":3,\"coordinateDestinations\":null}")) {
             Files.writeString(file, json);
             assertThrows(IOException.class, () -> new ProfileStore(directory).load(key));
