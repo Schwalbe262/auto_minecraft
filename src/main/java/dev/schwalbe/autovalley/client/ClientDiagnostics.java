@@ -69,6 +69,7 @@ public final class ClientDiagnostics {
         report.put("status",runtime.status());
         report.put("wineLineEditRejection",runtime.wineLineSettingsRejection());
         report.put("failureHistory",runtime.failureHistory());
+        report.put("crystals",runtime.crystalReport());
         var workLease=runtime.profile().workHotbarLease;
         report.put("workHotbar",workLease==null ? Map.of() : Map.of("owner",workLease.owner().name(),
             "stage",workLease.stage().name(),"hotbarSlot",workLease.hotbarSlot(),"parkedInventorySlot",workLease.sourceIndex()));

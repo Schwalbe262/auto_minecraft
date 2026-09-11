@@ -13,6 +13,8 @@ public final class Profile {
     public List<Poi> pois = new ArrayList<>();
     public Map<String,MachineGroup> machineGroups = new LinkedHashMap<>();
     public Map<String,ArtisanJob> artisanJobs = new LinkedHashMap<>();
+    /** Exact server-observed originals awaiting same-kind refill; never inferred from a legacy jade job. */
+    public Map<String,CrystalRefill> crystalRefills = new LinkedHashMap<>();
     public List<Farm> farms = new ArrayList<>();
     public Map<String,CommodityStore> commodityStores = new LinkedHashMap<>();
     public Map<String,String> cropStores = new LinkedHashMap<>();

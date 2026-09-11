@@ -45,6 +45,11 @@ public final class WorkHotbarLeasePolicy {
             return !workingItem(c.profile(),lease.owner(),source.item()) ? "Transfer is outside the leased work owner" : null;
         }
         if(action instanceof Action.SelectHotbar)return null;
+        if(action instanceof Action.InspectCrystal inspect) {
+            ArtisanRecipe recipe=ArtisanRules.at(c.profile(),inspect.pos());
+            return lease.owner()!=Feature.CRYSTAL_COPY || recipe==null || recipe.feature()!=Feature.CRYSTAL_COPY
+                ? "This lease does not authorize that crystal inspection" : null;
+        }
         if(action instanceof Action.CloseContainer)return !c.actions().ownsContainer() ? "Work lease cannot close an unowned menu" : null;
         if(action instanceof Action.UseBlock use) {
             return switch(use.purpose()) {

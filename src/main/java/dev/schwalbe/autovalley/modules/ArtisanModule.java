@@ -6,7 +6,7 @@ import java.util.*;
 /** One bounded service pass over registered artisan jobs; native actions own every inventory mutation. */
 public final class ArtisanModule implements AutomationModule {
     private enum Stage { START, JOB, TARGET, CHOOSE, SOURCE, SNAPSHOT, FETCH_SOURCE, FETCH, APPROACH, EQUIP, VERIFY, PICKUP, OUTPUT, RETURN_INPUT }
-    private enum Pending { CLOSE, OPEN_SCAN, OPEN_FETCH, WITHDRAW, SWAP, CLEAR_OUTPUT, SELECT, USE }
+    private enum Pending { CLOSE, OPEN_SCAN, OPEN_FETCH, WITHDRAW, SWAP, CLEAR_OUTPUT, SELECT, INSPECT_TARGET, INSPECT_EQUIP, USE }
     private enum Equipment { READY, PENDING, NO_SLOT }
     private final Feature feature;
     private final HotbarWorkspace workspace;
@@ -25,7 +25,7 @@ public final class ArtisanModule implements AutomationModule {
     private int scanPasses;
     private int inputBefore,outputBefore,withdrawalBefore,expectedOutput;
     private Pos source;
-    private boolean stockReady,feeding,collected,cycleAdvanced;
+    private boolean stockReady,feeding,collected,cycleAdvanced,crystalEquipInspected,crystalOriginalKnown;
     private long stockDay=-1;
     private String deferredAfterCleanup;
     private final Map<String,Set<String>> uncertainJobs=new LinkedHashMap<>();
@@ -40,11 +40,12 @@ public final class ArtisanModule implements AutomationModule {
     }
     @Override public Feature feature() { return feature; }
     @Override public int priority() { return feature==Feature.SEED_MAKER ? 72 : 74; }
-    private boolean collectOnly() { return feature==Feature.CRYSTAL_COPY; }
+    private boolean crystalMode() { return feature==Feature.CRYSTAL_COPY; }
     private Pos target() { return machines.get(machineIndex); }
     private static long day(Context c) { return Math.floorDiv(c.world().dayTime(),24000L); }
     private String status(String phase) {
-        return (feature==Feature.SEED_MAKER ? "씨앗기" : "결정복제기")+" "+(job==null ? "" : job.id()+" ")
+        return (feature==Feature.SEED_MAKER ? "씨앗기 "+(job==null ? "" : job.id()+" ")
+            : "결정생성기 "+(crystalOriginalKnown && recipe!=null ? "["+recipe.inputId()+"] " : ""))
             +Math.min(machineIndex+1,machines.size())+"/"+machines.size()+" — "+phase;
     }
 
@@ -81,6 +82,8 @@ public final class ArtisanModule implements AutomationModule {
             if (!result.done()) return WorkResult.busy(status("서버 확인 대기"));
             ticket=-1;
             if (!result.success()) {
+                if (pending==Pending.INSPECT_TARGET || pending==Pending.INSPECT_EQUIP)
+                    return skipUncertainTarget(c,"결정복제기의 현재 원본을 확인하지 못했습니다: "+result.message());
                 String uncertainty=pending==Pending.USE ? c.actions().artisanRejection(target()) : null;
                 if(uncertainty!=null) return skipUncertainTarget(c,uncertainty);
                 return fail("가공 조작 실패: "+result.message());
@@ -96,8 +99,12 @@ public final class ArtisanModule implements AutomationModule {
                     if (!validMenu(c) || inputCount(c,grade)<=withdrawalBefore) return fail("재료 인출 수량이 확인되지 않았습니다");
                     snapshot(c);stage=Stage.FETCH;
                 }
-                case SWAP,SELECT -> stage=Stage.EQUIP;
-                case CLEAR_OUTPUT -> stage=Stage.CHOOSE;
+                case SWAP,SELECT -> { crystalEquipInspected=false;stage=Stage.EQUIP; }
+                case CLEAR_OUTPUT -> { crystalEquipInspected=false;stage=Stage.CHOOSE; }
+                case INSPECT_TARGET,INSPECT_EQUIP -> {
+                    WorkResult inspected=acceptCrystalInspection(c,completed==Pending.INSPECT_EQUIP);
+                    if(inspected!=null)return inspected;
+                }
                 case USE -> {
                     cycleAdvanced=result.proof()==ActionOutcome.Proof.ARTISAN_CYCLE_ADVANCED;
                     verifySince=c.world().tick();stage=Stage.VERIFY;
@@ -114,6 +121,7 @@ public final class ArtisanModule implements AutomationModule {
             }
             case JOB -> { return selectJob(c); }
             case TARGET -> {
+                crystalOriginalKnown=false;
                 if (machineIndex>=machines.size()) { stage=Stage.OUTPUT;break; }
                 String uncertainty=c.actions().artisanRejection(target());
                 if(uncertainty!=null)return skipUncertainTarget(c,uncertainty);
@@ -122,21 +130,18 @@ public final class ArtisanModule implements AutomationModule {
                 if (nav==Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"등록한 가공 기계에 접근할 수 없습니다");
                 if (nav!=Navigation.Result.ARRIVED) return WorkResult.busy(status("기계로 이동"));
                 BlockData block=machine(c);
-                if (block.flag("working") || collectOnly() && !block.flag("mature")) {
+                if (crystalMode()) {
+                    crystalEquipInspected=false;submit(c,new Action.InspectCrystal(target()),Pending.INSPECT_TARGET);break;
+                }
+                if (block.flag("working")) {
                     schedule(c,1);machineIndex++;break;
                 }
                 stage=Stage.CHOOSE;
             }
             case CHOOSE -> {
-                if (collectOnly()) {
-                    // The player supplies each original. Carried crystals and legacy
-                    // jade jobs never authorize feeding or replacing that original.
-                    grade=-1;feeding=false;
-                    if (chooseHotbar(c,false)<0) return deferHotbarShortage(c);
-                    stage=Stage.APPROACH;break;
-                }
                 grade=carriedGrade(c);
                 boolean emptyHandCollection=grade<0 && recipe.sameInputAndOutput() && machine(c).flag("mature");
+                feeding=!emptyHandCollection;
                 // Check capacity before surveying or withdrawing ingredients. Recheck
                 // again in EQUIP before dispatch; no tool is borrowed to create it.
                 if (chooseHotbar(c,!emptyHandCollection)<0) return deferHotbarShortage(c);
@@ -144,14 +149,16 @@ public final class ArtisanModule implements AutomationModule {
                 if (emptyHandCollection) {
                     feeding=false;stage=Stage.APPROACH;break;
                 }
+                if (crystalMode() && (inputStore==null || !inputStore.items().contains(recipe.inputId())))
+                    return skipUncertainTarget(c,"같은 원본 "+recipe.inputId()+"을 재투입할 등록 재료 저장소가 없습니다");
                 if (!stockReady || stockDay!=day(c)) {
-                    if (scanPasses>=2) return deferAfterCleanup(c,"재료 상태가 바뀌거나 한 배치로 합칠 수 없습니다. 재조사를 잠시 보류합니다");
+                    if (scanPasses>=2) return materialShortage(c,"재료 상태가 바뀌거나 한 배치로 합칠 수 없습니다. 재조사를 잠시 보류합니다");
                     beginScan(c);break;
                 }
                 int[] totals=totals(c);grade=largestGrade(totals,recipe.inputCount());
-                if (grade<0) return deferAfterCleanup(c,"등록한 저장고에 한 배치의 재료가 부족합니다");
+                if (grade<0) return materialShortage(c,"등록한 저장고에 한 배치의 재료가 부족합니다");
                 source=sourceForGrade();
-                if (source==null) return deferAfterCleanup(c,"같은 등급의 조각 재료를 한 배치 크기로 합친 뒤 다시 확인하세요");
+                if (source==null) return materialShortage(c,"같은 등급의 조각 재료를 한 배치 크기로 합친 뒤 다시 확인하세요");
                 feeding=true;stage=Stage.FETCH_SOURCE;
             }
             case SOURCE -> {
@@ -175,7 +182,7 @@ public final class ArtisanModule implements AutomationModule {
                 if (!validMenu(c)) return fail("재료 인출 중 저장고가 바뀌었습니다");
                 snapshot(c);
                 if (stockDay!=day(c)) { stockReady=false;close(c,Stage.CHOOSE);break; }
-                int needed=Math.max(0,(machines.size()-machineIndex)*recipe.inputCount()-inputCount(c,grade));
+                int needed=Math.max(0,(crystalMode()?1:machines.size()-machineIndex)*recipe.inputCount()-inputCount(c,grade));
                 boolean funded=ingredient(c,grade)!=null;
                 if (funded && (needed==0 || emptySlots(c)<=2)) { close(c,Stage.APPROACH);break; }
                 if (emptySlots(c)<=2) { deferredAfterCleanup="재료와 산출물용 빈 인벤토리 칸이 필요합니다";close(c,Stage.OUTPUT);break; }
@@ -200,22 +207,27 @@ public final class ArtisanModule implements AutomationModule {
                 if (closeIfNeeded(c,Stage.APPROACH)) break;
                 Navigation.Result nav=c.navigation().moveTo(target(),4,c);
                 if (nav==Navigation.Result.BLOCKED) return ModuleSupport.navigationResult(c,"재료를 들고 기계에 접근할 수 없습니다");
-                if (nav==Navigation.Result.ARRIVED) { settledSince=c.world().tick();stage=Stage.EQUIP; }
+                if (nav==Navigation.Result.ARRIVED) { settledSince=c.world().tick();crystalEquipInspected=false;stage=Stage.EQUIP; }
             }
             case EQUIP -> {
                 c.actions().stopMovement();
                 if (c.world().menu().container() || !c.world().menu().carried().empty()) return fail("가공 전 상자와 커서를 비우세요");
                 BlockData block=machine(c);
-                if (block.flag("working") || collectOnly() && !block.flag("mature")) { schedule(c,1);machineIndex++;stage=Stage.TARGET;break; }
+                if (!crystalMode() && block.flag("working")) { schedule(c,1);machineIndex++;stage=Stage.TARGET;break; }
                 if (feeding && ingredient(c,grade)==null) { stage=Stage.CHOOSE;break; }
                 Equipment equipment=equip(c);
                 if (equipment==Equipment.NO_SLOT) return deferHotbarShortage(c);
                 if (equipment==Equipment.PENDING) return WorkResult.busy(status("사용할 재료 준비"));
+                if (crystalMode() && !crystalEquipInspected) {
+                    submit(c,new Action.InspectCrystal(target()),Pending.INSPECT_EQUIP);break;
+                }
                 collected=block.flag("mature");
                 if (!feeding && !collected) { stage=Stage.CHOOSE;break; }
                 if (collected && emptySlots(c)<1) return deferAfterCleanup(c,"완성품을 받을 빈 인벤토리 칸이 필요합니다");
                 if (c.world().tick()-settledSince<2) break;
                 if (!c.world().canInteract(target(),4)) { c.navigation().reset();stage=Stage.APPROACH;break; }
+                // The same fresh server inspection must be saved before this use can erase its original.
+                if(crystalMode() && collected)CrystalRefillRules.remember(c,job,target(),recipe.inputId());
                 inputBefore=inputCount(c,grade);outputBefore=outputCount(c);
                 expectedOutput=outputBefore+(collected ? recipe.outputCount() : 0)
                     -(feeding && recipe.sameInputAndOutput() ? recipe.inputCount() : 0);
@@ -245,9 +257,11 @@ public final class ArtisanModule implements AutomationModule {
                     ? feeding && block.flag("mature") && !block.flag("working")
                     : !block.flag("mature") && block.flag("working")==feeding;
                 if (stateConfirmed && inputConfirmed) {
-                    if (feeding || collectOnly()) {
+                    if (feeding) {
                         if (dispatchDay==Long.MIN_VALUE) return fail("가공 전송 날짜가 없어 다음 확인일을 저장할 수 없습니다");
-                        scheduleAt(c,Math.addExact(dispatchDay,collectOnly() ? 1 : recipe.cycleDays()));stockReady=false;scanPasses=0;
+                        long nextDay=Math.addExact(dispatchDay,recipe.cycleDays());
+                        if(crystalMode())CrystalRefillRules.complete(c,job,target(),nextDay);else scheduleAt(c,nextDay);
+                        stockReady=false;scanPasses=0;
                     }
                     stage=collected ? Stage.PICKUP : Stage.TARGET;
                     if (!collected) machineIndex++;
@@ -256,8 +270,8 @@ public final class ArtisanModule implements AutomationModule {
             }
             case PICKUP -> {
                 if (outputCount(c)>=expectedOutput) {
-                    if (feeding || collectOnly()) { machineIndex++;stage=Stage.TARGET; }
-                    else stage=Stage.CHOOSE;
+                    if (feeding) { machineIndex++;stage=Stage.TARGET; }
+                    else { crystalEquipInspected=false;stage=Stage.CHOOSE; }
                     break;
                 }
                 c.actions().stopMovement();
@@ -272,13 +286,13 @@ public final class ArtisanModule implements AutomationModule {
                 stage=Stage.RETURN_INPUT;
             }
             case RETURN_INPUT -> {
-                if (!collectOnly() && !recipe.sameInputAndOutput()) {
+                if (!crystalMode() && !recipe.sameInputAndOutput()) {
                     WorkResult result=inputReturn.tick(c);
                     if (result.state()!=WorkResult.State.IDLE) return result;
                 }
                 if (deferredAfterCleanup!=null) return deferClean(c,deferredAfterCleanup);
                 jobIndex++;stage=Stage.JOB;
-                if (collectOnly() && ModuleSupport.count(c,i -> CrystalCollection.accepts(i)
+                if (crystalMode() && ModuleSupport.count(c,i -> CrystalCollection.accepts(i)
                         && !CrystalCollection.BASE_OUTPUT_IDS.contains(i.id()) && !CrystalCollection.outputIds(c.profile(),job).contains(i.id()))>0)
                     return WorkResult.busy(status("미등록 결정 보너스는 인벤토리에 남겨 둡니다 — 이 작업은 자동 보관·판매하지 않습니다"));
             }
@@ -291,16 +305,16 @@ public final class ArtisanModule implements AutomationModule {
         // finishes. Quiet jobs must therefore yield in this same tick, not
         // reserve another multi-tick 0/0 pass that starves every later module.
         while (jobIndex<jobs.size()) {
-            job=jobs.get(jobIndex);recipe=job.recipe();
-            inputStore=collectOnly() ? null : CommodityStorageRules.store(c.profile(),job.inputStoreId());
+            job=jobs.get(jobIndex);recipe=job.recipe();crystalOriginalKnown=false;
+            inputStore=CommodityStorageRules.store(c.profile(),job.inputStoreId());
             CommodityStore output=CommodityStorageRules.store(c.profile(),job.outputStoreId());
-            Set<String> outputs=collectOnly() ? CrystalCollection.outputIds(c.profile(),job) : Set.of(recipe.outputId());
-            if (output==null || outputs.isEmpty() || !collectOnly() && (inputStore==null
+            Set<String> outputs=crystalMode() ? CrystalCollection.outputIds(c.profile(),job) : Set.of(recipe.outputId());
+            if (output==null || outputs.isEmpty() || !crystalMode() && (inputStore==null
                     || !inputStore.items().contains(recipe.inputId()) || !output.items().contains(recipe.outputId())))
                 return fail("가공 작업의 입력·출력 품목 저장고를 등록하세요");
             boolean due=job.machines().stream().anyMatch(p -> eligible(c,p));
             boolean held=c.world().inventory().stream().map(ItemSlot::item)
-                .anyMatch(item -> collectOnly() ? !item.empty() && outputs.contains(item.id()) : item.is(recipe.inputId()) || item.is(recipe.outputId()));
+                .anyMatch(item -> crystalMode() ? !item.empty() && outputs.contains(item.id()) : item.is(recipe.inputId()) || item.is(recipe.outputId()));
             if (!due && !held) { jobIndex++;continue; }
             if (due && Math.floorMod(c.world().dayTime(),24000)<240)
                 return WorkResult.busy(status("아침 기계 상태 갱신 대기"));
@@ -308,7 +322,7 @@ public final class ArtisanModule implements AutomationModule {
                 .sorted(Comparator.comparingDouble(p -> c.world().player().distance(p))).toList();
             machineIndex=0;scanPasses=0;stockReady=false;stock.clear();stockDay=-1;
             outputStorage=new CommodityStorageModule(feature,job.outputStoreId(),outputs);
-            inputReturn=collectOnly() ? null : new CommodityStorageModule(feature,job.inputStoreId(),Set.of(recipe.inputId()));
+            inputReturn=crystalMode() ? null : new CommodityStorageModule(feature,job.inputStoreId(),Set.of(recipe.inputId()));
             stage=machines.isEmpty() ? Stage.OUTPUT : Stage.TARGET;
             return WorkResult.busy(status(phaseLabel()));
         }
@@ -330,7 +344,41 @@ public final class ArtisanModule implements AutomationModule {
             default -> "등록한 배치 처리 중";
         };
     }
-    private String scheduleKey(Pos p) { return collectOnly() ? CrystalCollection.scheduleKey(job,p) : job.scheduleKey(p); }
+    private WorkResult acceptCrystalInspection(Context c,boolean beforeUse) {
+        CrystalInspection inspected=c.actions().crystalInspection(target());
+        BlockData block=machine(c);
+        if(inspected==null || !target().equals(inspected.pos()) || inspected.mature()!=block.flag("mature")
+                || inspected.working()!=block.flag("working") || inspected.mature() && inspected.working())
+            return skipUncertainTarget(c,"결정복제기의 현재 원본·상태 조회가 일치하지 않습니다");
+        ArtisanRecipe actual=CrystalRecipe.forInput(inspected.inputId());
+        if(inspected.working()) {
+            if(actual==null)return skipUncertainTarget(c,"가동 중인 결정복제기의 원본을 확인하지 못했습니다");
+            CrystalRefillRules.complete(c,job,target(),Math.addExact(day(c),1));
+            machineIndex++;crystalEquipInspected=false;stage=Stage.TARGET;
+            return WorkResult.busy(status("이미 같은 기계가 가동 중 — 다음 기계 확인"));
+        }
+        if(inspected.mature()) {
+            if(actual==null)return skipUncertainTarget(c,"지원되지 않거나 확인되지 않은 결정 원본은 교체하지 않습니다");
+        } else {
+            if(!inspected.empty())return skipUncertainTarget(c,"비어 있는 결정복제기의 상태를 확정하지 못했습니다");
+            actual=CrystalRefillRules.pendingRecipe(c.profile(),job,target());
+            if(actual==null) {
+                schedule(c,1);machineIndex++;crystalEquipInspected=false;stage=Stage.TARGET;
+                return WorkResult.busy(status("원본을 직접 넣지 않은 빈 기계는 건너뜁니다"));
+            }
+        }
+        boolean changed=recipe==null || !recipe.inputId().equals(actual.inputId());
+        recipe=actual;
+        crystalOriginalKnown=true;
+        if(changed) { stockReady=false;stock.clear();stockDay=-1;scanPasses=0;grade=-1; }
+        crystalEquipInspected=beforeUse && !changed;
+        stage=crystalEquipInspected?Stage.EQUIP:Stage.CHOOSE;
+        return null;
+    }
+    private WorkResult materialShortage(Context c,String reason) {
+        return crystalMode()?skipUncertainTarget(c,reason+" — 같은 원본 재투입 기록은 보존합니다"):deferAfterCleanup(c,reason);
+    }
+    private String scheduleKey(Pos p) { return crystalMode() ? CrystalCollection.scheduleKey(job,p) : job.scheduleKey(p); }
     private boolean eligible(Context c,Pos p) { return day(c)>=c.profile().nextEligibleDay.getOrDefault(scheduleKey(p),Long.MIN_VALUE); }
     private BlockData machine(Context c) {
         if (!c.world().loaded(target())) throw new IllegalStateException("Machine is not loaded");
@@ -355,8 +403,7 @@ public final class ArtisanModule implements AutomationModule {
         return item!=null && item.is(recipe.inputId()) && item.quality()==selectedGrade && selectedGrade>=0 && selectedGrade<=3;
     }
     private int inputCount(Context c,int selectedGrade) { return ModuleSupport.count(c,i -> input(i,selectedGrade)); }
-    private int outputCount(Context c) { return ModuleSupport.count(c,i -> collectOnly()
-        ? !i.empty() && CrystalCollection.BASE_OUTPUT_IDS.contains(i.id()) : i.is(recipe.outputId())); }
+    private int outputCount(Context c) { return ModuleSupport.count(c,i -> i.is(recipe.outputId())); }
     private int emptySlots(Context c) { return 36-(int)c.world().inventory().stream().filter(s -> !s.item().empty()).count(); }
     private ItemSlot ingredient(Context c,int selectedGrade) {
         return c.world().inventory().stream().filter(s -> s.inventoryIndex()>=0 && s.inventoryIndex()<36
@@ -422,7 +469,7 @@ public final class ArtisanModule implements AutomationModule {
     }
     /** A pickup may occupy the one leased empty hand. Only that slot's known crystal can move. */
     private boolean clearCollectedWorkingSlot(Context c) {
-        if (!collectOnly() || feeding || !workspace.owns(c)) return false;
+        if (!crystalMode() || feeding || !workspace.owns(c)) return false;
         HotbarLease lease=c.profile().workHotbarLease;
         if (lease.stage()!=HotbarLease.Stage.PARKED || !c.actions().workHotbarParked(lease)) return false;
         ItemSlot collected=c.world().inventory().stream().filter(s -> s.player() && s.inventoryIndex()==lease.hotbarSlot())
@@ -446,7 +493,9 @@ public final class ArtisanModule implements AutomationModule {
             if (index==c.profile().hoeHotbarSlot) continue;
             ItemData item=ItemData.EMPTY;
             for (ItemSlot slot:c.world().inventory()) if (slot.inventoryIndex()==index) item=slot.item();
-            if (item.empty() || forFeeding && (item.is(recipe.inputId()) || item.is(recipe.outputId()))) return index;
+            if (item.empty() || forFeeding && (item.is(recipe.inputId()) || item.is(recipe.outputId())
+                    || crystalMode() && workspace.owns(c) && index==c.profile().workHotbarLease.hotbarSlot()
+                        && CrystalCollection.accepts(item))) return index;
         }
         return -1;
     }
@@ -497,7 +546,7 @@ public final class ArtisanModule implements AutomationModule {
         sleepSafeDefer=false;
         if (outputStorage!=null) outputStorage.reset();if (inputReturn!=null) inputReturn.reset();
         stage=Stage.START;pending=null;ticket=-1;job=null;recipe=null;inputStore=null;jobs=List.of();machines=List.of();sources=List.of();
-        stock.clear();stockReady=false;stockDay=-1;source=null;containerId=-1;settledSince=-1;dispatchDay=Long.MIN_VALUE;cycleAdvanced=false;grade=-1;hotbar=-1;
+        stock.clear();stockReady=false;stockDay=-1;source=null;containerId=-1;settledSince=-1;dispatchDay=Long.MIN_VALUE;cycleAdvanced=false;crystalEquipInspected=false;crystalOriginalKnown=false;grade=-1;hotbar=-1;
         jobIndex=0;machineIndex=0;sourceIndex=0;scanPasses=0;deferredAfterCleanup=null;uncertainJobs.clear();outputStorage=null;inputReturn=null;
     }
 }

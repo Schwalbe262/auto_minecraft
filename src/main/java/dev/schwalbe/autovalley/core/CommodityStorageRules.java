@@ -44,9 +44,10 @@ public final class CommodityStorageRules {
             if(job==null)continue;
             ArtisanRecipe recipe=ArtisanRecipe.find(job.recipeId());
             CommodityStore store=store(c.profile(),job.inputStoreId());
-            if(recipe!=null && recipe.feature()!=Feature.CRYSTAL_COPY
+            if(recipe!=null
                 && c.session().allows(c.profile(),recipe.feature()) && store!=null
-                && store.containers().contains(pos) && store.accepts(item) && item.is(recipe.inputId()))return true;
+                && store.containers().contains(pos) && store.accepts(item)
+                && (recipe.feature()==Feature.CRYSTAL_COPY ? CrystalRefillRules.pendingInput(c.profile(),job,item) : item.is(recipe.inputId())))return true;
         }
         return false;
     }
@@ -85,7 +86,8 @@ public final class CommodityStorageRules {
             ArtisanRecipe recipe=ArtisanRecipe.find(job.recipeId());
             if(recipe!=null && c.session().allows(c.profile(),recipe.feature())
                 && (storeId.equals(job.outputStoreId())
-                    || recipe.feature()!=Feature.CRYSTAL_COPY && storeId.equals(job.inputStoreId())))return true;
+                    || storeId.equals(job.inputStoreId()) && (recipe.feature()!=Feature.CRYSTAL_COPY
+                        || CrystalRefillRules.hasPending(c.profile(),job))))return true;
         }
         return false;
     }

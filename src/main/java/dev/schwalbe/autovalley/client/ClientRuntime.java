@@ -69,6 +69,15 @@ public final class ClientRuntime {
     public boolean running() { return pendingShipmentRecovery!=null || coordinateTravel!=null || engine.running(); }
     /** Bounded local diagnostic data; contains private destination coordinates. */
     public Map<String,Object> navigationReport() { return navigator.diagnostics(); }
+    /** Passive diagnostics only; retained replies are not a fresh inspection or click permission. */
+    public Map<String,Object> crystalReport() {
+        Set<Pos> registered=new HashSet<>();
+        for(ArtisanJob job:profile.artisanJobs.values())
+            if(job.recipe().feature()==Feature.CRYSTAL_COPY)registered.addAll(job.machines());
+        var replies=observations.nativeCrystalsSince(0).stream().filter(reply->registered.contains(reply.pos())).toList();
+        return Map.of("generation",observations.generation(),"pendingRefills",List.copyOf(profile.crystalRefills.values()),
+            "recentServerReplies",replies.subList(Math.max(0,replies.size()-32),replies.size()));
+    }
     /** Bounded failures survive manual pause/start within this connection. */
     public List<EngineFailureHistory.Entry> failureHistory() { return engine.failureHistory(); }
     public boolean recording() { return recorder.recording(); }

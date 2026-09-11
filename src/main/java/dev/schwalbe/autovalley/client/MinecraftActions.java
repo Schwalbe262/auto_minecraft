@@ -28,6 +28,7 @@ public final class MinecraftActions implements ActionPort {
     private net.minecraft.world.item.ItemStack artisanIngredient;
     private final ArtisanAttemptFence<NativeArtisanReceipt.Attempt> artisanAttempts=new ArtisanAttemptFence<>(128);
     private NativeArtisanReceipt.Attempt artisanAttempt;
+    private NativeCrystalInspection crystalInspection;
     private NativeWineFeedReceipt.Attempt wineFeedAttempt;
     private Movement movement;
     private long movementAt;
@@ -67,8 +68,8 @@ public final class MinecraftActions implements ActionPort {
             if (inventoryRefresh!=null) inventoryRefresh.confirmed(observations);
         });
     }
-    public void context(Context context) { this.context=context; }
-    public void enabled(boolean enabled) { if (!enabled) stopMovement(); this.enabled=enabled; }
+    public void context(Context context) { if(this.context!=context)crystalInspection=null;this.context=context; }
+    public void enabled(boolean enabled) { if (!enabled) { stopMovement();crystalInspection=null; } this.enabled=enabled; }
     public boolean busy() { return pending!=null; }
     /** Read-only settings boundary: never reconciles a late reply or clears a failure. */
     public boolean settingsEditSafe() {
@@ -89,12 +90,26 @@ public final class MinecraftActions implements ActionPort {
         return artisanAttempts.blocked(target,observations.generation(),attempt->attempt.confirmed(observations))
             ? "이 가공 기계의 이전 서버 응답이 아직 불확실합니다. 재클릭하지 않고 다른 작업을 진행합니다." : null;
     }
+    @Override public CrystalInspection crystalInspection(Pos target) {
+        var result=crystalInspectionResult(target);
+        return result==null ? null : result.inspection();
+    }
+    private NativeCrystalInspection.Result crystalInspectionResult(Pos target) {
+        if(crystalInspection==null || !enabled || context==null || target==null || !target.equals(crystalInspection.target)
+            || mc.player==null || mc.level==null || mc.gameMode==null || mc.getConnection()==null
+            || mc.player.containerMenu!=mc.player.inventoryMenu || mc.player.inventoryMenu.containerId!=0
+            || !mc.player.inventoryMenu.getCarried().isEmpty()
+            || SafetyPolicy.rejection(new Action.InspectCrystal(target),context)!=null)return null;
+        return crystalInspection.read(observations,context,world.block(target),
+            mc.level.getBlockState(MinecraftWorld.nativePos(target)),world.tick());
+    }
     @Override public boolean supportsMovingHarvest() { return true; }
     @Override public boolean supportsInventoryRefresh() { return true; }
     @Override public boolean supportsInventoryTrash() { return NativeTrashSlot.available(); }
     @Override public String inventoryTrashRejection() { return NativeTrashSlot.preflightRejection(); }
     /** A manual slot/key event invalidates older custody views, without changing a ticket or lease. */
     public void manualHotbarCustodyInteraction() {
+        crystalInspection=null;
         lastHotbarSwapGeneration=observations.generation();lastHotbarSwapSequence=observations.sequence();
     }
     @Override public boolean loggingHotbarRestored(LoggingHotbarLease lease) {
@@ -260,13 +275,31 @@ public final class MinecraftActions implements ActionPort {
         return null;
     }
     private void execute(Action action) {
+        if(action instanceof Action.InspectCrystal inspect) {
+            crystalInspection=null;
+            if(mc.player==null || mc.level==null || mc.gameMode==null || mc.getConnection()==null
+                || SafetyPolicy.rejection(inspect,context)!=null) {
+                finish(ActionOutcome.State.FAILED,"Crystal inspection context changed before the request");return;
+            }
+            var hit=world.hit(inspect.pos(),mc.player.getEyePosition());
+            if(hit==null || !MinecraftWorld.nativePos(inspect.pos()).equals(hit.getBlockPos())
+                || hit.getLocation().distanceTo(mc.player.getEyePosition())>Math.min(4.0,mc.gameMode.getPickRange())) {
+                finish(ActionOutcome.State.FAILED,"Crystal inspection requires a visible target within normal reach");return;
+            }
+            BlockState state=mc.level.getBlockState(hit.getBlockPos());
+            crystalInspection=new NativeCrystalInspection(inspect.pos(),context,world.block(inspect.pos()),state,
+                observations.generation(),observations.sequence(),world.tick());
+            // Ordinary Jade tooltip request only: no aim/input, useItemOn, inventory click or hand change.
+            mc.getConnection().send(NativeJadePackets.request(hit,net.minecraft.world.level.block.Block.getId(state)));
+            return;
+        }
         if (action instanceof Action.UseBlock use) {
             if (use.purpose()==Action.Use.OPEN_CONTAINER || use.purpose()==Action.Use.OPEN_CRAFTING) { ownedMenu=-1; ownedContainer=null; ownedShape=null; }
             var hit=world.hit(use.pos(),mc.player.getEyePosition());
             if (hit==null) { finish(ActionOutcome.State.FAILED,"Target no longer visible"); return; }
             lookAt(hit.getLocation());
             if(use.purpose()==Action.Use.ARTISAN) {
-                artisanAttempt=new NativeArtisanReceipt.Attempt(ArtisanRules.at(context.profile(),use.pos()),use.pos(),beforeBlock,
+                artisanAttempt=new NativeArtisanReceipt.Attempt(ArtisanRules.forAction(context,use.pos()),use.pos(),beforeBlock,
                     artisanIngredient,beforePlayer.selectedSlot(),beforeMenu.id(),beforeMenu,beforeSequence,observations.generation());
                 if(!artisanAttempts.sent(use.pos(),observations.generation(),artisanAttempt)) {
                     artisanAttempt=null;finish(ActionOutcome.State.FAILED,"Unconfirmed artisan attempt prevents another send");return;
@@ -280,6 +313,8 @@ public final class MinecraftActions implements ActionPort {
                 wineFeedAttempt=new NativeWineFeedReceipt.Attempt(use.pos(),beforeBlock,mc.player.getMainHandItem(),
                     beforePlayer.selectedSlot(),beforeMenu.id(),beforeMenu,beforeSequence,observations.generation());
             }
+            // Capture the dynamic recipe above before retiring the read-only observation.
+            crystalInspection=null;
             var result=mc.gameMode.useItemOn(mc.player,InteractionHand.MAIN_HAND,hit);
             if (result.consumesAction()) mc.player.swing(InteractionHand.MAIN_HAND);
             // PASS does not trigger useItem(): eating/air-use is never a fallback.
@@ -348,6 +383,17 @@ public final class MinecraftActions implements ActionPort {
         if (!enabled || mc.player==null || (!context.profile().allowBackground && !mc.isWindowActive())) { cancel(); return; }
         if (world.tick()==started) return;
         MenuData menu=world.menu();
+        if(pending instanceof Action.InspectCrystal inspect) {
+            var result=crystalInspectionResult(inspect.pos());
+            if(result==null || !result.current())
+                finish(ActionOutcome.State.FAILED,"Crystal inspection expired or its target/context changed");
+            else if(result.replied())
+                finish(result.inspection()==null ? ActionOutcome.State.FAILED : ActionOutcome.State.SUCCEEDED,
+                    result.inspection()==null ? "Server did not identify a supported crystal original" : "Server identified the crystalarium recipe");
+            else if(world.tick()-started>=context.profile().interactionTimeoutTicks)
+                finish(ActionOutcome.State.FAILED,"No crystal inspection reply; no machine click was sent");
+            return;
+        }
         if (inventoryRefresh!=null) {
             if (inventoryRefresh.generation!=observations.generation() || mc.player.containerMenu!=mc.player.inventoryMenu)
                 finish(ActionOutcome.State.FAILED,"인벤토리 동기화 중 접속 또는 메뉴가 변경됐습니다.");
@@ -817,6 +863,7 @@ public final class MinecraftActions implements ActionPort {
     public void stopMovement() { movement=null; clearLoggingJump(); if (mc.player!=null && enabled) mc.player.setSprinting(false); }
     public void cancel() {
         stopMovement();
+        crystalInspection=null;
         if (consolidationRecovery!=null) consolidationRecovery.cancel();
         if (pending!=null) finish(ActionOutcome.State.CANCELLED,"Cancelled without additional input");
         // Ownership survives pause only for diagnostics; start() requires manual closure.
@@ -837,6 +884,7 @@ public final class MinecraftActions implements ActionPort {
         loggingAction=null; loggingRecipe=null; loggingSwap=null;
     }
     private void finishArtisan(ActionOutcome.State state) {
+        if(pending instanceof Action.InspectCrystal && state!=ActionOutcome.State.SUCCEEDED)crystalInspection=null;
         if(artisanAttempt!=null && state==ActionOutcome.State.SUCCEEDED)artisanAttempts.confirmed(artisanAttempt.target(),artisanAttempt);
         artisanAttempt=null; // Failed/cancelled sent attempts remain in their target-scoped RAM fence.
     }

@@ -12,7 +12,7 @@ class EngineSafetyTest {
 
     @Test void actionAllowListHasNoGenericAttackAndAddsOnlyScopedLoggingMutations() {
         assertTrue(Action.class.isSealed());
-        assertEquals(Set.of(Action.UseBlock.class,Action.SelectHotbar.class,Action.SwapHotbar.class,Action.RefreshInventory.class,
+        assertEquals(Set.of(Action.UseBlock.class,Action.InspectCrystal.class,Action.SelectHotbar.class,Action.SwapHotbar.class,Action.RefreshInventory.class,
             Action.QuickMove.class,Action.ThrowRotten.class,Action.TrashRotten.class,Action.CloseContainer.class,Action.ConsolidateInventory.class,
             Action.ChopTree.class,Action.ClearLoggingLeaf.class,Action.PlantSapling.class,Action.CraftFireLogs.class,Action.TrashLogging.class),Set.of(Action.class.getPermittedSubclasses()));
         assertEquals(Set.of("HARVEST","MACHINE","ARTISAN","FRUIT","OPEN_CONTAINER","OPEN_CRAFTING","SLEEP","DOOR"),

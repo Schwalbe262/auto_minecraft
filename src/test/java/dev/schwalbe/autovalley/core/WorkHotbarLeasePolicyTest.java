@@ -9,6 +9,31 @@ class WorkHotbarLeasePolicyTest {
     private static final ItemData ORIGINAL=item("minecraft:torch",17),JADE=item("society:jade",3);
     private static final String HASH="a".repeat(64);
     private static ItemData item(String id,int count){return new ItemData(id,count,0,null,false,999);}
+    @Test void crystalInspectionIsReadOnlyButStillRequiresItsExactEnabledRegisteredOwnerAndNormalMenu() {
+        Fixture f=new Fixture();Action inspect=new Action.InspectCrystal(MACHINE);
+        assertNull(SafetyPolicy.rejection(inspect,f.context));assertNull(f.crystalInspection(MACHINE));
+        assertEquals(ORIGINAL,f.items.get(9));assertTrue(f.items.get(1).empty());
+        assertNotNull(SafetyPolicy.rejection(new Action.InspectCrystal(OTHER_MACHINE),f.context));
+        assertNotNull(SafetyPolicy.rejection(new Action.InspectCrystal(null),f.context));
+        f.open=true;assertNotNull(SafetyPolicy.rejection(inspect,f.context));f.open=false;
+        f.cursor=JADE;assertNotNull(SafetyPolicy.rejection(inspect,f.context));f.cursor=ItemData.EMPTY;
+        f.stage(HotbarLease.Stage.RESTORING);assertNotNull(SafetyPolicy.rejection(inspect,f.context));f.stage(HotbarLease.Stage.PARKED);
+        f.session.workHotbarOwner=Feature.SEED_MAKER;assertNotNull(SafetyPolicy.rejection(inspect,f.context));
+        f.session.workHotbarOwner=Feature.CRYSTAL_COPY;f.session.oneShotFeature=Feature.SEED_MAKER;
+        assertNotNull(SafetyPolicy.rejection(inspect,f.context));
+        f.session.oneShotFeature=null;f.profile.enabled.put(Feature.CRYSTAL_COPY,false);
+        assertNotNull(SafetyPolicy.rejection(inspect,f.context));
+    }
+    @Test void unleasedInspectionCannotEscapeRegistrationReachOrFeatureGates() {
+        Fixture f=new Fixture();f.profile.workHotbarLease=null;f.session.workHotbarOwner=null;
+        assertNull(SafetyPolicy.rejection(new Action.InspectCrystal(MACHINE),f.context));
+        f.profile.artisanJobs.put("far",new ArtisanJob("far",ArtisanRecipe.CRYSTAL_COLLECTION.id(),List.of(new Pos(99,64,0)),"in","out"));
+        assertNotNull(SafetyPolicy.rejection(new Action.InspectCrystal(new Pos(99,64,0)),f.context));
+        f.profile.artisanJobs.put("foreign",new ArtisanJob("foreign",ArtisanRecipe.CRYSTAL_COLLECTION.id(),List.of(OTHER_MACHINE),"in","out"));
+        assertNotNull(SafetyPolicy.rejection(new Action.InspectCrystal(OTHER_MACHINE),f.context));
+        f.profile.artisanJobs.put("ambiguous",new ArtisanJob("ambiguous",ArtisanRecipe.CRYSTAL_COLLECTION.id(),List.of(MACHINE),"in","out"));
+        assertNotNull(SafetyPolicy.rejection(new Action.InspectCrystal(MACHINE),f.context));
+    }
     @Test void preparedParkingRequiresTheExactPairOriginalFingerprintAndEmptyMainSlot() {
         Fixture f=new Fixture();f.stage(HotbarLease.Stage.PREPARED);f.items.set(9,ItemData.EMPTY);f.items.set(1,ORIGINAL);
         assertNull(SafetyPolicy.rejection(new Action.SwapHotbar(9,1),f.context));

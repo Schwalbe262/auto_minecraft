@@ -40,6 +40,7 @@ public final class PacketObserver extends ChannelDuplexHandler {
         ItemStack changedSlot=message instanceof ClientboundContainerSetSlotPacket packet
             ? new ServerObservations.NativeMenuSnapshot(0,List.of(packet.getItem()),ItemStack.EMPTY).items().get(0) : null;
         var chop=message instanceof ClientboundCustomPayloadPacket packet ? NativeLoggingPackets.chop(packet) : null;
+        var crystal=message instanceof ClientboundCustomPayloadPacket packet ? NativeJadePackets.crystal(packet) : null;
         // Parse a detached boolean from the server packet before its mutable NBT
         // can be applied to a predicted/live block entity. Unrelated types are not proof.
         Boolean snowPlant=message instanceof ClientboundBlockEntityDataPacket packet
@@ -67,6 +68,7 @@ public final class PacketObserver extends ChannelDuplexHandler {
         else if (message instanceof ClientboundBlockEntityDataPacket packet)
             later(() -> observations.snowPlant(MinecraftWorld.pos(packet.getPos()),Boolean.TRUE.equals(snowPlant)));
         if (chop!=null) later(() -> observations.chop(chop.pos(),chop.chops(),chop.originalState()));
+        if (crystal!=null) later(() -> observations.crystal(crystal.pos(),crystal.blockEntityId(),crystal.inputId()));
     }
     private void later(Runnable observation) {
         Minecraft.getInstance().execute(() -> { if (observations.generation()==generation) observation.run(); });

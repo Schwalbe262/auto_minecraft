@@ -7,8 +7,8 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Manual originals stay outside automation authority, including legacy jade registrations. */
-class CrystalCollectOnlyRulesTest {
+/** Only a fresh actual original or its recorded empty-machine continuation permits same-kind feed. */
+class CrystalOriginalRulesTest {
     private static final Pos MACHINE=new Pos(4,64,0),SOURCE=new Pos(1,64,0),OUTPUT=new Pos(2,64,0);
     private static final String JADE="society:jade";
     private static ItemData item(String id) {return new ItemData(id,64,0,null,false,100);}
@@ -18,18 +18,33 @@ class CrystalCollectOnlyRulesTest {
         profile.commodityStores.put("input",new CommodityStore("input","Input",Set.of(JADE,"society:ruby"),List.of(SOURCE)));
         profile.commodityStores.put("output",new CommodityStore("output","Output",Set.of(JADE,"society:ruby"),List.of(OUTPUT)));
         SessionState session=new SessionState();session.oneShotFeature=once;
-        return new Context(null,null,null,profile,session);
+        ActionPort actions=new ActionPort() {
+            public CrystalInspection crystalInspection(Pos pos) {
+                return MACHINE.equals(pos) ? new CrystalInspection(MACHINE,"society:ruby",true,false) : null;
+            }
+            public boolean busy(){return false;}
+            public long submit(Action action){throw new AssertionError("Policy queries never send actions");}
+            public ActionOutcome outcome(long ticket){throw new AssertionError();}
+            public void move(Movement movement){throw new AssertionError();}
+            public void stopMovement(){throw new AssertionError();}
+            public void cancel(){throw new AssertionError();}
+        };
+        return new Context(null,actions,null,profile,session);
     }
     private static BlockData block(Map<String,String> properties) {
         return new BlockData(MACHINE,"society:crystalarium",properties);
     }
     private static BlockData mature() {return block(Map.of("mature","true","working","false"));}
 
-    @Test void matureLegacyJadeMachineAllowsOnlyEmptyHandCollection() {
+    @Test void matureLegacyJadeMachineUsesTheObservedRubyAndNeverItsConfiguredJadeFallback() {
         Context c=context(Feature.CRYSTAL_COPY);
         assertNull(ArtisanRules.rejection(c,MACHINE,mature(),ItemData.EMPTY));
-        for(String id:List.of(JADE,"society:ruby","society:pristine_jade","minecraft:diamond","minecraft:netherite_axe"))
+        assertNull(ArtisanRules.rejection(c,MACHINE,mature(),item("society:ruby")));
+        for(String id:List.of(JADE,"society:fire_quartz","society:pristine_jade","minecraft:diamond","minecraft:netherite_axe"))
             assertNotNull(ArtisanRules.rejection(c,MACHINE,mature(),item(id)),id);
+        Context unknown=new Context(null,null,null,c.profile(),c.session());
+        assertNotNull(ArtisanRules.rejection(unknown,MACHINE,mature(),ItemData.EMPTY));
+        assertNotNull(ArtisanRules.rejection(unknown,MACHINE,mature(),item("society:ruby")));
     }
 
     @Test void idleWorkingInconsistentOrUnknownStateCannotAuthorizeACollection() {

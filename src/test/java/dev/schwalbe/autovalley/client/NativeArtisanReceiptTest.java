@@ -227,6 +227,49 @@ class NativeArtisanReceiptTest {
         assertFalse(feed(JADE,7,JADE.inputId(),7,true,false));
         assertTrue(feed(JADE,7,JADE.inputId(),6,true,false));
     }
+    @Test void everyDynamicCrystalRecipePreservesExactOriginalIdentityAndTheMinusOneToPlusOneCollectedRange() {
+        assertEquals(56,CrystalCollection.BASE_OUTPUT_IDS.size());
+        for(String id:CrystalCollection.BASE_OUTPUT_IDS) {
+            ArtisanRecipe recipe=CrystalRecipe.forInput(id);assertNotNull(recipe,id);
+            assertEquals(id,recipe.inputId());assertEquals(id,recipe.outputId());assertEquals(1,recipe.inputCount());
+            for(boolean upgraded:List.of(false,true)) {
+                for(int after:List.of(6,7,8))assertTrue(feed(recipe,7,id,after,true,true,upgraded),id+" after="+after);
+                for(int after:List.of(-1,0,5,9,64,Integer.MAX_VALUE))
+                    assertFalse(feed(recipe,7,id,after,true,true,upgraded),id+" after="+after);
+                for(int after:List.of(6,7,8))assertFalse(feed(recipe,7,id,after,false,true,upgraded),id+" changed tags");
+                assertTrue(feed(recipe,7,id,6,true,false,upgraded),id+" idle feed consumes exactly one");
+                for(int after:List.of(7,8))assertFalse(feed(recipe,7,id,after,true,false,upgraded),id+" idle cannot collect");
+            }
+        }
+    }
+    @Test void eachDynamicCrystalAdmitsOnlyItsOwnSinglePristineBonusAfterAnUpgradedMatureLastInput() {
+        for(String id:CrystalCollection.BASE_OUTPUT_IDS) {
+            ArtisanRecipe recipe=CrystalRecipe.forInput(id);String bonus=CrystalRecipe.bonusId(id);
+            assertNotNull(bonus,id);assertEquals(bonus,recipe.separateBonusOutputId());
+            assertTrue(feed(recipe,1,bonus,1,false,true,true),id);
+            assertFalse(feed(recipe,1,bonus,1,false,true,false),id+" not upgraded");
+            assertFalse(feed(recipe,1,bonus,1,false,false,true),id+" not mature");
+            assertFalse(feed(recipe,1,bonus,2,false,true,true),id+" duplicate bonus");
+            assertFalse(feed(recipe,2,bonus,1,false,true,true),id+" original remains");
+            String otherBonus=CrystalRecipe.bonusId(id.equals("society:jade") ? "society:fire_quartz" : "society:jade");
+            assertFalse(feed(recipe,1,otherBonus,1,false,true,true),id+" foreign bonus");
+            assertTrue(feed(recipe,1,id,2,false,true,true),id+" ordinary output remains two");
+            assertFalse(feed(recipe,1,id,3,false,true,true),id+" upgrade cannot invent a third ordinary output");
+        }
+    }
+    @Test void jadeAndFireQuartzDynamicReceiptsCannotSubstituteTheirInputsOutputsOrBonusItems() {
+        for(String id:List.of("society:jade","society:fire_quartz")) {
+            ArtisanRecipe recipe=CrystalRecipe.forInput(id);
+            String other=id.equals("society:jade") ? "society:fire_quartz" : "society:jade";
+            for(int after:List.of(0,1,2,6,7,8)) {
+                assertFalse(NativeArtisanReceipt.compatibleFeed(recipe,other,7,id,after,true,true,true),id+" wrong input");
+                if(after>0)assertFalse(feed(recipe,7,other,after,true,true,true),id+" wrong surviving output");
+            }
+            assertFalse(NativeArtisanReceipt.compatibleFeed(recipe,other,1,"minecraft:air",0,false,true,true),id+" wrong last input");
+            for(int after:List.of(1,2))assertFalse(feed(recipe,1,other,after,false,true,true),id+" wrong last-slot output");
+            assertFalse(feed(recipe,1,CrystalRecipe.bonusId(other),1,false,true,true),id+" wrong bonus");
+        }
+    }
     @Test void jadeResidualInputCannotChangeNativeTagsEvenWithinItsNetCountRange() {
         for(int count:List.of(6,7,8))assertFalse(feed(JADE,7,JADE.inputId(),count,false,true));
     }

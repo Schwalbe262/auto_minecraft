@@ -21,6 +21,19 @@ public final class SafetyPolicy {
             || action instanceof Action.ChopTree || action instanceof Action.ClearLoggingLeaf || action instanceof Action.PlantSapling
             || action instanceof Action.CraftFireLogs || action instanceof Action.TrashLogging))
             return "Storage survey is read-only; inventory changes are not permitted";
+        if (action instanceof Action.InspectCrystal inspect) {
+            Pos pos=inspect.pos();
+            ArtisanRecipe recipe=ArtisanRules.at(profile,pos);
+            if (surveying || pos==null || menu.container() || menu.id()!=0
+                || !context.session().allows(profile,Feature.CRYSTAL_COPY)
+                || recipe==null || recipe.feature()!=Feature.CRYSTAL_COPY)
+                return "Crystal inspection requires a registered enabled crystal job and normal inventory";
+            if (!world.loaded(pos) || !world.canInteract(pos,4.0))
+                return "Crystal inspection target is outside loaded normal reach or line of sight";
+            BlockData block=world.block(pos);
+            return block==null || !CrystalCollection.MACHINE_ID.equals(block.id())
+                ? "Crystal inspection target is no longer the registered crystalarium" : null;
+        }
         if (action instanceof Action.UseBlock use) {
             if (menu.container()) return "Close the current container first";
             if (!world.loaded(use.pos())) return "Target chunk is not loaded";

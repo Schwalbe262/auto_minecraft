@@ -47,9 +47,12 @@ public final class ServerObservations {
     /** Reduced from an actual block-entity packet before application; never from a live predicted entity. */
     public record NativeSnowPlantSnapshot(long seq,Pos pos,boolean spruceSapling) { }
     public record NativeChopSnapshot(long seq,Pos pos,int chops,int originalState) { }
+    /** Detached Jade server reply. Null input means unknown, empty means a confirmed empty recipe. */
+    public record NativeCrystalSnapshot(long seq,Pos pos,String blockEntityId,String inputId) { }
     private final ArrayDeque<NativeBlockSnapshot> nativeBlocks=new ArrayDeque<>();
     private final ArrayDeque<NativeSnowPlantSnapshot> nativeSnowPlants=new ArrayDeque<>();
     private final ArrayDeque<NativeChopSnapshot> nativeChops=new ArrayDeque<>();
+    private final ArrayDeque<NativeCrystalSnapshot> nativeCrystals=new ArrayDeque<>();
     private final NativeDestroyPermits loggingPermits=new NativeDestroyPermits();
     private final Map<Integer,Long> menus=new HashMap<>();
     private final Map<Integer,Long> fullMenus=new HashMap<>();
@@ -83,6 +86,13 @@ public final class ServerObservations {
         if (nativeChops.size()>1024) nativeChops.removeFirst();
     }
     public List<NativeChopSnapshot> nativeChopsSince(long before) { return nativeChops.stream().filter(s -> s.seq()>before).toList(); }
+    public void crystal(Pos pos,String blockEntityId,String inputId) {
+        nativeCrystals.addLast(new NativeCrystalSnapshot(++sequence,Objects.requireNonNull(pos),blockEntityId,inputId));
+        if(nativeCrystals.size()>256)nativeCrystals.removeFirst();
+    }
+    public List<NativeCrystalSnapshot> nativeCrystalsSince(long before) {
+        return nativeCrystals.stream().filter(s -> s.seq()>before).toList();
+    }
     public void menu(int id) { menus.put(id,++sequence); }
     public void nativeSlot(int id,int slot,ItemStack packetItem,List<ItemStack> appliedMenu,ItemStack carried) {
         NativeSlotSnapshot snapshot=new NativeSlotSnapshot(sequence+1,id,slot,packetItem,new NativeMenuSnapshot(sequence+1,appliedMenu,carried));
@@ -171,5 +181,5 @@ public final class ServerObservations {
     }
     public boolean menuSince(int id,long before) { return menus.getOrDefault(id,0L)>before || menus.getOrDefault(-2,0L)>before; }
     public boolean blockSince(Pos pos,long before) { return blocks.getOrDefault(pos,0L)>before; }
-    public void clear() { sequence=0; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); nativeSlots.clear(); nativeBlocks.clear(); nativeSnowPlants.clear(); nativeChops.clear(); loggingPermits.clear(); }
+    public void clear() { sequence=0; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); nativeSlots.clear(); nativeBlocks.clear(); nativeSnowPlants.clear(); nativeChops.clear(); nativeCrystals.clear(); loggingPermits.clear(); }
 }

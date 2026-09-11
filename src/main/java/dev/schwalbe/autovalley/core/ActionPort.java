@@ -34,6 +34,8 @@ public interface ActionPort {
     default String recoveryStatus() { return null; }
     /** Target-scoped unconfirmed artisan use; does not stop unrelated automation. */
     default String artisanRejection(Pos target) { return null; }
+    /** Short-lived, target-scoped server observation; null is unknown, never a guessed original. */
+    default CrystalInspection crystalInspection(Pos target) { return null; }
     /** Moving/aiming separation must be supported before a module overlaps harvest and walking. */
     default boolean supportsMovingHarvest() { return false; }
     /** Requires a supported server-side TrashSlot single-slot deletion channel. */

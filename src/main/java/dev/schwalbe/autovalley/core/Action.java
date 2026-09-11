@@ -2,6 +2,8 @@ package dev.schwalbe.autovalley.core;
 public sealed interface Action {
     enum Use { HARVEST, MACHINE, ARTISAN, FRUIT, OPEN_CONTAINER, OPEN_CRAFTING, SLEEP, DOOR }
     record UseBlock(Pos pos, Use purpose) implements Action { }
+    /** Read the installed Jade server provider; never click or insert a crystal. */
+    record InspectCrystal(Pos pos) implements Action { }
     record SelectHotbar(int slot) implements Action { }
     record SwapHotbar(int inventoryIndex, int hotbarSlot) implements Action { }
     /** One non-mutating native inventory synchronization request for logging custody recovery. */
