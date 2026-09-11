@@ -21,7 +21,7 @@ import java.util.*;
 /** All registration is local and explicit. Opening settings never starts game actions. */
 public final class ValleyScreen extends Screen {
     private enum Tab { MODULES, REGISTER, FARMS, SAVED }
-    private enum ToolPage { MENU, RECORD_NAME, RUN_ONCE, PENDING_LIST, PENDING_DETAIL, PENDING_CONFIRM, PENDING_SHIP_CONFIRM, TOMATO_STORAGE }
+    private enum ToolPage { MENU, RECORD_NAME, RUN_ONCE, PENDING_LIST, PENDING_DETAIL, PENDING_CONFIRM, PENDING_SHIP_CONFIRM, WORK_HOTBAR_CONFIRM, TOMATO_STORAGE }
     private enum MachineGroupPage { DETAIL, MEMBERS, REMOVE_CONFIRM }
     private enum LoggingPage { LIST, EDIT, SETTINGS, REMOVE }
     private static Tab rememberedTab = Tab.MODULES;
@@ -82,6 +82,7 @@ public final class ValleyScreen extends Screen {
     private String tomatoStockRefreshDraft = "";
     private PendingMachineOutput selectedPendingOutput;
     private MachineOutputLedger.Resolution pendingResolution;
+    private ManualWorkHotbarConfirmation.Selection selectedWorkHotbar;
     private EditBox nameInput, classifierInput;
     private String feedback = "";
     private boolean feedbackError;
@@ -195,6 +196,7 @@ public final class ValleyScreen extends Screen {
             case PENDING_DETAIL -> pendingOutputDetail();
             case PENDING_CONFIRM -> pendingOutputConfirmation();
             case PENDING_SHIP_CONFIRM -> pendingShipmentConfirmation();
+            case WORK_HOTBAR_CONFIRM -> manualWorkHotbarConfirmation();
             case TOMATO_STORAGE -> tomatoStorageSettings();
         }
     }
@@ -260,11 +262,46 @@ public final class ValleyScreen extends Screen {
         button(left,144,third,tr("coordinates.open"),()->minecraft.setScreen(new CoordinateScreen()));
         button(left+third+6,144,third,Component.literal("와인 생산 구역"),()->minecraft.setScreen(new WineLinesScreen(this)));
         button(left+(third+6)*2,144,panelWidth-(third+6)*2,tr("orchard_draft.title"),()->minecraft.setScreen(new OrchardDraftsScreen(this)));
-        text(169, tr("record.local").copy().append(" ").append(tr("record.contents")));
-        text(180, tr("record.no_replay"));
+        Button manual=button(left,167,panelWidth,tr("work_hotbar.manual_open"),()->{
+            selectedWorkHotbar=ManualWorkHotbarConfirmation.capture(runtime.profile());
+            if(selectedWorkHotbar==null){error("work_hotbar.changed");return;}
+            toolPage=ToolPage.WORK_HOTBAR_CONFIRM;rebuild();
+        });
+        ManualWorkHotbarConfirmation.Selection available=ManualWorkHotbarConfirmation.capture(runtime.profile());
+        String manualRejection=available==null?tr("work_hotbar.changed").getString():runtime.manualWorkHotbarConfirmationRejection(available.key());
+        manual.active=manualRejection==null;
+        manual.setTooltip(Tooltip.create(manualRejection==null?tr("work_hotbar.manual_hint")
+            :Component.literal(manualRejection).append("\n").append(tr("work_hotbar.manual_hint"))));
         button(left,190,half,tr("work.import"),()->{runtime.importWorkDefinitions();rebuild();})
-            .setTooltip(Tooltip.create(tr("work.import_hint")));
+            .setTooltip(Tooltip.create(tr("work.import_hint").copy().append("\n").append(tr("record.local"))
+                .append("\n").append(tr("record.contents")).append("\n").append(tr("record.no_replay"))));
         button(left+half+6, 190, half, tr("back"), () -> { toolsEditor = false; rebuild(); });
+    }
+
+    private void manualWorkHotbarConfirmation() {
+        text(55,tr("work_hotbar.manual_open"));
+        boolean current=selectedWorkHotbar!=null && selectedWorkHotbar.matches(runtime.profile());
+        if(current) {
+            HotbarLease lease=selectedWorkHotbar.lease();
+            text(77,tr("work_hotbar.selected",lease.original().id(),lease.original().count()));
+            text(95,tr("work_hotbar.slots",Component.translatable(lease.owner().translationKey()),lease.hotbarSlot()+1,lease.sourceIndex()+1));
+        } else text(77,tr("work_hotbar.changed"));
+        text(120,tr("work_hotbar.manual_statement"));
+        text(138,tr("work_hotbar.manual_effect"));
+        text(154,tr("work_hotbar.no_actions"));
+        button(left,168,panelWidth,tr("back"),()->{selectedWorkHotbar=null;toolPage=ToolPage.MENU;rebuild();});
+        // The final acknowledgement is lower than the first-stage menu button.
+        Button confirm=button(left,193,panelWidth,tr("work_hotbar.manual_confirm"),()->{
+            if(selectedWorkHotbar==null || !selectedWorkHotbar.matches(runtime.profile())){error("work_hotbar.changed");rebuild();return;}
+            if(runtime.acknowledgeManualWorkHotbar(selectedWorkHotbar.key())) {
+                selectedWorkHotbar=null;toolPage=ToolPage.MENU;success("work_hotbar.manual_saved");
+            } else error("work_hotbar.manual_blocked");
+            rebuild();
+        });
+        String rejection=current?runtime.manualWorkHotbarConfirmationRejection(selectedWorkHotbar.key()):tr("work_hotbar.changed").getString();
+        confirm.active=rejection==null;
+        confirm.setTooltip(Tooltip.create(rejection==null?tr("work_hotbar.manual_hint")
+            :Component.literal(rejection).append("\n").append(tr("work_hotbar.manual_hint"))));
     }
 
     private void recordingName() {

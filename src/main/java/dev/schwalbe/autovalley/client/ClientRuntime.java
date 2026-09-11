@@ -6,6 +6,7 @@ import dev.schwalbe.autovalley.modules.*;
 import dev.schwalbe.autovalley.navigation.LocalNavigator;
 import dev.schwalbe.autovalley.ui.ValleyScreen;
 import dev.schwalbe.autovalley.ui.LoggingLeafSettings;
+import dev.schwalbe.autovalley.ui.ManualWorkHotbarConfirmation;
 import dev.schwalbe.autovalley.ui.WineLineEditPolicy;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
@@ -291,6 +292,25 @@ public final class ClientRuntime {
         } catch (RuntimeException rejected) {
             notifyUser(Component.translatable("autovalley.logging.leaf_edit_blocked").getString());
             return false;
+        }
+    }
+    /** Explicit acknowledgement only: never pauses a running job, moves items, or starts automation. */
+    public String manualWorkHotbarConfirmationRejection(String expectedKey) {
+        if (!ManualWorkHotbarConfirmation.editable(profile,loggingLeafSettingBoundary()))
+            return "자동화와 기록을 멈추고 연결·메뉴·커서·진행 중 조작·저장 상태를 확인하세요.";
+        return ManualWorkHotbarResolution.rejection(context,expectedKey);
+    }
+    public boolean acknowledgeManualWorkHotbar(String expectedKey) {
+        String rejection=manualWorkHotbarConfirmationRejection(expectedKey);
+        if (rejection!=null) { notifyUser(rejection); return false; }
+        try {
+            if (!ManualWorkHotbarResolution.confirm(context,expectedKey)) {
+                notifyUser("선택한 임시 단축바 기록이 바뀌었습니다. 다시 확인해 주세요."); return false;
+            }
+            notifyUser("임시 단축바 수동 정리 확인을 저장했습니다. 아이템은 이동하지 않았으며 자동화는 OFF입니다. F8로 별도 시작하세요.");
+            return true;
+        } catch (RuntimeException failure) {
+            notifyUser("수동 정리 확인을 저장하지 못했습니다. 기존 임시 단축바 기록을 보존합니다."); return false;
         }
     }
     public void saveProfile() {

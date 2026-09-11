@@ -77,6 +77,7 @@ public final class ClientControl {
                     case "once" -> runtime.runOnce(parsed.feature());
                     case "import_work" -> runtime.importWorkDefinitions();
                     case "logging_leaves" -> runtime.setLoggingLeafClearing(parsed.enabled());
+                    case "confirm_work_hotbar" -> runtime.acknowledgeManualWorkHotbar(parsed.name());
                     case "move_once" -> runtime.runMoveOnce(parsed.position());
                     case "recover_pending_ship" -> runtime.recoverPendingShip(parsed.name());
                     case "observe_once" -> {
@@ -178,6 +179,11 @@ public final class ClientControl {
                         if (!java.util.UUID.fromString(id).toString().equals(id)) throw new IllegalArgumentException("Noncanonical pending ID");
                     } catch (IllegalArgumentException e) { throw new IOException("Invalid pending ID",e); }
                     yield new Request(command,null,id);
+                }
+                case "confirm_work_hotbar" -> {
+                    if (!fields.keySet().equals(Set.of("command","name")) || !fields.get("name").matches("[0-9a-f]{64}"))
+                        throw new IOException("Expected only the exact lowercase 64-hex work-hotbar confirmation key");
+                    yield new Request(command,null,fields.get("name"));
                 }
                 default -> throw new IOException("Unsupported command");
             };

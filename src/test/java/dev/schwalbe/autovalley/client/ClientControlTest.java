@@ -7,6 +7,26 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ClientControlTest {
+    @Test void manualWorkHotbarConfirmationRequiresTheExactSelected64HexKeyOnly() throws Exception {
+        String key="0123456789abcdef".repeat(4);
+        var parsed=request("{\"command\":\"confirm_work_hotbar\",\"name\":\""+key+"\"}");
+        assertEquals("confirm_work_hotbar",parsed.command());assertEquals(key,parsed.name());
+        assertNull(parsed.feature());assertNull(parsed.position());assertNull(parsed.enabled());
+        assertEquals(parsed,request("{\"name\":\""+key+"\",\"command\":\"confirm_work_hotbar\"}"));
+    }
+    @Test void manualWorkHotbarConfirmationRejectsMissingStaleFormatDuplicateOrUnrelatedArguments() {
+        for(String value:new String[]{"\"\"","\"a\"","\""+"a".repeat(63)+"\"","\""+"a".repeat(65)+"\"",
+                "\""+"A".repeat(64)+"\"","\""+"g".repeat(64)+"\"","\" "+"a".repeat(64)+"\"",
+                "\""+"a".repeat(64)+" \"","null","true","1","{}","[]"})
+            assertThrows(Exception.class,()->request("{\"command\":\"confirm_work_hotbar\",\"name\":"+value+"}"),value);
+        String command="\"command\":\"confirm_work_hotbar\"",name="\"name\":\""+"a".repeat(64)+"\"";
+        for(String extra:new String[]{"\"feature\":\"CRYSTAL_COPY\"","\"enabled\":\"true\"","\"x\":\"1\"",
+                "\"command\":\"start\"",name,"\"na\\u006de\":\""+"a".repeat(64)+"\""})
+            assertThrows(Exception.class,()->request("{"+command+","+name+","+extra+"}"),extra);
+        assertThrows(Exception.class,()->request("{"+command+"}"));
+        assertThrows(Exception.class,()->request("{"+command+","+name+"}{}"));
+        assertThrows(Exception.class,()->request("{"+command+","+name+",\"path\":\"profile.json\"}"));
+    }
     @Test void loggingLeavesRequiresAnExplicitDesiredBooleanStringAndNeverToggles() throws Exception {
         for(boolean enabled:new boolean[]{false,true}) {
             var parsed=request("{\"command\":\"logging_leaves\",\"enabled\":\""+enabled+"\"}");
