@@ -14,7 +14,11 @@ append-only. An existing output directory is rejected to keep runs independent.
 A verified window requires fresh connected, running CONTINUOUS automation, no
 recording, no new failures, and repeated work evidence. Time/position changes alone
 are not work evidence. Initial failure history requires observed recovery before a
-clean window starts. Sampling cannot prove what happened between observations.
+clean window starts. A newly reported PAUSED/ERROR/OFF event also interrupts a
+running window when the next sample already reports resumed automation. Required
+logging completion must be observed between samples within the claimed window;
+completion totals from before a reset never qualify. Sampling cannot prove what
+happened between observations.
 .EXAMPLE
 .\scripts\Watch-SocietyStability.ps1 -GameProcessId 12345 -InstancePath 'C:\Games\Society Sunlit Valley' -ProfileKey '0123456789abcdef01234567' -OutputDirectory '.local\stability-run' -DurationMinutes 120 -MaxDurationMinutes 240
 .EXAMPLE
@@ -231,6 +235,7 @@ $initialWorkLease = $false
 $cleanStart = $null
 $cleanStartUtc = $null
 $cleanProgressCount = 0
+$cleanLoggingCompletions = 0
 $lastProgressAt = $null
 $longestClean = [double]0
 $samples = 0
@@ -240,6 +245,7 @@ $newFailureEvents = [long]0
 $progressEvents = 0
 $freshRunningStart = $null
 $freshRunningProgressCount = 0
+$freshRunningLoggingCompletions = 0
 $freshRunningFirstDay = $null
 $freshRunningLatestDay = $null
 $noNewFailureStart = $null
@@ -264,6 +270,8 @@ do {
     $profileEvidence = $null
     $inventory = $null
     $recovered = $false
+    $interveningStop = $false
+    $loggingCompletionObserved = $false
     $requiredFeaturesSatisfied = $false
     $gap = $null -ne $previousElapsed -and ($elapsed - $previousElapsed) -gt ($IntervalSeconds + $InspectionTimeoutSeconds + 5)
     if ($gap) { $reasons.Add('OBSERVATION_GAP') }
@@ -297,6 +305,10 @@ do {
         }
         if ($freshSamples -eq 1) { $initialFailureCount=$history.Count; $recoveryRequired=($history.Count -gt 0) }
         if ($newFailures.Count -gt 0) { $reasons.Add('NEW_FAILURE_HISTORY_EVENT'); $recoveryRequired=$true }
+        # A stop can occur and recover between samples. The retained history is
+        # positive interruption evidence even though the current running bit is true.
+        $interveningStop = @($newFailures.ToArray() | Where-Object { $_.state -in @('PAUSED','ERROR','OFF') }).Count -gt 0
+        if ($interveningStop) { $reasons.Add('INTERVENING_STOP_EVENT') }
         if ($freshSamples -gt 1 -and $seenFailures.Count -gt 0 -and $history.Count -eq 0) { $reasons.Add('FAILURE_HISTORY_RESET'); $recoveryRequired=$true }
         $seenFailures = $currentFailures
         try { $profileEvidence = Get-ProfileEvidence } catch { $reasons.Add('PROFILE_OBSERVATION_UNAVAILABLE') }
@@ -331,7 +343,9 @@ do {
             if ($profileEvidence.logging.pendingDigest -ne $previous.logging) { $progressSources.Add('LOGGING_PENDING_CHANGED') }
             if ($profileEvidence.crystalRefillDigest -ne $previous.crystals) { $progressSources.Add('CRYSTAL_REFILL_CHANGED') }
             if ($profileEvidence.logging.pendingDigest -ne $previous.logging -or $profileEvidence.logging.dueDay -ne $previous.loggingDue) { $loggingProgressSamples++ }
-            if ($null -ne $profileEvidence.logging.dueDay -and $null -ne $previous.loggingDue -and $profileEvidence.logging.dueDay -gt $previous.loggingDue -and -not $profileEvidence.logging.active -and $profileEvidence.logging.remainingCount -eq 0 -and $profileEvidence.logging.replantingCount -eq 0 -and $null -eq $profileEvidence.logging.lease) { $loggingObservedCompletions++ }
+            if ($null -ne $profileEvidence.logging.dueDay -and $null -ne $previous.loggingDue -and $profileEvidence.logging.dueDay -gt $previous.loggingDue -and -not $profileEvidence.logging.active -and $profileEvidence.logging.remainingCount -eq 0 -and $profileEvidence.logging.replantingCount -eq 0 -and $null -eq $profileEvidence.logging.lease) {
+                $loggingObservedCompletions++; $loggingCompletionObserved=$true
+            }
         }
         if ($reasons.Count -eq 0 -and $progressSources.Count -gt 0) {
             $lastProgressAt=$elapsed; $progressEvents++
@@ -349,12 +363,17 @@ do {
     if (-not $inspection.fresh -or $null -eq $profileEvidence -or $gap) { $loggingActiveStart=$null; $loggingPendingStart=$null }
     $observedDayTime = Get-Field (Get-Field $snapshot 'player') 'dayTime'
     $observedDay = if ($null -eq $observedDayTime) { $null } else { [Math]::Floor([double]$observedDayTime/24000) }
-    $freshRunning = $inspection.fresh -and -not $gap -and $requiredFeaturesSatisfied -and (Get-Field $snapshot 'connected') -eq $true -and (Get-Field $snapshot 'running') -eq $true -and (Get-Field $snapshot 'executionMode') -eq 'CONTINUOUS' -and (Get-Field $snapshot 'recording') -eq $false -and (Get-Field $snapshot 'recordingActive') -eq $false
+    $freshRunning = $inspection.fresh -and -not $gap -and -not $interveningStop -and -not $reasons.Contains('FAILURE_HISTORY_RESET') -and -not $reasons.Contains('FAILURE_HISTORY_UNAVAILABLE') -and $requiredFeaturesSatisfied -and (Get-Field $snapshot 'connected') -eq $true -and (Get-Field $snapshot 'running') -eq $true -and (Get-Field $snapshot 'executionMode') -eq 'CONTINUOUS' -and (Get-Field $snapshot 'recording') -eq $false -and (Get-Field $snapshot 'recordingActive') -eq $false
     if ($freshRunning) {
-        if ($null -eq $freshRunningStart) { $freshRunningStart=$elapsed; $freshRunningProgressCount=0; $freshRunningFirstDay=$observedDay }
+        if ($null -eq $freshRunningStart) {
+            $freshRunningStart=$elapsed; $freshRunningProgressCount=0; $freshRunningFirstDay=$observedDay; $freshRunningLoggingCompletions=0
+        } elseif ($loggingCompletionObserved) {
+            # Both observations bracketing this completion belong to this window.
+            $freshRunningLoggingCompletions++
+        }
         $freshRunningLatestDay=$observedDay
         if ($progressSources.Count -gt 0) { $freshRunningProgressCount++ }
-    } else { $freshRunningStart=$null; $freshRunningProgressCount=0; $freshRunningFirstDay=$null; $freshRunningLatestDay=$null }
+    } else { $freshRunningStart=$null; $freshRunningProgressCount=0; $freshRunningFirstDay=$null; $freshRunningLatestDay=$null; $freshRunningLoggingCompletions=0 }
     $freshRunningSeconds = if ($null -eq $freshRunningStart) { [double]0 } else { $elapsed-$freshRunningStart }
     $daysAdvanced = if ($null -eq $freshRunningFirstDay -or $null -eq $freshRunningLatestDay) { 0 } else { $freshRunningLatestDay-$freshRunningFirstDay }
     if ($inspection.fresh -and -not $gap -and $newFailures.Count -eq 0 -and -not $reasons.Contains('FAILURE_HISTORY_RESET')) {
@@ -363,19 +382,21 @@ do {
     $noNewFailureSeconds = if ($null -eq $noNewFailureStart) { [double]0 } else { $elapsed-$noNewFailureStart }
     $clean = $reasons.Count -eq 0
     if ($clean) {
-        if ($null -eq $cleanStart) { $cleanStart=$elapsed; $cleanStartUtc=[DateTimeOffset]::UtcNow.ToString('o'); $cleanProgressCount=0 }
+        if ($null -eq $cleanStart) { $cleanStart=$elapsed; $cleanStartUtc=[DateTimeOffset]::UtcNow.ToString('o'); $cleanProgressCount=0; $cleanLoggingCompletions=0 }
+        elseif ($loggingCompletionObserved) { $cleanLoggingCompletions++ }
         if ($progressSources.Count -gt 0) { $cleanProgressCount++ }
     } else {
         if ($null -ne $cleanStart) { $interruptions++ }
-        $cleanStart=$null; $cleanStartUtc=$null; $cleanProgressCount=0
+        $cleanStart=$null; $cleanStartUtc=$null; $cleanProgressCount=0; $cleanLoggingCompletions=0
     }
     $cleanSeconds = if ($null -eq $cleanStart) { [double]0 } else { $elapsed - $cleanStart }
     $longestClean = [Math]::Max($longestClean,$cleanSeconds)
-    $requiredFeatureWorkObserved = $RequiredFeature -notcontains 'LOGGING' -or $loggingObservedCompletions -ge 1
+    $requiredFeatureWorkObserved = $RequiredFeature -notcontains 'LOGGING' -or $cleanLoggingCompletions -ge 1
+    $runningWindowRequiredFeatureWorkObserved = $RequiredFeature -notcontains 'LOGGING' -or $freshRunningLoggingCompletions -ge 1
     $verified = -not $Once -and $clean -and $cleanSeconds -ge ($DurationMinutes * 60) -and $elapsed -ge ($DurationMinutes * 60) -and $cleanProgressCount -ge 2 -and $requiredFeatureWorkObserved
     # A running candidate can include recoverable retries. It is evidence for a human
     # audit, never an automatic declaration that those failures were harmless.
-    $candidate = -not $Once -and $freshRunningSeconds -ge ($DurationMinutes * 60) -and $freshRunningProgressCount -ge 2 -and $daysAdvanced -ge 1 -and -not $recoveryRequired -and $null -ne $lastProgressAt -and ($elapsed-$lastProgressAt) -le ($MaxNoProgressMinutes*60) -and $requiredFeatureWorkObserved
+    $candidate = -not $Once -and $freshRunningSeconds -ge ($DurationMinutes * 60) -and $freshRunningProgressCount -ge 2 -and $daysAdvanced -ge 1 -and -not $recoveryRequired -and $null -ne $lastProgressAt -and ($elapsed-$lastProgressAt) -le ($MaxNoProgressMinutes*60) -and $runningWindowRequiredFeatureWorkObserved
     $terminal = $inspection.identity.state -in @('PROCESS_EXITED','PROCESS_REPLACED','PROCESS_IDENTITY_CHANGED','GAME_DIRECTORY_MISMATCH','GAME_DIRECTORY_UNVERIFIED')
     if ($verified) { $outcome='VERIFIED_SAMPLED_STABILITY' }
     elseif ($terminal) { $outcome=$inspection.identity.state }
@@ -399,6 +420,7 @@ do {
         recoveryObserved=$recovered; progressSources=@($progressSources.ToArray()); clean=$clean; reasons=@($reasons.ToArray()); cleanSeconds=[Math]::Round($cleanSeconds,3)
         uninterruptedFreshRunningSeconds=[Math]::Round($freshRunningSeconds,3); noNewFailureSeconds=[Math]::Round($noNewFailureSeconds,3)
         requiredFeaturesSatisfied=$requiredFeaturesSatisfied
+        interveningStopObserved=$interveningStop; loggingCompletionObserved=$loggingCompletionObserved
         loggingActiveSeconds=$(if ($null -eq $loggingActiveStart) { 0 } else { [Math]::Round($elapsed-$loggingActiveStart,3) })
         loggingPendingSeconds=$(if ($null -eq $loggingPendingStart) { 0 } else { [Math]::Round($elapsed-$loggingPendingStart,3) })
     }
@@ -414,6 +436,8 @@ do {
         candidateVerifiedRunningWindow=$candidate; needsAudit=($candidate -and -not $verified); newFailureOccurrencesByFeature=$failureCountsByFeature
         requiredFeatures=$RequiredFeature; initialEnabled=$initialEnabled; loggingProgressSamples=$loggingProgressSamples; loggingObservedCompletions=$loggingObservedCompletions
         requiredFeatureWorkObserved=$requiredFeatureWorkObserved
+        freshRunningWindowRequiredFeatureWorkObserved=$runningWindowRequiredFeatureWorkObserved
+        cleanWindowLoggingCompletions=$cleanLoggingCompletions; freshRunningWindowLoggingCompletions=$freshRunningLoggingCompletions
         limitation='Fresh sampled evidence, not proof of all events between samples. Disk profile is observed separately; inventory or schedule changes are progress evidence, not individual action receipts.'
         latest=$row
     }

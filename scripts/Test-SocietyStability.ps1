@@ -145,4 +145,50 @@ for ($sample=0; $sample -le 241; $sample++) {
     . $sampleBody
 }
 Assert-Fixture (-not $fixtureSummary.verified -and -not $fixtureSummary.candidateVerifiedRunningWindow) 'Alive, moving, advancing game time without work evidence cannot pass.'
+
+foreach ($stopState in @('PAUSED','ERROR','OFF')) {
+    . $initialize
+    New-Fixtures
+    for ($sample=0; $sample -le 3; $sample++) {
+        $clock=[pscustomobject]@{Elapsed=[TimeSpan]::FromSeconds($sample*30)}
+        $fixtureProfile.schedule.digest=[string]$sample
+        if ($sample -eq 2) { $fixtureProfile.logging.dueDay=2 }
+        if ($sample -eq 3) {
+            $fixtureSnapshot.failureHistory=@([pscustomobject]@{tick=15;lastTick=15;occurrences=1;feature='LOGGING';state=$stopState;message='Screen or manual-input stop between samples'})
+        }
+        . $sampleBody
+    }
+    Assert-Fixture ($fixtureRow.running -and $fixtureRow.interveningStopObserved -and $fixtureRow.reasons -contains 'INTERVENING_STOP_EVENT' -and $fixtureSummary.uninterruptedFreshRunningSeconds -eq 0) ($stopState + ' between running samples must interrupt the running window.')
+    Assert-Fixture ($fixtureSummary.loggingObservedCompletions -eq 1 -and $fixtureSummary.newFailureOccurrences -eq 1 -and $fixtureSummary.workProgressSamples -eq 2 -and $fixtureRow.failureHistory.Count -eq 1) ($stopState + ' must preserve overall completion, progress, and failure evidence.')
+    Assert-Fixture ($fixtureSummary.cleanWindowLoggingCompletions -eq 0 -and $fixtureSummary.freshRunningWindowLoggingCompletions -eq 0) ($stopState + ' must discard completion eligibility from both interrupted windows.')
+    for ($sample=4; $sample -le 244; $sample++) {
+        $clock=[pscustomobject]@{Elapsed=[TimeSpan]::FromSeconds($sample*30)}
+        $fixtureProfile.schedule.digest=[string]$sample
+        $fixtureSnapshot.player.dayTime=24000+($sample*600)
+        # This completion spans the stop/recovery boundary, so it is global
+        # evidence only; it is not enclosed by either new claimed window.
+        if ($sample -eq 4) { $fixtureProfile.logging.dueDay=3 }
+        . $sampleBody
+    }
+    Assert-Fixture ($fixtureSummary.cleanMinutes -eq 120 -and $fixtureSummary.uninterruptedFreshRunningSeconds -eq 7200 -and $fixtureSummary.loggingObservedCompletions -eq 2 -and -not $fixtureSummary.verified -and -not $fixtureSummary.candidateVerifiedRunningWindow) ($stopState + ': two hours after recovery cannot reuse pre-window or boundary-spanning completions.')
+    $clock.Elapsed=[TimeSpan]::FromSeconds(245*30); $fixtureProfile.schedule.digest='245'; $fixtureProfile.logging.dueDay=4
+    . $sampleBody
+    Assert-Fixture ($fixtureSummary.verified -and $fixtureSummary.candidateVerifiedRunningWindow -and $fixtureSummary.cleanWindowLoggingCompletions -eq 1 -and $fixtureSummary.freshRunningWindowLoggingCompletions -eq 1) ($stopState + ': a subsequent completion inside both mature windows can qualify them.')
+}
+
+# An ordinary BLOCKED capacity signal resets only the stricter clean window. Its
+# running candidate may retain a completion enclosed by the still-running window.
+. $initialize
+New-Fixtures
+for ($sample=0; $sample -le 244; $sample++) {
+    $clock=[pscustomobject]@{Elapsed=[TimeSpan]::FromSeconds($sample*30)}
+    $fixtureProfile.schedule.digest=[string]$sample
+    $fixtureSnapshot.player.dayTime=24000+($sample*600)
+    if ($sample -eq 2) { $fixtureProfile.logging.dueDay=2 }
+    if ($sample -eq 3) {
+        $fixtureSnapshot.failureHistory=@([pscustomobject]@{tick=15;lastTick=15;occurrences=1;feature='WINE_STORAGE';state='BLOCKED';message='Storage full; other work can continue'})
+    }
+    . $sampleBody
+}
+Assert-Fixture (-not $fixtureSummary.verified -and $fixtureSummary.candidateVerifiedRunningWindow -and $fixtureSummary.needsAudit -and $fixtureSummary.cleanWindowLoggingCompletions -eq 0 -and $fixtureSummary.freshRunningWindowLoggingCompletions -eq 1) 'Each claim must use its own window; a recoverable capacity signal cannot borrow a completion for the stricter clean window.'
 [pscustomobject]@{result='PASS';checks=$checks;evidence='Synthetic fixtures only; no game process was inspected, requested, controlled, or verified.'} | ConvertTo-Json -Compress
