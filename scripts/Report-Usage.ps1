@@ -45,10 +45,13 @@ $rootSessionDay = Split-Path -Parent $rootPath
 $sessionDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 [void]$sessionDirectories.Add($rootSessionDay)
 # Reused root sessions may live in an earlier date folder than newly spawned children.
-# Discover the task's UTC and host-local day range, then keep the descendant-ID filter below.
+# Reused child sessions may predate this task too. Discover the root lifetime's
+# UTC/host-local day range, then retain only descendants with usage after the task baseline.
 $sessionsRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $rootSessionDay))
 if ((Split-Path -Leaf $sessionsRoot) -eq 'sessions') {
     $firstTaskDay = ([DateTimeOffset]$rootUsage.Start).UtcDateTime.Date
+    $rootCreatedDay = ([DateTimeOffset]$rootMeta.payload.timestamp).UtcDateTime.Date
+    if ($rootCreatedDay -lt $firstTaskDay) { $firstTaskDay = $rootCreatedDay }
     $lastTaskDay = ([DateTimeOffset]$rootUsage.Last.timestamp).UtcDateTime.Date
     $firstLocalDay = ([DateTimeOffset]$rootUsage.Start).LocalDateTime.Date
     $lastLocalDay = ([DateTimeOffset]$rootUsage.Last.timestamp).LocalDateTime.Date
@@ -94,7 +97,7 @@ $report = [pscustomobject]@{
     IncludesCachedInput=$true; TotalRecordedTokens=($rows | Measure-Object -Property Tokens -Sum).Sum
     WeeklyStart=(Weekly $rootUsage.Baseline); WeeklyEnd=(Weekly $rootUsage.Last)
     ExactPerWorkstreamWeeklyShare=$null
-    Note='Token totals are recorded per agent workstream, including repeated/cached input and review. Descendant sessions from the root directory and the task UTC/host-local day range are included; reused sessions subtract their last recorded total at or before the task start. Weekly percentages are shared-account snapshots, not attributable per-stream shares. Final response and unflushed events are excluded; workstream totals are not exact per-feature attribution when an agent handled multiple parts.'
+    Note='Token totals are recorded per agent workstream, including repeated/cached input and review. Descendant sessions from the root lifetime UTC/host-local day range are included; reused sessions subtract their last recorded total at or before the task start. Weekly percentages are shared-account snapshots, not attributable per-stream shares. Final response and unflushed events are excluded; workstream totals are not exact per-feature attribution when an agent handled multiple parts.'
     Workstreams=$rows
 }
 $json = $report | ConvertTo-Json -Depth 6
