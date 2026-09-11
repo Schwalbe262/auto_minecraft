@@ -35,6 +35,7 @@ public final class ServerObservations {
     private static final int MAX_MENU_SNAPSHOTS=256;
     private static final int MAX_SNAPSHOTS_PER_MENU=8;
     private long sequence;
+    private long uncapturedNativeInventorySequence,discardedNativeSlotSequence;
     private volatile long generation;
     private Runnable nativeFullMenuObserver;
     /** One adapter-owned passive observer, called on the client thread before a later packet can evict this proof. */
@@ -93,15 +94,23 @@ public final class ServerObservations {
     public List<NativeCrystalSnapshot> nativeCrystalsSince(long before) {
         return nativeCrystals.stream().filter(s -> s.seq()>before).toList();
     }
-    public void menu(int id) { menus.put(id,++sequence); }
+    public void menu(int id) {
+        menus.put(id,++sequence);
+        if(id==0 || id==-1 || id==-2)uncapturedNativeInventorySequence=sequence;
+    }
     public void nativeSlot(int id,int slot,ItemStack packetItem,List<ItemStack> appliedMenu,ItemStack carried) {
         NativeSlotSnapshot snapshot=new NativeSlotSnapshot(sequence+1,id,slot,packetItem,new NativeMenuSnapshot(sequence+1,appliedMenu,carried));
-        menu(id);
+        menus.put(id,++sequence);
         nativeSlots.addLast(snapshot);
-        if (nativeSlots.size()>64) nativeSlots.removeFirst();
+        if (nativeSlots.size()>64) discardedNativeSlotSequence=nativeSlots.removeFirst().seq();
     }
     public List<NativeSlotSnapshot> nativeSlotSnapshotsSince(int id,long before) {
         return nativeSlots.stream().filter(s -> s.menuId()==id && s.seq()>before).toList();
+    }
+    /** No omitted inventory/cursor packet or evicted raw slot may be hidden by a newer matching endpoint. */
+    public boolean nativeInventorySlotsCompleteSince(long fullSequence) {
+        return fullSequence>=1 && uncapturedNativeInventorySequence<=fullSequence && discardedNativeSlotSequence<=fullSequence
+            && nativeSlots.stream().noneMatch(s->s.seq()>fullSequence && (s.menuId()==-1 || s.menuId()==-2));
     }
     public void fullMenu(int id) {
         markFullMenu(id);
@@ -181,5 +190,5 @@ public final class ServerObservations {
     }
     public boolean menuSince(int id,long before) { return menus.getOrDefault(id,0L)>before || menus.getOrDefault(-2,0L)>before; }
     public boolean blockSince(Pos pos,long before) { return blocks.getOrDefault(pos,0L)>before; }
-    public void clear() { sequence=0; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); nativeSlots.clear(); nativeBlocks.clear(); nativeSnowPlants.clear(); nativeChops.clear(); nativeCrystals.clear(); loggingPermits.clear(); }
+    public void clear() { sequence=0; uncapturedNativeInventorySequence=0; discardedNativeSlotSequence=0; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); nativeSlots.clear(); nativeBlocks.clear(); nativeSnowPlants.clear(); nativeChops.clear(); nativeCrystals.clear(); loggingPermits.clear(); }
 }

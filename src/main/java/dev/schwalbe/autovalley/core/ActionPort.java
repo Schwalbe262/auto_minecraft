@@ -24,6 +24,12 @@ public interface ActionPort {
      * This settles only the borrowed slot, never an old action outcome or permission to restart.
      */
     default boolean loggingHotbarRestored(LoggingHotbarLease lease) { return false; }
+    /**
+     * Read-only native custody proof of count growth in the exact borrowed original.
+     * Returns the same position/stage with its current count and fingerprint, or null.
+     * Never acknowledges an action, changes a profile, or authorizes a pending swap.
+     */
+    default LoggingHotbarLease loggingHotbarGrowth(LoggingHotbarLease lease) { return null; }
     /** Current exact live/raw-FULL custody for one work lease; never settles an outstanding click. */
     default boolean workHotbarRestored(HotbarLease lease) { return false; }
     /** Current exact original-at-source custody; never acknowledges the historical parking click. */

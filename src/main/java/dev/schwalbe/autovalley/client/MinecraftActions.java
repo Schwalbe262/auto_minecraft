@@ -147,6 +147,52 @@ public final class MinecraftActions implements ActionPort {
             return new LoggingRestorationReceipt.Endpoint(MinecraftWorld.item(item),fingerprint);
         } catch (java.security.NoSuchAlgorithmException unavailable) { return null; }
     }
+    @Override public LoggingHotbarLease loggingHotbarGrowth(LoggingHotbarLease lease) {
+        // Rebaseline current custody only after the ordinary action lifecycle has
+        // settled. Do not call pauseReason(), confirmed(), or clear any native debt.
+        if(context==null || lease==null || context.profile().loggingHotbarLease!=lease
+            || context.profile().workHotbarLease!=null || lease.original()==null || pending!=null
+            || loggingAction!=null || loggingRecipe!=null || loggingSwap!=null || inventoryRefresh!=null
+            || lateLoggingSwap!=null || lateLoggingAction!=null || lateLoggingRecipe!=null
+            || consolidation!=null || consolidationInFlight || consolidationRecovery!=null
+            || lateInventoryReply!=null || lateInventoryReplyInFlight || consolidationFailure!=null
+            || trash!=null || trashInFlight || lateTrashReply!=null || trashFailure!=null || loggingFailure!=null
+            || artisanAttempt!=null || wineFeedAttempt!=null
+            || mc.player==null || mc.level==null || mc.gameMode==null || mc.getConnection()==null
+            || mc.player.containerMenu!=mc.player.inventoryMenu || mc.player.inventoryMenu.containerId!=0
+            || mc.player.inventoryMenu.slots.size()!=46 || !mc.player.inventoryMenu.getCarried().isEmpty()
+            || lease.sourceIndex()<9 || lease.sourceIndex()>35 || lease.hotbarSlot()<0 || lease.hotbarSlot()>8)return null;
+        long generation=observations.generation();
+        var slots=mc.player.inventoryMenu.slots;
+        var sources=slots.stream().filter(s->s.container==mc.player.getInventory() && s.getContainerSlot()==lease.sourceIndex()).toList();
+        var destinations=slots.stream().filter(s->s.container==mc.player.getInventory() && s.getContainerSlot()==lease.hotbarSlot()).toList();
+        if(sources.size()!=1 || destinations.size()!=1)return null;
+        int source=sources.get(0).index,destination=destinations.get(0).index;
+        if(source!=lease.sourceIndex() || destination!=36+lease.hotbarSlot())return null;
+        var full=LoggingRestorationReceipt.latest(observations.fullNativeMenuSnapshotsSince(0,-1));
+        if(full==null || !full.carried().isEmpty() || !observations.nativeInventorySlotsCompleteSince(full.seq()))return null;
+        var items=full.items();if(items.size()!=46)return null;
+        int originalCount=lease.original().count();
+        if(originalCount<1 || originalCount>64)return null;
+        var updates=observations.nativeSlotSnapshotsSince(0,full.seq()).stream()
+            .map(update->new LoggingLeaseGrowthReceipt.SlotUpdate(update.seq(),generation,update.menuId(),update.slot(),
+                loggingGrowthEndpoint(update.packetItem(),originalCount))).toList();
+        // The observation history is connection-scoped and captured on the client
+        // thread. A reconnect cannot lend an old FULL or old slots to this query.
+        return LoggingLeaseGrowthReceipt.reconcile(lease,observations.generation(),generation,
+            lastHotbarSwapGeneration,lastHotbarSwapSequence,full.seq(),items.size(),true,true,
+            loggingGrowthEndpoint(sources.get(0).getItem(),originalCount),
+            loggingGrowthEndpoint(destinations.get(0).getItem(),originalCount),
+            loggingGrowthEndpoint(items.get(source),originalCount),loggingGrowthEndpoint(items.get(destination),originalCount),updates);
+    }
+    private static LoggingLeaseGrowthReceipt.Endpoint loggingGrowthEndpoint(net.minecraft.world.item.ItemStack item,int originalCount) {
+        if(item==null || item.getCount()<0)return null;
+        var current=restorationEndpoint(item);if(current==null)return null;
+        if(item.isEmpty())return new LoggingLeaseGrowthReceipt.Endpoint(ItemData.EMPTY,"empty","empty",64);
+        var normalized=item.copy();normalized.setCount(originalCount);
+        var original=restorationEndpoint(normalized);if(original==null)return null;
+        return new LoggingLeaseGrowthReceipt.Endpoint(current.item(),current.fingerprint(),original.fingerprint(),item.getMaxStackSize());
+    }
     @Override public boolean workHotbarRestored(HotbarLease lease) {
         return workHotbarCustody(lease,true);
     }

@@ -42,6 +42,20 @@ class ServerObservationsTest {
         assertTrue(observations.nativeSlotSnapshotsSince(0,0).isEmpty());
     }
 
+    @Test void uncapturedInventoryAndCursorPacketsRequireANewerFullForGrowthCustody() {
+        for(int id:List.of(0,-1,-2)) {
+            ServerObservations observations=new ServerObservations();observations.fullMenu(0,List.of(ItemData.EMPTY));
+            long full=observations.sequence();assertTrue(observations.nativeInventorySlotsCompleteSince(full));
+            observations.menu(id);assertFalse(observations.nativeInventorySlotsCompleteSince(full));
+            observations.fullMenu(0,List.of(ItemData.EMPTY));assertTrue(observations.nativeInventorySlotsCompleteSince(observations.sequence()));
+            observations.menu(id);observations.clear();observations.fullMenu(0,List.of(ItemData.EMPTY));
+            assertTrue(observations.nativeInventorySlotsCompleteSince(observations.sequence()),"Reconnect must clear old sequence barriers");
+        }
+        ServerObservations observations=new ServerObservations();observations.fullMenu(0,List.of(ItemData.EMPTY));
+        long full=observations.sequence();observations.menu(7);assertTrue(observations.nativeInventorySlotsCompleteSince(full));
+        assertFalse(observations.nativeInventorySlotsCompleteSince(0));
+    }
+
     @Test void snapshotCopyDetachesMutableValuesAndNestedMetadataOnEveryRead() {
         // Native ItemStacks need a launched Forge registry. Exercise the exact generic copy
         // path they use with mutable count/tag stand-ins in this ordinary JVM test suite.
