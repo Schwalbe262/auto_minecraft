@@ -370,6 +370,75 @@ class ArtisanModuleTest {
         assertEquals(List.of(0,0,0),f.handCounts);assertEquals(0,f.consumed);assertEquals(6,f.stored(f.output,"society:jade"));
         assertArrayEquals(originalHotbar,Arrays.copyOf(f.inventory,9));assertNull(f.profile.workHotbarLease);
     }
+    @Test void thirtyTwoCrystalCollectionPassesNeverLeaseAnyOfThe112OutputsOrLoseTheEmptyHand() {
+        Fixture f=new Fixture(ArtisanRecipe.CRYSTAL_COLLECTION,3);f.workspaceProofs=true;f.receiptModel=true;
+        f.profile.loggingAxeHotbarSlot=8;f.profile.commodityStores.remove("input");f.upgraded=true;f.emitBonus=true;
+        List<String> catalog=CrystalCollection.OUTPUT_IDS.stream().sorted().toList();
+        List<String> originals=CrystalCollection.BASE_OUTPUT_IDS.stream().filter(id->!id.equals("society:jade") && !id.equals("society:fire_quartz"))
+            .sorted().toList();
+        List<Pos> machines=List.copyOf(f.machineStates.keySet());Set<String> exercised=new HashSet<>();
+        Map<Pos,Map<String,Integer>> expectedStores=new LinkedHashMap<>();int[] pendingCustodyChecks=new int[3];
+        ArtisanModule module=new ArtisanModule(Feature.CRYSTAL_COPY);int evacuations=0;
+        for(int pass=0;pass<32;pass++) {
+            assertTrue(f.receipts.isEmpty());f.dayTime=(435L+pass)*24000+5000;
+            f.inventory[1]=item("society:fire_quartz",2,0);
+            for(int slot=2;slot<=5;slot++) {
+                String id=catalog.get((pass*4+slot-2)%catalog.size());exercised.add(id);f.inventory[slot]=item(id,slot,0);
+            }
+            f.inventory[6]=item("minecraft:torch",11,0);f.inventory[7]=item("minecraft:bread",9,0);f.inventory[8]=item("minecraft:netherite_axe",1,0);
+            ItemData[] protectedHotbar={f.inventory[0],f.inventory[6],f.inventory[7],f.inventory[8]};
+            f.observedCustody=f.inventory.clone();
+            Map<String,Integer> expected=new LinkedHashMap<>();
+            for(ItemData carried:f.inventory)if(CrystalCollection.accepts(carried))expected.merge(carried.id(),carried.count(),Integer::sum);
+            for(int index=0;index<machines.size();index++) {
+                String original=index==0?"society:fire_quartz":originals.get((pass*2+index-1)%originals.size());
+                f.crystalOriginals.put(machines.get(index),original);f.machineStates.put(machines.get(index),f.state(machines.get(index),true,false));
+                expected.merge(original,2,Integer::sum);expected.merge("society:pristine_"+original.split(":")[1],1,Integer::sum);
+            }
+            Pos destination=new Pos(2,64,pass+1);f.chests.put(destination,f.emptyChest());expectedStores.put(destination,Map.copyOf(expected));
+            f.profile.commodityStores.put("output",new CommodityStore("output","Crystal pass "+pass,expected.keySet(),List.of(destination)));
+            WorkResult result=WorkResult.busy("");
+            for(int ticks=0;ticks<1800 && result.state()==WorkResult.State.BUSY;ticks++) {
+                f.advanceReceipts();int beforeActions=f.history.size();Fixture.ModeledReceipt waiting=f.receipts.values().stream().findFirst().orElse(null);
+                HotbarLease lease=f.profile.workHotbarLease;
+                if(lease!=null) {
+                    assertFalse(CrystalCollection.OUTPUT_IDS.contains(lease.original().id()),"An arriving crystal must never be the parked original");
+                    assertEquals("minecraft:torch",lease.original().id());
+                    if(waiting!=null && waiting.action instanceof Action.SwapHotbar) {
+                        if(lease.stage()==HotbarLease.Stage.PREPARED && f.workHotbarParked(lease))pendingCustodyChecks[0]++;
+                        if(lease.stage()==HotbarLease.Stage.PARKED && f.workHotbarParked(lease))pendingCustodyChecks[1]++;
+                        if(lease.stage()==HotbarLease.Stage.RESTORING && f.workHotbarRestored(lease))pendingCustodyChecks[2]++;
+                    }
+                }
+                result=module.tick(f.context());f.now++;
+                if(waiting!=null) {
+                    assertEquals(beforeActions,f.history.size(),"Current full-inventory custody must not complete a pending action ticket");
+                    assertEquals(WorkResult.State.BUSY,result.state());
+                    if(lease!=null)assertNotNull(f.profile.workHotbarLease,"Pending restoration must retain its lease");
+                }
+                if(f.history.size()>beforeActions && f.history.get(f.history.size()-1) instanceof Action.SwapHotbar swap
+                        && f.profile.workHotbarLease!=null && f.profile.workHotbarLease.stage()==HotbarLease.Stage.PARKED) {
+                    evacuations++;assertTrue(swap.inventoryIndex()>=9);
+                    assertNotEquals(f.profile.workHotbarLease.sourceIndex(),swap.inventoryIndex());
+                }
+            }
+            assertEquals(WorkResult.State.IDLE,result.state(),"pass="+pass+": "+result.message());
+            assertEquals((pass+1)*3,f.uses);assertEquals(0,f.consumed);assertEquals(0,f.withdrawals);
+            assertNull(f.profile.workHotbarLease);assertNull(f.session.workHotbarOwner);assertTrue(f.receipts.isEmpty());
+            assertArrayEquals(protectedHotbar,new ItemData[]{f.inventory[0],f.inventory[6],f.inventory[7],f.inventory[8]});
+            assertTrue(Arrays.stream(f.inventory).noneMatch(CrystalCollection::accepts));
+            for(Map.Entry<String,Integer> entry:expected.entrySet())assertEquals(entry.getValue().intValue(),f.stored(destination,entry.getKey()),entry.getKey());
+            assertTrue(f.machineStates.values().stream().noneMatch(b->b.flag("mature")||b.flag("working")));
+            int visits=f.navigationTargets.size();assertEquals(WorkResult.State.IDLE,module.tick(f.context()).state());
+            assertEquals(visits,f.navigationTargets.size(),"The completed inspection must not loop on the same day");
+        }
+        assertEquals(CrystalCollection.OUTPUT_IDS,exercised);assertEquals(96,f.uses);assertTrue(f.handCounts.stream().allMatch(count->count==0));
+        assertTrue(evacuations>=32,"Repeated pickups must exercise clearing an occupied empty-hand slot");
+        for(int count:pendingCustodyChecks)assertTrue(count>=32,"PARK, CLEAR and RESTORE each wait despite fresh current custody");
+        for(Map.Entry<Pos,Map<String,Integer>> store:expectedStores.entrySet())
+            for(Map.Entry<String,Integer> entry:store.getValue().entrySet())assertEquals(entry.getValue().intValue(),f.stored(store.getKey(),entry.getKey()));
+        assertFalse(f.navigationTargets.contains(f.input));
+    }
     @Test void parkingProjectionCannotStartCrystalUseUntilTheSameSwapReceiptSucceeds() {
         Fixture f=new Fixture(ArtisanRecipe.JADE_CRYSTAL,1);fillNonJobHotbar(f);f.workspaceProofs=true;f.holdPark=true;
         ArtisanModule module=new ArtisanModule(f.recipe.feature());
@@ -764,7 +833,9 @@ class ArtisanModuleTest {
         int ordinaryOutputCount=-1,bonusCount=1;
         boolean holdUse,suppressMutation,failCheckpoint,wrongOpen,uncertainArtisan,navigationBlocked,sleeping,grounded=true,upgraded,emitBonus,foreignRecipeReject,actionBusy;Pos opened;
         ItemData cursor=ItemData.EMPTY;String actionFence;
-        boolean workspaceProofs,holdPark,holdRestore,holdClear;
+        boolean workspaceProofs,holdPark,holdRestore,holdClear,receiptModel;
+        ItemData[] observedCustody;
+        final Map<Long,ModeledReceipt> receipts=new LinkedHashMap<>();
         Fixture(ArtisanRecipe recipe,int count) {
             this.recipe=recipe;Arrays.fill(inventory,ItemData.EMPTY);inventory[0]=new ItemData("minecraft:golden_hoe",1,0,null,true,99);
             profile.enabled.put(recipe.feature(),true);profile.hoeHotbarSlot=0;
@@ -794,12 +865,19 @@ class ArtisanModuleTest {
         public String artisanRejection(Pos target){return uncertainTargets.getOrDefault(target,uncertainArtisan ? "Unconfirmed target" : null);}
         public String pauseReason(){return actionFence;}
         public String loggingItemFingerprint(int index){return workspaceProofs?String.format("%064x",Integer.toUnsignedLong(inventory[index].hashCode())):null;}
-        public boolean workHotbarParked(HotbarLease lease){return workspaceProofs && lease.original().equals(inventory[lease.sourceIndex()])
+        private ItemData custodyItem(int index){return receiptModel ? observedCustody[index] : inventory[index];}
+        public boolean workHotbarParked(HotbarLease lease){return workspaceProofs && lease.original().equals(custodyItem(lease.sourceIndex()))
+            && !custodyItem(lease.hotbarSlot()).is(lease.original().id()) && lease.original().equals(inventory[lease.sourceIndex()])
             && lease.fingerprint().equals(loggingItemFingerprint(lease.sourceIndex())) && !inventory[lease.hotbarSlot()].is(lease.original().id());}
-        public boolean workHotbarRestored(HotbarLease lease){return workspaceProofs && lease.original().equals(inventory[lease.hotbarSlot()])
+        public boolean workHotbarRestored(HotbarLease lease){return workspaceProofs && lease.original().equals(custodyItem(lease.hotbarSlot()))
+            && !custodyItem(lease.sourceIndex()).is(lease.original().id()) && lease.original().equals(inventory[lease.hotbarSlot()])
             && lease.fingerprint().equals(loggingItemFingerprint(lease.hotbarSlot())) && !inventory[lease.sourceIndex()].is(lease.original().id());}
         public long submit(Action action) {
             if(workspaceProofs)assertNull(SafetyPolicy.rejection(action,context()),"Working-slot test sent an unauthorized action: "+action);
+            if(receiptModel)assertTrue(receipts.isEmpty(),"A new action cannot overtake a pending modeled native ticket");
+            ItemData[] beforeInventory=receiptModel?inventory.clone():null;
+            BlockData beforeMachine=receiptModel && action instanceof Action.UseBlock use && use.purpose()==Action.Use.ARTISAN?machineStates.get(use.pos()):null;
+            int beforeSelected=selected;
             history.add(action);long id=++lastTicket;int count=0;
             if(action instanceof Action.UseBlock use) {
                 if(use.purpose()==Action.Use.OPEN_CONTAINER){if(!wrongOpen){opened=use.pos();menuId++;opens.merge(opened,1,Integer::sum);}}
@@ -832,7 +910,45 @@ class ArtisanModuleTest {
                 if(slot.player()){put(chests.get(opened),slot.item());inventory[slot.inventoryIndex()]=ItemData.EMPTY;}
                 else {withdrawals++;assertEquals(recipe.inputId(),slot.item().id());put(inventory,slot.item());chests.get(opened)[slot.index()]=ItemData.EMPTY;}
             } else throw new AssertionError("Unexpected action: "+action);
-            outcomes.put(id,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"confirmed",count));return id;
+            if(receiptModel) {
+                receipts.put(id,new ModeledReceipt(action,count,beforeInventory,inventory.clone(),beforeMachine,beforeSelected,now+1,now+3));
+                outcomes.put(id,new ActionOutcome(ActionOutcome.State.PENDING,"awaiting modeled raw observations and ticket acknowledgement"));
+            } else outcomes.put(id,new ActionOutcome(ActionOutcome.State.SUCCEEDED,"confirmed",count));
+            return id;
+        }
+        /** Full inventory observation and per-action acknowledgement are deliberately separate arrivals. */
+        void advanceReceipts() {
+            for(Iterator<Map.Entry<Long,ModeledReceipt>> it=receipts.entrySet().iterator();it.hasNext();) {
+                Map.Entry<Long,ModeledReceipt> entry=it.next();ModeledReceipt receipt=entry.getValue();
+                if(now>=receipt.observationTick && !receipt.observed) {
+                    receipt.validate(this);observedCustody=receipt.after.clone();receipt.observed=true;
+                }
+                if(now>=receipt.ackTick) {
+                    assertTrue(receipt.observed);assertArrayEquals(receipt.after,inventory,"The ticket's observed endpoints changed before acknowledgement");
+                    outcomes.put(entry.getKey(),new ActionOutcome(ActionOutcome.State.SUCCEEDED,"modeled raw state and slot receipt acknowledged",receipt.count));it.remove();
+                }
+            }
+        }
+        private static final class ModeledReceipt {
+            final Action action;final int count,beforeSelected;final ItemData[] before,after;final BlockData beforeMachine;
+            final long observationTick,ackTick;boolean observed;
+            ModeledReceipt(Action action,int count,ItemData[] before,ItemData[] after,BlockData beforeMachine,int beforeSelected,long observationTick,long ackTick) {
+                this.action=action;this.count=count;this.before=before;this.after=after;this.beforeMachine=beforeMachine;
+                this.beforeSelected=beforeSelected;this.observationTick=observationTick;this.ackTick=ackTick;
+            }
+            void validate(Fixture f) {
+                if(action instanceof Action.SwapHotbar swap) {
+                    assertEquals(before[swap.inventoryIndex()],after[swap.hotbarSlot()]);assertEquals(before[swap.hotbarSlot()],after[swap.inventoryIndex()]);
+                    for(int index=0;index<36;index++)if(index!=swap.inventoryIndex() && index!=swap.hotbarSlot())assertEquals(before[index],after[index]);
+                } else if(action instanceof Action.UseBlock use && use.purpose()==Action.Use.ARTISAN) {
+                    assertNotNull(beforeMachine);assertTrue(beforeMachine.flag("mature"));assertFalse(beforeMachine.flag("working"));assertTrue(before[beforeSelected].empty());
+                    BlockData current=f.machineStates.get(use.pos());assertFalse(current.flag("mature"));assertFalse(current.flag("working"));
+                    String original=f.crystalOriginals.get(use.pos());
+                    int beforeCount=Arrays.stream(before).filter(item->item.is(original)).mapToInt(ItemData::count).sum();
+                    int afterCount=Arrays.stream(after).filter(item->item.is(original)).mapToInt(ItemData::count).sum();
+                    assertEquals(2,afterCount-beforeCount,"Only an actual two-item original output confirms crystal collection");
+                }
+            }
         }
         public ActionOutcome outcome(long id){return outcomes.get(id);}public void move(Movement m){}public void stopMovement(){}public void cancel(){}
         static ItemData withCount(ItemData i,int n){return n<=0?ItemData.EMPTY:new ItemData(i.id(),n,i.quality(),i.year(),i.hoe(),i.durability());}

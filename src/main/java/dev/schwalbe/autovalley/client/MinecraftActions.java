@@ -152,10 +152,11 @@ public final class MinecraftActions implements ActionPort {
         if(full==null || !full.carried().isEmpty() || full.items().size()!=46)return false;
         var liveSource=restorationEndpoint(sources.get(0).getItem());var liveHotbar=restorationEndpoint(destinations.get(0).getItem());
         var packetSource=restorationEndpoint(full.items().get(source));var packetHotbar=restorationEndpoint(full.items().get(destination));
-        return restored ? WorkHotbarRestorationReceipt.proves(lease,observations.generation(),lastHotbarSwapGeneration,lastHotbarSwapSequence,
-            full.seq(),true,liveSource,liveHotbar,packetSource,packetHotbar)
-            : WorkHotbarRestorationReceipt.provesParked(lease,observations.generation(),lastHotbarSwapGeneration,lastHotbarSwapSequence,
-                full.seq(),true,liveSource,liveHotbar,packetSource,packetHotbar);
+        var updates=observations.nativeSlotSnapshotsSince(0,full.seq()).stream()
+            .map(update->new WorkHotbarRestorationReceipt.SlotUpdate(update.seq(),update.menuId(),update.slot(),
+                restorationEndpoint(update.packetItem()))).toList();
+        return WorkHotbarRestorationReceipt.provesCurrent(lease,observations.generation(),lastHotbarSwapGeneration,lastHotbarSwapSequence,
+            full.seq(),full.items().size(),true,liveSource,liveHotbar,packetSource,packetHotbar,updates,restored);
     }
     @Override public String recoveryStatus() {
         if (inventoryRefresh!=null && pending instanceof Action.RefreshInventory)
