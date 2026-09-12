@@ -39,6 +39,11 @@ final class NativeLoggingActions {
     private final Vec3 miningHit;
     private float progress;
     private boolean started,stopped,aborted;
+    private boolean abortDispatched,abortForwarded;
+    private ServerboundPlayerActionPacket abortPacket;
+    private long abortBeforeSequence=-1;
+    private int abortPacketSequence=-1;
+    private final LoggingActionReceipt receipt;
 
     NativeLoggingActions(Minecraft mc,MinecraftWorld world,ServerObservations observations,Action action,Context context) {
         if (mc.player==null || mc.level==null || mc.player.containerMenu!=mc.player.inventoryMenu
@@ -51,6 +56,7 @@ final class NativeLoggingActions {
         else if (action instanceof Action.ChopTree chop) target=chop.pos();
         else throw new IllegalArgumentException("Unsupported native logging operation");
         generation=observations.generation(); beforeSequence=observations.sequence();
+        receipt=new LoggingActionReceipt(generation);
         heldIndex=mc.player.getInventory().selected; held=mc.player.getMainHandItem().copy();
         original=mc.level.getBlockState(MinecraftWorld.nativePos(target));
         if (planting) {
@@ -89,10 +95,12 @@ final class NativeLoggingActions {
             mc.gameMode.useItemOn(mc.player,InteractionHand.MAIN_HAND,hit);
             mc.player.swing(InteractionHand.MAIN_HAND);
         } else {
+            // START can itself complete an instant block, including when dispatch
+            // throws after sending. Such a stroke can never use pre-STOP cancellation.
+            stopped=progress>=1;
             started=true; // A throwing network call may already have sent its request.
             send(mc,observations,ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK);
             // Instant native blocks are handled by START on the server. Never invent a STOP.
-            stopped=progress>=1;
             mc.player.swing(InteractionHand.MAIN_HAND);
         }
     }
@@ -176,7 +184,17 @@ final class NativeLoggingActions {
         } catch (com.mojang.brigadier.exceptions.CommandSyntaxException failure) { return false; }
     }
     boolean confirmed(ServerObservations observations) {
-        if (generation!=observations.generation()) return false;
+        if(!started)return false;
+        return receipt.confirmed(observations.generation(),()->actualSuccess(observations));
+    }
+    /** Processing an acknowledged ABORT settles only the cancelled pre-STOP stroke, never its success. */
+    boolean cancellationSettled(ServerObservations observations) {
+        return LoggingActionReceipt.cancelledBeforeStop(planting,started,stopped,aborted,abortDispatched,abortForwarded,
+            generation,observations.generation(),beforeSequence,abortBeforeSequence,abortPacketSequence,
+            observations.nativeBlockActionsProcessed());
+    }
+    void packetForwarded(Object packet) { if(packet==abortPacket && packet!=null)abortForwarded=true; }
+    private boolean actualSuccess(ServerObservations observations) {
         if (leafAction!=null) {
             return leafClearedConfirmed(started,original.is(Blocks.SPRUCE_LEAVES),held.is(Items.NETHERITE_AXE),
                 generation,observations.generation(),beforeSequence,target,
@@ -268,7 +286,9 @@ final class NativeLoggingActions {
     }
     void abort(Minecraft mc,ServerObservations observations) {
         if (!planting && started && !aborted && generation==observations.generation() && mc.getConnection()!=null) {
-            aborted=true; send(mc,observations,ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK);
+            aborted=true;abortBeforeSequence=observations.sequence();
+            send(mc,observations,ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK);
+            abortDispatched=true;
         }
     }
     private void send(Minecraft mc,ServerObservations observations,ServerboundPlayerActionPacket.Action action) {
@@ -280,6 +300,9 @@ final class NativeLoggingActions {
             fields[0].setAccessible(true);
             try (BlockStatePredictionHandler prediction=((BlockStatePredictionHandler)fields[0].get(mc.level)).startPredicting()) {
                 var packet=new ServerboundPlayerActionPacket(action,MinecraftWorld.nativePos(target),face,prediction.currentSequence());
+                if(action==ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK) {
+                    abortPacket=packet;abortPacketSequence=prediction.currentSequence();
+                }
                 observations.permitLoggingPacket(packet);
                 mc.getConnection().send(packet);
             }

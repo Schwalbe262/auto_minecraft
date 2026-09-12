@@ -13,6 +13,58 @@ import static org.junit.jupiter.api.Assertions.*;
 class ServerObservationsTest {
     private static ItemData tomato(int count) { return new ItemData(ItemData.TOMATO,count,0,null,false,999); }
 
+    @Test void nativeLoggingObserverIsExclusiveAndOnlyRunsForActualLoggingEvidence() {
+        ServerObservations observations=new ServerObservations();int[] calls={0};
+        assertThrows(NullPointerException.class,()->observations.observeNativeLogging(null));
+        observations.observeNativeLogging(()->calls[0]++);
+        assertThrows(IllegalStateException.class,()->observations.observeNativeLogging(()->fail("replaced observer")));
+        observations.menu(0);observations.fullMenu(0);observations.fullMenu(0,List.of(ItemData.EMPTY));
+        observations.block(new Pos(1,64,1));observations.blockActionsProcessed(0);observations.blockActionsProcessed(-1);
+        assertEquals(0,calls[0],"Markers, reduced menus and invalid packet numbers are not proof");
+        observations.chop(new Pos(1,64,1),1,1);observations.snowPlant(new Pos(1,64,1),true);observations.blockActionsProcessed(7);
+        assertEquals(3,calls[0]);observations.clear();assertEquals(3,calls[0]);
+        assertThrows(IllegalStateException.class,()->observations.observeNativeLogging(()->fail("replaced after reconnect")));
+    }
+
+    @Test void processedSequenceKeepsItsActualPacketBoundaryAndResetsWithTheConnection() {
+        ServerObservations observations=new ServerObservations();assertNull(observations.nativeBlockActionsProcessed());
+        observations.blockActionsProcessed(-1);observations.blockActionsProcessed(0);assertEquals(0,observations.sequence());
+        observations.blockActionsProcessed(17);var first=observations.nativeBlockActionsProcessed();
+        assertEquals(new LoggingActionReceipt.Processed(1,17),first);
+        observations.blockActionsProcessed(12);assertSame(first,observations.nativeBlockActionsProcessed());
+        assertEquals(2,observations.sequence());
+        assertFalse(LoggingActionReceipt.cancelledBeforeStop(false,true,false,true,true,true,
+            0,0,0,1,17,observations.nativeBlockActionsProcessed()),"A later lower ACK cannot give an old high watermark a new timestamp");
+        observations.blockActionsProcessed(18);assertEquals(new LoggingActionReceipt.Processed(3,18),observations.nativeBlockActionsProcessed());
+        assertTrue(LoggingActionReceipt.cancelledBeforeStop(false,true,false,true,true,true,
+            0,0,0,1,18,observations.nativeBlockActionsProcessed()));
+        observations.clear();assertNull(observations.nativeBlockActionsProcessed());assertEquals(0,observations.sequence());
+    }
+
+    @Test void successfulForwardNotificationRetainsExactIdentityWithoutInventingServerProof() {
+        ServerObservations observations=new ServerObservations();Object packet=new Object();Object[] seen={null};
+        assertThrows(NullPointerException.class,()->observations.observeLoggingPacketForwarded(null));
+        observations.observeLoggingPacketForwarded(value->seen[0]=value);
+        assertThrows(IllegalStateException.class,()->observations.observeLoggingPacketForwarded(value->fail("replaced")));
+        observations.loggingPacketForwarded(packet);assertSame(packet,seen[0]);
+        assertNull(observations.nativeBlockActionsProcessed());assertEquals(0,observations.sequence());
+        assertThrows(NullPointerException.class,()->observations.loggingPacketForwarded(null));
+        observations.clear();assertThrows(IllegalStateException.class,()->observations.observeLoggingPacketForwarded(value->fail("replaced")));
+    }
+
+    @Test void passiveLoggingReceiptLatchesBeforeBoundedHistoryEvictionAndWhileOrdinaryPollingIsPaused() {
+        ServerObservations observations=new ServerObservations();var receipt=new LoggingActionReceipt(observations.generation());
+        Pos target=new Pos(1,64,1);int[] reads={0};
+        observations.observeNativeLogging(()->receipt.confirmed(observations.generation(),()->{
+            reads[0]++;return observations.nativeChopsSince(0).stream().anyMatch(ack->ack.seq()==1 && ack.chops()==1);
+        }));
+        observations.chop(target,1,1);
+        for(int count=0;count<1100;count++)observations.chop(target,0,1);
+        assertTrue(observations.nativeChopsSince(0).stream().noneMatch(ack->ack.seq()==1));
+        assertEquals(1,reads[0]);assertTrue(receipt.confirmed(observations.generation(),()->false));
+        observations.clear();assertFalse(receipt.confirmed(observations.generation(),()->{throw new AssertionError("old connection");}));
+    }
+
     @Test void nativeReceiptObserverCannotBeReplacedOrTriggeredByReducedEvidence() {
         ServerObservations observations=new ServerObservations();int[] calls={0};
         assertThrows(NullPointerException.class,() -> observations.observeNativeFullMenus(null));

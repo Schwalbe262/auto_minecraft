@@ -58,6 +58,8 @@ public final class PacketObserver extends ChannelDuplexHandler {
             observations.fullMenu(packet.getContainerId(),fullItems,nativeItems,carried);
             recorder.fullMenu(recordingEpoch,packet.getContainerId(),fullItems);
         });
+        else if (message instanceof ClientboundBlockChangedAckPacket packet)
+            later(() -> observations.blockActionsProcessed(packet.sequence()));
         else if (message instanceof ClientboundBlockUpdatePacket packet) later(() -> {
             var pos=MinecraftWorld.pos(packet.getPos()); observations.block(pos,packet.getBlockState()); recorder.blockUpdate(recordingEpoch,pos);
         });
@@ -85,5 +87,10 @@ public final class PacketObserver extends ChannelDuplexHandler {
         }
         recorder.outgoing(message);
         super.write(ctx,message,promise);
+        // Suppression returned above; a successful caller-side send alone is not
+        // admission. Retain the exact packet only after the actual write succeeds.
+        if(destroy && !promise.isVoid())promise.addListener(sent -> {
+            if(sent.isSuccess())later(() -> observations.loggingPacketForwarded(message));
+        });
     }
 }

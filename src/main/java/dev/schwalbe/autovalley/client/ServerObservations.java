@@ -7,6 +7,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.state.BlockState;
 import java.util.*;
 import java.util.function.UnaryOperator;
+import java.util.function.Consumer;
 
 /** Records only server-originated confirmations, never client inventory prediction. */
 public final class ServerObservations {
@@ -38,12 +39,42 @@ public final class ServerObservations {
     private long uncapturedNativeInventorySequence,discardedNativeSlotSequence;
     private volatile long generation;
     private Runnable nativeFullMenuObserver;
+    private Runnable nativeLoggingObserver;
+    private Consumer<Object> loggingPacketForwardedObserver;
+    private LoggingActionReceipt.Processed nativeBlockActionsProcessed;
     /** One adapter-owned passive observer, called on the client thread before a later packet can evict this proof. */
     void observeNativeFullMenus(Runnable observer) {
         Objects.requireNonNull(observer);
         if (nativeFullMenuObserver!=null) throw new IllegalStateException("Native receipt observer already installed");
         nativeFullMenuObserver=observer;
     }
+    /** Passive receipt capture on the client thread, before a later packet can evict genuine evidence. */
+    void observeNativeLogging(Runnable observer) {
+        Objects.requireNonNull(observer);
+        if(nativeLoggingObserver!=null)throw new IllegalStateException("Native logging observer already installed");
+        nativeLoggingObserver=observer;
+    }
+    /** Exact packet identity only; outgoing admission is never itself a server acknowledgement. */
+    void observeLoggingPacketForwarded(Consumer<Object> observer) {
+        Objects.requireNonNull(observer);
+        if(loggingPacketForwardedObserver!=null)throw new IllegalStateException("Logging packet observer already installed");
+        loggingPacketForwardedObserver=observer;
+    }
+    void loggingPacketForwarded(Object packet) {
+        Objects.requireNonNull(packet);
+        if(loggingPacketForwardedObserver!=null)loggingPacketForwardedObserver.accept(packet);
+    }
+    public void blockActionsProcessed(int throughSequence) {
+        if(throughSequence<=0)return;
+        var packet=new LoggingActionReceipt.Processed(++sequence,throughSequence);
+        // Retain the actual packet's observation sequence. Never attach an old
+        // high watermark to a later packet and manufacture post-dispatch proof.
+        if(nativeBlockActionsProcessed==null || throughSequence>=nativeBlockActionsProcessed.throughSequence())
+            nativeBlockActionsProcessed=packet;
+        observeLogging();
+    }
+    LoggingActionReceipt.Processed nativeBlockActionsProcessed() { return nativeBlockActionsProcessed; }
+    private void observeLogging() { if(nativeLoggingObserver!=null)nativeLoggingObserver.run(); }
     public record NativeBlockSnapshot(long seq,Pos pos,BlockState state) { }
     /** Reduced from an actual block-entity packet before application; never from a live predicted entity. */
     public record NativeSnowPlantSnapshot(long seq,Pos pos,boolean spruceSapling) { }
@@ -70,12 +101,14 @@ public final class ServerObservations {
     public void block(Pos pos,BlockState state) {
         block(pos);
         nativeBlocks.addLast(new NativeBlockSnapshot(sequence,pos,Objects.requireNonNull(state)));
+        observeLogging();
         if (nativeBlocks.size()>4096) nativeBlocks.removeFirst();
     }
     public List<NativeBlockSnapshot> nativeBlocksSince(long before) { return nativeBlocks.stream().filter(s -> s.seq()>before).toList(); }
     public void snowPlant(Pos pos,boolean spruceSapling) {
         Objects.requireNonNull(pos);
         nativeSnowPlants.addLast(new NativeSnowPlantSnapshot(++sequence,pos,spruceSapling));
+        observeLogging();
         if(nativeSnowPlants.size()>1024)nativeSnowPlants.removeFirst();
     }
     public List<NativeSnowPlantSnapshot> nativeSnowPlantsSince(long before) {
@@ -84,6 +117,7 @@ public final class ServerObservations {
     public void chop(Pos pos,int chops,int originalState) {
         if (chops<0 || chops>1024 || originalState<0) return;
         nativeChops.addLast(new NativeChopSnapshot(++sequence,pos,chops,originalState));
+        observeLogging();
         if (nativeChops.size()>1024) nativeChops.removeFirst();
     }
     public List<NativeChopSnapshot> nativeChopsSince(long before) { return nativeChops.stream().filter(s -> s.seq()>before).toList(); }
@@ -190,5 +224,5 @@ public final class ServerObservations {
     }
     public boolean menuSince(int id,long before) { return menus.getOrDefault(id,0L)>before || menus.getOrDefault(-2,0L)>before; }
     public boolean blockSince(Pos pos,long before) { return blocks.getOrDefault(pos,0L)>before; }
-    public void clear() { sequence=0; uncapturedNativeInventorySequence=0; discardedNativeSlotSequence=0; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); nativeSlots.clear(); nativeBlocks.clear(); nativeSnowPlants.clear(); nativeChops.clear(); nativeCrystals.clear(); loggingPermits.clear(); }
+    public void clear() { sequence=0; uncapturedNativeInventorySequence=0; discardedNativeSlotSequence=0; nativeBlockActionsProcessed=null; generation++; menus.clear(); fullMenus.clear(); fullMenuSnapshots.clear(); fullNativeMenuSnapshots.clear(); blocks.clear(); nativeSlots.clear(); nativeBlocks.clear(); nativeSnowPlants.clear(); nativeChops.clear(); nativeCrystals.clear(); loggingPermits.clear(); }
 }

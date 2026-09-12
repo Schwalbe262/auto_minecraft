@@ -67,6 +67,16 @@ public final class MinecraftActions implements ActionPort {
             if (lateLoggingSwap!=null) lateLoggingSwap.confirmed(observations);
             if (inventoryRefresh!=null) inventoryRefresh.confirmed(observations);
         });
+        observations.observeNativeLogging(() -> {
+            // Receipt memory only, including while OFF. This never advances a
+            // module, emits input, acknowledges a cancelled ticket, or restarts.
+            if(loggingAction!=null)loggingAction.confirmed(observations);
+            if(lateLoggingAction!=null)lateLoggingAction.confirmed(observations);
+        });
+        observations.observeLoggingPacketForwarded(packet -> {
+            if(loggingAction!=null)loggingAction.packetForwarded(packet);
+            if(lateLoggingAction!=null)lateLoggingAction.packetForwarded(packet);
+        });
     }
     public void context(Context context) { if(this.context!=context)crystalInspection=null;this.context=context; }
     public void enabled(boolean enabled) { if (!enabled) { stopMovement();crystalInspection=null; } this.enabled=enabled; }
@@ -686,7 +696,8 @@ public final class MinecraftActions implements ActionPort {
     }
     @Override public String pauseReason() {
         if (loggingFailureGeneration!=observations.generation()) loggingFailure=null;
-        if (lateLoggingAction!=null && (lateLoggingAction.generation!=observations.generation() || lateLoggingAction.confirmed(observations))) lateLoggingAction=null;
+        if (lateLoggingAction!=null && (lateLoggingAction.generation!=observations.generation()
+            || lateLoggingAction.confirmed(observations) || lateLoggingAction.cancellationSettled(observations))) lateLoggingAction=null;
         if (lateLoggingSwap!=null && (lateLoggingSwap.generation!=observations.generation() || lateLoggingSwap.confirmed(observations))) lateLoggingSwap=null;
         if (lateLoggingRecipe!=null) {
             if (lateLoggingRecipe.generation!=observations.generation()) lateLoggingRecipe=null;
@@ -920,6 +931,9 @@ public final class MinecraftActions implements ActionPort {
         if (loggingAction==null && loggingRecipe==null && loggingSwap==null) return;
         if (state!=ActionOutcome.State.SUCCEEDED) {
             if (loggingAction!=null) {
+                // Preserve proof already received before a manual-input tick won
+                // the race with normal action polling; the ticket stays cancelled.
+                loggingAction.confirmed(observations);
                 try { loggingAction.abort(mc,observations); } catch (RuntimeException ignored) { /* Keep the unresolved fence. */ }
                 lateLoggingAction=loggingAction;
             }
