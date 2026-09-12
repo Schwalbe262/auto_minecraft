@@ -74,10 +74,28 @@ class MouseMovementTakeoverTest {
         assertFalse(sample(m,6,Double.NaN,1));assertFalse(sample(m,7,1,Double.POSITIVE_INFINITY));
         assertFalse(sample(m,8,500,400));assertFalse(sample(m,12,500,400));
     }
+    @Test void realMouseMotionWhileOffCancelsAnAutomaticSaveRecoveryButOrdinaryOffStillIgnoresIt() {
+        var mouse=new MouseMovementTakeover();var recovery=new PersistenceRecovery();
+        var identity=new PersistenceRecovery.Identity(new Object(),new Object(),new Object(),"profile");
+        recovery.failed(identity,new ProfileStore.Diagnostic(ProfileStore.Stage.REPLACE,"AccessDeniedException",3,false),
+            new java.nio.file.AccessDeniedException("isolated-profile"),0,
+            new PersistenceRecovery.Resume(dev.schwalbe.autovalley.core.RunMode.CONTINUOUS,null));
+        boolean engineRunning=false;
+        assertFalse(mouse.moved(0,engineRunning || recovery.automaticPending(),true,true,false,null,1920,1080,10,20));
+        assertTrue(mouse.moved(4,engineRunning || recovery.automaticPending(),true,true,false,null,1920,1080,11,20));
+        recovery.cancelAutomatic("MANUAL_INPUT");
+        assertNull(recovery.begin(identity,20,false));assertFalse(recovery.automaticPending());
+        assertFalse(mouse.moved(5,engineRunning || recovery.automaticPending(),true,true,false,null,1920,1080,99,99));
+        assertNotNull(recovery.begin(identity,20,true),"The user's later explicit F8 remains separate permission");
+    }
     @Test void runtimeReadsCursorRatherThanCameraAnglesAndKeepsExplicitSafetyStops() throws Exception {
         String source=Files.readString(Path.of("src/main/java/dev/schwalbe/autovalley/client/ClientRuntime.java"));
-        assertTrue(source.contains("mouseTakeover.moved(world.tick(),running(),mc.isWindowActive()"));
+        assertTrue(source.contains("mouseTakeover.moved(world.tick(),running() || persistenceRecovery.automaticPending(),mc.isWindowActive()"));
         assertTrue(source.contains("mc.mouseHandler.xpos(),mc.mouseHandler.ypos()"));
+        String manual=source.substring(source.indexOf("public void manualInput(boolean attack)"),source.indexOf("public void manualOutputInteraction()"));
+        assertTrue(manual.indexOf("cancelPersistenceResume(\"MANUAL_INPUT\")")>=0);
+        assertTrue(manual.indexOf("cancelPersistenceResume(\"MANUAL_INPUT\")")<manual.indexOf("if (!running()) return"),
+            "An OFF engine with a pending automatic retry must still honor manual takeover before the running guard");
         assertFalse(source.contains("expectedYaw"));assertFalse(source.contains("expectedPitch"));
         assertFalse(source.contains("anglesValid"));
         assertTrue(source.contains("public void emergencyStop()"));

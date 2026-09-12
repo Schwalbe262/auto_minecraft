@@ -39,6 +39,11 @@ public final class ClientRuntime {
     private String persistenceError;
     private ProfileStore.Diagnostic persistenceDiagnostic;
     private Throwable persistenceFailureCause;
+    private final PersistenceRecovery persistenceRecovery=new PersistenceRecovery();
+    private final PersistenceRecovery.SaveScope automaticSaveScope=new PersistenceRecovery.SaveScope();
+    private boolean profileLoaded;
+    private Boolean lastSaveCommitted;
+    private String lastSuccessfulCommitAtUtc;
     private Connection connection;
     private volatile boolean attackFence;
     private long attackFenceUntil;
@@ -57,6 +62,27 @@ public final class ClientRuntime {
     public static void install() { MinecraftForge.EVENT_BUS.register(new ClientEvents()); }
     public Profile profile() { return profile; }
     public MinecraftWorld world() { return world; }
+    /** Exact loaded profile identity; a read-only diagnostic is not a save or a start request. */
+    public String diagnosticProfileKey() { return profileKey; }
+    public Map<String,Object> persistenceReport() {
+        Map<String,Object> report=new LinkedHashMap<>();
+        report.put("profileLoaded",profileLoaded);
+        report.put("memoryProfileMatchesContext",context!=null && context.profile()==profile);
+        report.put("errorLatched",persistenceError!=null);
+        report.put("recoveryPending",persistenceRecovery.automaticPending());
+        // Last attempted save only. Null means load-only/no observed commit, not RAM=disk.
+        report.put("lastSaveCommitted",lastSaveCommitted);
+        report.put("lastSuccessfulCommitAtUtc",lastSuccessfulCommitAtUtc);
+        report.put("stage",persistenceDiagnostic==null ? null : persistenceDiagnostic.stage().name());
+        report.put("exceptionClass",persistenceDiagnostic==null ? null : persistenceDiagnostic.exceptionClass());
+        report.put("attempts",persistenceDiagnostic==null ? 0 : persistenceDiagnostic.attempts());
+        report.put("committed",persistenceDiagnostic==null ? null : persistenceDiagnostic.committed());
+        report.put("recoveryAttempts",persistenceRecovery.automaticAttempts());
+        report.put("nextRetryTick",persistenceRecovery.nextRetryTick());
+        report.put("autoResumeEligible",persistenceRecovery.automaticPending());
+        report.put("lastRecoveryOutcome",persistenceRecovery.outcome());
+        return report;
+    }
     public String status() {
         if (persistenceError!=null) return persistenceError;
         if (pendingShipmentRecovery!=null) return pendingShipmentRecovery.status();
@@ -87,6 +113,7 @@ public final class ClientRuntime {
     public String executionMode() { return pendingShipmentRecovery!=null ? "RECOVER_PENDING_SHIP" : coordinateTravel==null ? engine.mode().name() : "MOVE_ONCE"; }
     /** Explicit operator shipment only; never confirms or removes the selected durable ledger entry. */
     public boolean recoverPendingShip(String pendingId) {
+        cancelPersistenceResume("EXPLICIT_SHIPMENT_REQUEST");
         if (running() || automationStartBlocked() || recording() || persistenceError!=null || profileKey==null
                 || mc.screen!=null || mc.level==null || mc.player==null || mc.getConnection()==null) {
             notifyUser("자동화를 정지하고 접속·화면·저장 상태를 확인한 뒤 출하 복구를 선택하세요."); return false;
@@ -119,12 +146,14 @@ public final class ClientRuntime {
     /** Explicit movement only; it never enables a work feature or confirms a storage role. */
     public boolean runMoveOnce(Pos feet) { return beginCoordinateTravel(CoordinateTravel.position(feet)); }
     public boolean runObserveOnce(CoordinateDestination draft) {
+        cancelPersistenceResume("EXPLICIT_TRAVEL_REQUEST");
         if (draft==null || draft.facilityKind()==null || !profile.coordinateDestinations.contains(draft)) {
             notifyUser("저장한 시설 좌표 후보를 먼저 선택하세요."); return false;
         }
         return beginCoordinateTravel(CoordinateTravel.observe(draft));
     }
     private boolean beginCoordinateTravel(CoordinateTravel request) {
+        cancelPersistenceResume("EXPLICIT_TRAVEL_REQUEST");
         if (automationStartBlocked() || recording() || persistenceError!=null || profileKey==null || mc.screen!=null
                 || mc.level==null || mc.player==null) {
             notifyUser("접속·기록·열린 화면·설정 상태를 확인한 뒤 이동하세요."); return false;
@@ -172,6 +201,7 @@ public final class ClientRuntime {
         notifyUser("기록 저장: config/autovalley/recordings/"+path.getFileName());
     }
     public boolean runOnce(Feature feature) {
+        cancelPersistenceResume("EXPLICIT_ONE_SHOT_REQUEST");
         if (automationStartBlocked()) { notifyUser("긴급 정지를 처리 중입니다. 잠시 후 새 실행 요청을 보내세요."); return false; }
         if (recording()) { notifyUser("직접 플레이 기록을 저장한 뒤 자동 작업을 실행하세요."); return false; }
         if (persistenceError!=null || mc.screen!=null) { notifyUser("열린 화면이나 설정 오류를 먼저 해결하세요."); return false; }
@@ -209,16 +239,22 @@ public final class ClientRuntime {
     public Movement movement() { return actions.movement(); }
     public void toggle() {
         if (running()) pause("단축키로 일시정지");
-        else if (persistenceError==null) {
+        else {
+            cancelPersistenceResume("EXPLICIT_START_REQUEST");
             if (automationStartBlocked()) return;
             if (recording()) { notifyUser("직접 플레이 기록을 저장한 뒤 자동화를 시작하세요."); return; }
             if (mc.screen!=null) { notifyUser("설정/인벤토리 화면을 닫은 뒤 F8을 누르세요."); return; }
-            pendingShipmentStatus=null;
-            engine.start(context); actions.enabled(engine.running()); mouseTakeover.reset(); attackFence=engine.running();
-            updateBackgroundPause();
+            if (persistenceError!=null && !recoverPersistence(true)) {
+                notifyUser(persistenceError); return;
+            }
+            startAfterPersistence(new PersistenceRecovery.Resume(RunMode.CONTINUOUS,null));
         }
     }
     public void pause(String reason) {
+        cancelPersistenceResume("EXPLICIT_OR_SAFETY_PAUSE");
+        pauseInternal(reason);
+    }
+    private void pauseInternal(String reason) {
         coordinateTravel=null;
         if (pendingShipmentRecovery!=null) finishPendingShipment(reason);
         else { pendingShipmentStatus=null; engine.stop(context,AutomationEngine.State.PAUSED,reason); }
@@ -226,7 +262,7 @@ public final class ClientRuntime {
         updateBackgroundPause();
         attackFence=world.tick()<attackFenceUntil;
         if (profileKey!=null && persistenceError==null && savedScheduleHash!=scheduleHash()) {
-            try { saveProfile(); } catch (RuntimeException e) { persistenceError=e.getMessage(); }
+            try { saveProfile(); } catch (RuntimeException e) { latchPersistenceFailure(e.getMessage(),null); }
         }
     }
     public boolean automationStartBlocked() { return emergencyStartGate.blockedAt(world.tick()); }
@@ -236,12 +272,16 @@ public final class ClientRuntime {
         pause("긴급 정지 — 다시 시작하려면 F8");
     }
     public void manualInput(boolean attack) {
+        cancelPersistenceResume("MANUAL_INPUT");
         if (!running()) return;
         if (attack) attackFenceUntil=world.tick()+3;
         pause("마우스 움직임을 감지해 일시정지했습니다.");
     }
     /** Called before manual item interactions, including while OFF; a later count is no longer causal evidence. */
-    public void manualOutputInteraction() { MachineOutputLedger.invalidateLiveEvidence(context); }
+    public void manualOutputInteraction() {
+        cancelPersistenceResume("MANUAL_ITEM_INTERACTION");
+        MachineOutputLedger.invalidateLiveEvidence(context);
+    }
     /** Vanilla block-use target, not keyboard interception or an automation-generated click. */
     public void manualStockContainerUse() {
         if(mc.player==null || mc.screen!=null)return;
@@ -271,6 +311,7 @@ public final class ClientRuntime {
             context==null || MachineOutputLedger.hasPending(context)));
     }
     public boolean updateWineLine(String id,boolean enabled,int cycleDays) {
+        cancelPersistenceResume("EXPLICIT_SETTINGS_CHANGE");
         if (!wineLineSettingsEditable() || cycleDays<1 || cycleDays>28) return false;
         WineProductionLine previous=WineProductionRules.line(profile,id);
         if (previous==null) return false;
@@ -294,6 +335,7 @@ public final class ClientRuntime {
     /** Explicit setting only; does not start work, reconcile failures or alter a retained logging batch. */
     public boolean loggingLeafSettingEditable() { return LoggingLeafSettings.editable(profile,loggingLeafSettingBoundary()); }
     public boolean setLoggingLeafClearing(boolean desired) {
+        cancelPersistenceResume("EXPLICIT_SETTINGS_CHANGE");
         try {
             LoggingLeafSettings.apply(profile,desired,loggingLeafSettingBoundary(),this::saveProfile);
             notifyUser(Component.translatable("autovalley.logging.leaf_saved",
@@ -311,6 +353,7 @@ public final class ClientRuntime {
         return ManualWorkHotbarResolution.rejection(context,expectedKey);
     }
     public boolean acknowledgeManualWorkHotbar(String expectedKey) {
+        cancelPersistenceResume("EXPLICIT_CUSTODY_CONFIRMATION");
         String rejection=manualWorkHotbarConfirmationRejection(expectedKey);
         if (rejection!=null) { notifyUser(rejection); return false; }
         try {
@@ -330,6 +373,7 @@ public final class ClientRuntime {
         return ManualLoggingHotbarResolution.rejection(context,expectedKey);
     }
     public boolean acknowledgeManualLoggingHotbar(String expectedKey) {
+        cancelPersistenceResume("EXPLICIT_CUSTODY_CONFIRMATION");
         String rejection=manualLoggingHotbarConfirmationRejection(expectedKey);
         if (rejection!=null) { notifyUser(rejection); return false; }
         try {
@@ -343,21 +387,119 @@ public final class ClientRuntime {
         }
     }
     public void saveProfile() {
+        // UI screens also edit the live Profile directly before calling this method.
+        // Cancel before either guard can throw; object identity cannot detect such edits.
+        if (automaticSaveScope.current()==null) cancelPersistenceResume("EXPLICIT_PROFILE_SAVE");
         if (profileKey==null) throw new IllegalStateException("게임에 접속한 뒤 설정하세요.");
         if (persistenceError!=null) throw new IllegalStateException(persistenceError);
-        try { store.save(profileKey,profile); savedScheduleHash=scheduleHash(); }
+        try { persistCurrentMemory(); }
         catch (IOException | RuntimeException e) {
-            // Retain the original exception in RAM for exact diagnosis. Public
-            // status/logs contain only the stage and class, never profile data.
-            persistenceFailureCause=e;persistenceDiagnostic=store.lastDiagnostic();
-            String stage=persistenceDiagnostic==null ? "UNKNOWN" : persistenceDiagnostic.stage().name();
-            String failureClass=persistenceDiagnostic==null ? e.getClass().getSimpleName() : persistenceDiagnostic.exceptionClass();
-            int attempts=persistenceDiagnostic==null ? 1 : persistenceDiagnostic.attempts();
-            LogUtils.getLogger().warn("Auto Valley profile persistence failed at {} after {} attempt(s): {}",stage,attempts,failureClass);
-            throw new IllegalStateException("설정을 저장하지 못했습니다 ("+stage+" / "+failureClass+"). 저장 오류를 확인한 뒤 다시 시도하세요.",e);
+            String message=recordPersistenceFailure(e);
+            if (automaticSaveScope.current()!=null) latchPersistenceFailure(message,automaticSaveScope.current());
+            throw new IllegalStateException(message,e);
         }
     }
+    private void persistCurrentMemory() throws IOException {
+        store.save(profileKey,profile);
+        recordSuccessfulCommit(); savedScheduleHash=scheduleHash();
+    }
+    private void recordSuccessfulCommit() {
+        lastSaveCommitted=true;
+        lastSuccessfulCommitAtUtc=java.time.Instant.now().toString();
+        persistenceDiagnostic=store.lastDiagnostic(); persistenceFailureCause=null;
+    }
+    private String recordPersistenceFailure(Throwable failure) {
+        persistenceFailureCause=failure; persistenceDiagnostic=store.lastDiagnostic(); lastSaveCommitted=false;
+        String stage=persistenceDiagnostic==null ? "UNKNOWN" : persistenceDiagnostic.stage().name();
+        String failureClass=persistenceDiagnostic==null ? failure.getClass().getSimpleName() : persistenceDiagnostic.exceptionClass();
+        int attempts=persistenceDiagnostic==null ? 1 : persistenceDiagnostic.attempts();
+        LogUtils.getLogger().warn("Auto Valley profile persistence failed at {} after {} attempt(s): {}",stage,attempts,failureClass);
+        return "설정을 저장하지 못했습니다 ("+stage+" / "+failureClass+"). 저장 오류를 확인한 뒤 F8로 다시 시도하세요.";
+    }
+    private PersistenceRecovery.Identity persistenceIdentity() {
+        return new PersistenceRecovery.Identity(context,connection,profile,profileKey);
+    }
+    private PersistenceRecovery.Resume automaticSavePermission() {
+        return engine.running() && coordinateTravel==null && pendingShipmentRecovery==null && !recording()
+            ? new PersistenceRecovery.Resume(engine.mode(),engine.oneShotFeature()) : null;
+    }
+    private void automationSavePhase(Runnable phase) {
+        automaticSaveScope.run(automaticSavePermission(),phase);
+    }
+    private void cancelPersistenceResume(String reason) {
+        persistenceRecovery.cancelAutomatic(reason);
+        // A public pause/settings request can occur inside a save phase, before
+        // its failure exists. It must also revoke that not-yet-issued permission.
+        automaticSaveScope.cancel();
+    }
+    private void latchPersistenceFailure(String message,PersistenceRecovery.Resume resume) {
+        if (persistenceError==null) {
+            persistenceError=message;
+            persistenceRecovery.failed(persistenceIdentity(),persistenceDiagnostic,persistenceFailureCause,world.tick(),resume);
+        }
+        // Prevent a module that catches the checkpoint exception from submitting
+        // another action in this same tick. Its caller still performs its rollback.
+        actions.enabled(false);
+    }
+    private boolean persistenceIdentityConnected(PersistenceRecovery.Identity expected) {
+        return expected.same(persistenceIdentity()) && profileLoaded && context.profile()==profile
+            && mc.player!=null && mc.level!=null && mc.getConnection()!=null
+            && mc.getConnection().getConnection()==connection && world.player().connected()
+            // F8 is dispatched before tick() can notice a dimension/key change.
+            // The same native connection alone is not the same loaded profile.
+            && profileKey.equals(currentProfileKey());
+    }
+    private String currentProfileKey() {
+        if (mc.player==null || mc.level==null || mc.getConnection()==null) return null;
+        String identity=(mc.getCurrentServer()!=null ? mc.getCurrentServer().ip : "singleplayer:"+(mc.getSingleplayerServer()==null ? "unknown" : mc.getSingleplayerServer().getWorldData().getLevelName()))
+            + "|" + mc.level.dimension().location() + "|" + mc.player.getUUID();
+        return ProfileStore.key(identity);
+    }
+    /** Save the post-unwind RAM state only. No load, debt removal, receipt reconstruction or game action. */
+    private boolean recoverPersistence(boolean explicit) {
+        if (persistenceError==null) return true;
+        if (running()) return false;
+        PersistenceRecovery.Identity identity=persistenceIdentity();
+        if (!persistenceIdentityConnected(identity)) {
+            cancelPersistenceResume("CONNECTION_CHANGED"); return false;
+        }
+        PersistenceRecovery.Attempt attempt=persistenceRecovery.begin(identity,world.tick(),explicit);
+        if (attempt==null) return false;
+        try { persistCurrentMemory(); }
+        catch (IOException | RuntimeException failure) {
+            persistenceError=recordPersistenceFailure(failure);
+            persistenceRecovery.retryFailed(attempt,persistenceDiagnostic,persistenceFailureCause,world.tick());
+            actions.enabled(false); return false;
+        }
+        if (!persistenceIdentityConnected(identity)) {
+            cancelPersistenceResume("CONNECTION_CHANGED_AFTER_SAVE"); return false;
+        }
+        persistenceError=null;
+        PersistenceRecovery.Resume resume=persistenceRecovery.saved(attempt,persistenceIdentity());
+        if (resume!=null) startAfterPersistence(resume);
+        return true;
+    }
+    private void startAfterPersistence(PersistenceRecovery.Resume resume) {
+        boolean recovering=persistenceRecovery.starting() || "SAVED".equals(persistenceRecovery.outcome());
+        if (persistenceError!=null || automationStartBlocked() || recording() || mc.screen!=null
+                || mc.player==null || mc.level==null || mc.getConnection()==null) {
+            if (recovering) persistenceRecovery.resumeResult(false);
+            return;
+        }
+        pendingShipmentStatus=null;
+        Runnable start=()->{
+            if (resume.mode()==RunMode.ONCE) engine.startOnce(context,resume.feature()); else engine.start(context);
+        };
+        if (persistenceRecovery.starting()) automaticSaveScope.run(resume,start); else start.run();
+        actions.enabled(engine.running() && persistenceError==null); mouseTakeover.reset();
+        attackFence=engine.running() && persistenceError==null; updateBackgroundPause();
+        // A new checkpoint failure in begin() already retained the SAME retry
+        // episode. Do not erase its remaining budget with a generic gate result.
+        if (recovering && persistenceError==null) persistenceRecovery.resumeResult(engine.running());
+        if (!engine.running()) notifyUser(engine.status());
+    }
     public boolean importWorkDefinitions() {
+        cancelPersistenceResume("EXPLICIT_PROFILE_IMPORT");
         if(running() || recording() || actions.busy() || profileKey==null || persistenceError!=null || actions.startRejection()!=null) {
             notifyUser("자동화와 기록을 멈추고 진행 중인 조작을 확인한 뒤 설정을 가져오세요.");return false;
         }
@@ -372,7 +514,9 @@ public final class ClientRuntime {
             Profile candidate=WorkRegistrationImport.merge(profile,json);
             // Save before replacing the live profile; an invalid import cannot
             // erase schedules or partially enable newly registered work.
-            store.save(profileKey,candidate);
+            try { store.save(profileKey,candidate); }
+            catch (IOException | RuntimeException failure) { recordPersistenceFailure(failure); throw failure; }
+            recordSuccessfulCommit();
             engine.stop(context,AutomationEngine.State.OFF,"작업 설정 가져오기 완료 — F8로 시작");
             profile=candidate;context=new Context(world,actions,navigator,profile,new SessionState(),this::checkpointMachineState);
             actions.context(context);actions.enabled(false);savedScheduleHash=scheduleHash();
@@ -387,6 +531,7 @@ public final class ClientRuntime {
         notifyUser("설정을 닫고 F8: 익은 토마토 구간에서 걷기·달리기 속도를 측정합니다.");
     }
     public void addWaypoint() {
+        cancelPersistenceResume("EXPLICIT_WAYPOINT_REQUEST");
         if (mc.player==null) return;
         pause("이동 경유지 등록");
         Pos feet=world.player().feet();
@@ -401,7 +546,7 @@ public final class ClientRuntime {
     private int scheduleHash() { return Objects.hash(profile.nextEligibleDay,profile.strictHarvestTimingVersion,profile.wineBatchSchedule,profile.wineProductionSchedules,profile.lastSeenDay,profile.sprintCalibrated,profile.sprintHarvest,profile.pendingMachineOutputs,profile.machineOutputResolutions,profile.loggingRunActive,profile.loggingRemainingPlots,profile.loggingReplantingPlots,profile.loggingHotbarLease); }
     private void checkpointMachineState() {
         try { saveProfile(); }
-        catch (RuntimeException e) { persistenceError=e.getMessage(); throw e; }
+        catch (RuntimeException e) { latchPersistenceFailure(e.getMessage(),automaticSaveScope.current()); throw e; }
     }
     private void updateBackgroundPause() {
         if (running() && profile.allowBackground) {
@@ -424,9 +569,7 @@ public final class ClientRuntime {
             ClientDiagnostics.tick(this);
             return;
         }
-        String identity=(mc.getCurrentServer()!=null ? mc.getCurrentServer().ip : "singleplayer:"+(mc.getSingleplayerServer()==null ? "unknown" : mc.getSingleplayerServer().getWorldData().getLevelName()))
-            + "|" + mc.level.dimension().location() + "|" + mc.player.getUUID();
-        String key=ProfileStore.key(identity);
+        String key=currentProfileKey();
         Connection current=mc.getConnection().getConnection();
         if (!key.equals(connectionKey) || current!=connection) connect(key,current);
         // A manual menu may move an unrelated bottle before the next observation. Its
@@ -441,13 +584,20 @@ public final class ClientRuntime {
         // Observe recovery while paused too, before any control request or consumer
         // can move the bottle out of inventory. Reconnect has no live proof tokens.
         if (persistenceError==null && pendingShipmentRecovery==null) try {
-            MachineOutputLedger.archiveWinePickupTrackingDisabled(context);
-            MachineOutputLedger.reconcile(context);
+            automationSavePhase(() -> {
+                MachineOutputLedger.archiveWinePickupTrackingDisabled(context);
+                MachineOutputLedger.reconcile(context);
+            });
         }
-        catch (RuntimeException e) { pause("산출물 회수 확인 저장 실패 — 자동화 중지"); }
+        catch (RuntimeException e) {
+            if (persistenceError!=null) pauseInternal("산출물 회수 확인 저장 실패 — 자동화 중지");
+            else pause("산출물 회수 확인 저장 실패 — 자동화 중지");
+        }
         recorder.tick();
         ClientControl.tick(this);
-        if (mouseTakeover.moved(world.tick(),running(),mc.isWindowActive(),mc.mouseHandler.isMouseGrabbed(),
+        if (persistenceRecovery.automaticPending() && (recording() || mc.screen!=null || automationStartBlocked()))
+            cancelPersistenceResume("USER_OR_SCREEN_BOUNDARY");
+        if (mouseTakeover.moved(world.tick(),running() || persistenceRecovery.automaticPending(),mc.isWindowActive(),mc.mouseHandler.isMouseGrabbed(),
             mc.player.isSleeping() || actions.expectingSleep(),mc.screen,mc.getWindow().getScreenWidth(),mc.getWindow().getScreenHeight(),
             mc.mouseHandler.xpos(),mc.mouseHandler.ypos()))
             manualInput(false);
@@ -456,7 +606,7 @@ public final class ClientRuntime {
             boolean managed=mc.screen instanceof AbstractContainerScreen<?> && (actions.ownsContainer() || actions.openingContainer());
             if (!managed) pause("게임 화면이 변경되어 일시정지했습니다.");
         }
-        actions.enabled(running());
+        actions.enabled(running() && persistenceError==null);
         attackFence=running() || world.tick()<attackFenceUntil;
         if (running()) {
             if (pendingShipmentRecovery==null) {
@@ -464,8 +614,9 @@ public final class ClientRuntime {
                 if (profile.lastSeenDay>=0 && day<profile.lastSeenDay) { profile.nextEligibleDay.clear(); profile.wineBatchSchedule=null; pause("게임 날짜가 되돌아가 일정 확인이 필요합니다."); }
                 profile.lastSeenDay=day;
             }
-            actions.tick();
-            try {
+            automationSavePhase(() -> {
+              try {
+                actions.tick();
                 if (pendingShipmentRecovery!=null) {
                     PendingShipmentRecovery.Result result=pendingShipmentRecovery.tick(context);
                     if (result!=PendingShipmentRecovery.Result.MOVING) {
@@ -479,30 +630,42 @@ public final class ClientRuntime {
                         notifyUser(finished);
                     }
                 } else engine.tick(context);
-            }
-            catch (RuntimeException e) {
+              }
+              catch (RuntimeException e) {
                 if (pendingShipmentRecovery!=null) pause("출하 복구 중 예상하지 못한 오류로 중지했습니다.");
                 if (coordinateTravel!=null) pause("좌표 이동 중 예상하지 못한 오류로 중지했습니다.");
                 LogUtils.getLogger().error("Auto Valley stopped after {}",e.getClass().getSimpleName());
-            }
+              }
+            });
+            // Checkpoint callers have now unwound and restored their owned fields.
+            // Only this paused RAM state may be retried on a subsequent tick.
+            if (persistenceError!=null && running()) pauseInternal(persistenceError);
             if (running() && world.menu().container() && !actions.ownsContainer() && !actions.openingContainer()) pause("예상하지 않은 상자 화면입니다.");
             if (pendingShipmentRecovery==null && engine.state()==AutomationEngine.State.WAITING && world.menu().container()) pause(engine.status()+" — 상자를 확인한 뒤 닫고 다시 시작하세요.");
         }
-        actions.enabled(running()); attackFence=running() || world.tick()<attackFenceUntil;
+        actions.enabled(running() && persistenceError==null); attackFence=running() && persistenceError==null || world.tick()<attackFenceUntil;
         updateBackgroundPause();
         if (profileKey!=null && persistenceError==null && (world.tick()%100==0 && savedScheduleHash!=scheduleHash() || calibrationWasActive && !harvest.calibrating())) {
-            try { saveProfile(); } catch (RuntimeException e) { pause(e.getMessage()); persistenceError=e.getMessage(); }
+            try { automationSavePhase(this::saveProfile); }
+            catch (RuntimeException e) {
+                // Latch BEFORE pausing: pause must not recursively save and then
+                // have a successful second commit overwritten by the first error.
+                latchPersistenceFailure(e.getMessage(),null); pauseInternal(e.getMessage());
+            }
         }
         if (calibrationWasActive && !harvest.calibrating()) notifyUser(harvest.calibrationStatus());
         calibrationWasActive=harvest.calibrating();
+        if (persistenceError!=null && !running()) recoverPersistence(false);
         ClientDiagnostics.tick(this);
     }
     private void connect(String key,Connection current) {
         if (connectionKey!=null) disconnect();
+        persistenceRecovery.clear(); automaticSaveScope.cancel(); profileLoaded=false;
+        lastSaveCommitted=null; lastSuccessfulCommitAtUtc=null;
         profileKey=key; connectionKey=key; connection=current; persistenceError=null;
         persistenceDiagnostic=null; persistenceFailureCause=null; pendingShipmentStatus=null;
         lastPendingShipmentReport=Map.of();
-        try { profile=store.load(key); }
+        try { profile=store.load(key); profileLoaded=true; }
         catch (IOException e) { profile=new Profile(); persistenceError="기존 설정 파일을 읽지 못했습니다. 원본을 보존하고 자동화를 중지합니다."; }
         context=new Context(world,actions,navigator,profile,new SessionState(),this::checkpointMachineState); actions.context(context);
         observations.clear(); PacketObserver.install(current,observations,() -> attackFence,recorder);
@@ -512,6 +675,7 @@ public final class ClientRuntime {
         actions.enabled(false); mouseTakeover.reset(); savedScheduleHash=scheduleHash();
     }
     private void disconnect() {
+        persistenceRecovery.clear(); automaticSaveScope.cancel(); profileLoaded=false;
         recorder.stopCapture("disconnected_or_dimension_changed");
         finishPendingShipment("접속 또는 차원이 변경되었습니다.");
         coordinateTravel=null;
