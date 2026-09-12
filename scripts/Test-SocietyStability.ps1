@@ -37,10 +37,54 @@ Assert-Fixture ((Get-InventoryEvidence $sampleInventory).counts['fixture:log'] -
 # Exercise request freshness and atomic output only in an ignored fixture directory.
 $fixtureRoot=Join-Path (Split-Path -Parent $PSScriptRoot) ('.local\stability-script-fixture-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($fixtureRoot) | Out-Null
-$profilePath=Join-Path $fixtureRoot 'fixture-profile.json'
-[IO.File]::WriteAllText($profilePath,'{"nextEligibleDay":{"logging:batch":12,"wine:1:2:3":14},"loggingRemainingPlots":[],"loggingReplantingPlots":[],"loggingHotbarLease":null,"crystalRefills":{},"enabled":{"LOGGING":true}}',$utf8)
-$diskProfile=Get-ProfileEvidence
-Assert-Fixture ($diskProfile.schedule.count -eq 2 -and $diskProfile.logging.dueDay -eq 12 -and $diskProfile.logging.remainingCount -eq 0) 'Disk evidence captures exact logging due day and schedule counts.'
+$ProfileKey='0123456789abcdef01234567'
+function New-MemoryEvidenceFixture {
+    $e=[pscustomobject]@{
+        schemaVersion=1;source='CLIENT_THREAD_MEMORY';available=$true;profileKey=$ProfileKey;capturedAt='2026-01-01T00:00:00Z';diskStateMatchesMemory=$null
+        enabled=[pscustomobject]@{LOGGING=$true};lastSeenDay=11
+        persistence=[pscustomobject]@{profileLoaded=$true;memoryProfileMatchesContext=$true;errorLatched=$false;recoveryPending=$false;lastSaveCommitted=$null;lastSuccessfulCommitAtUtc=$null}
+        schedule=[pscustomobject]@{count=2;digest=('a'*64);families=@([pscustomobject]@{family='logging';count=1;minimumDay=12;maximumDay=12},[pscustomobject]@{family='wine';count=1;minimumDay=14;maximumDay=14})}
+        logging=[pscustomobject]@{enabled=$true;active=$false;registeredPlotCount=6;remainingCount=3;replantingCount=1;pendingDigest=('b'*64);lease=$null;dueDay=12}
+        workHotbarLease=$null
+    }
+    foreach ($name in @('crystalRefill','pendingMachineOutput','machineOutputResolutions','manualWorkHotbarResolutions','manualLoggingHotbarResolutions')) {
+        $e | Add-Member NoteProperty ($name+'Count') 0
+        $e | Add-Member NoteProperty ($name+'Digest') ('c'*64)
+    }
+    foreach ($name in @('crystalRefills','pendingMachineOutputs','machineOutputResolutions','manualWorkHotbarResolutions','manualLoggingHotbarResolutions')) {
+        $e | Add-Member NoteProperty $name @()
+        $e | Add-Member NoteProperty ($name+'Truncated') $false
+    }
+    return [pscustomobject]@{capturedAt=$e.capturedAt;profileEvidence=$e}
+}
+function Assert-MemoryEvidenceRejected($Snapshot,[string]$Message) {
+    $rejected=$false; try { $null=Get-ProfileEvidence $Snapshot } catch { $rejected=$true }
+    Assert-Fixture $rejected $Message
+}
+# A throwing filesystem-content stub proves that both acceptance and rejection
+# use the supplied client snapshot only; no fixture profile is created at all.
+function Get-Content { throw 'Profile evidence must not open any content reader.' }
+$memorySnapshot=New-MemoryEvidenceFixture
+$memoryProfile=Get-ProfileEvidence $memorySnapshot
+Assert-Fixture ($memoryProfile.schedule.count -eq 2 -and $memoryProfile.logging.dueDay -eq 12 -and $memoryProfile.logging.registeredPlotCount -eq 6 -and $memoryProfile.logging.remainingCount -eq 3) 'Memory evidence preserves registered plots separately from remaining work and exact schedule counts.'
+Assert-Fixture ($null -eq $memoryProfile.PSObject.Properties['readAtUtc'] -and $null -eq $memoryProfile.PSObject.Properties['fileLastWriteUtc'] -and $null -eq $memoryProfile.diskStateMatchesMemory) 'Memory evidence must not claim disk read timestamps or RAM-disk equality.'
+Assert-Fixture (Test-ProfilePersistenceHealthy $memoryProfile) 'Successful load without a save is healthy, but leaves lastSaveCommitted unknown.'
+Assert-MemoryEvidenceRejected ([pscustomobject]@{capturedAt=$memorySnapshot.capturedAt}) 'Old diagnostics without memory evidence must fail closed without a disk fallback.'
+foreach ($change in @({param($s) $s.profileEvidence.profileKey='ffffffffffffffffffffffff'}, {param($s) $s.profileEvidence.capturedAt='2025-01-01T00:00:00Z'}, {param($s) $s.profileEvidence.source='DISK'}, {param($s) $s.profileEvidence.available=$false}, {param($s) $s.profileEvidence.logging.remainingCount=-1}, {param($s) $s.profileEvidence.logging.PSObject.Properties.Remove('lease')}, {param($s) $s.profileEvidence.pendingMachineOutputCount=$null}, {param($s) $s.profileEvidence.crystalRefills=@(1..33)}, {param($s) $s.profileEvidence.enabled.LOGGING=$false}, {param($s) $s.profileEvidence.schedule.families[0].count=2})) {
+    $invalid=New-MemoryEvidenceFixture; & $change $invalid
+    Assert-MemoryEvidenceRejected $invalid 'Malformed, mismatched, oversized, or incomplete client evidence must not qualify.'
+}
+Remove-Item Function:\Get-Content
+Assert-Fixture (-not $ast.Extent.Text.Contains('$profilePath')) 'The monitor must contain no profile content path or startup profile read.'
+$memoryProfile.persistence.lastSaveCommitted=$true
+Assert-Fixture (Test-ProfilePersistenceHealthy $memoryProfile) 'A witnessed successful save is distinct from load-only state and permits a healthy boundary.'
+foreach ($field in @('profileLoaded','memoryProfileMatchesContext','errorLatched','recoveryPending','lastSaveCommitted')) {
+    $memoryProfile=(New-MemoryEvidenceFixture).profileEvidence
+    $memoryProfile.persistence.$field=($field -in @('errorLatched','recoveryPending'))
+    Assert-Fixture (-not (Test-ProfilePersistenceHealthy $memoryProfile)) ('Unsafe persistence field '+$field+' must fail closed even if automation reports running.')
+}
+$memoryProfile=(New-MemoryEvidenceFixture).profileEvidence; $memoryProfile.persistence.PSObject.Properties.Remove('lastSaveCommitted')
+Assert-Fixture (-not (Test-ProfilePersistenceHealthy $memoryProfile)) 'Missing commit-outcome semantics cannot be mistaken for normal load-only state.'
 $diagnosticPath=Join-Path $fixtureRoot 'diagnostics.json'
 $requestPath=Join-Path $fixtureRoot 'inspect.request'
 $InspectionTimeoutSeconds=2; $Once=$true; $script:lastCapture=$null
@@ -165,11 +209,11 @@ $script:fixtureFresh=$true
 function Request-FreshInspection {
     return [pscustomobject]@{ identity=[pscustomobject]@{state='ALIVE';startUtc='2026-01-01T00:00:00Z'}; fresh=$script:fixtureFresh; reason='STALE_DIAGNOSTIC_PROCESS_ALIVE'; snapshot=$(if ($script:fixtureFresh) {$script:fixtureSnapshot} else {$null}); requestedAt='2026-01-01T00:00:00Z' }
 }
-function Get-ProfileEvidence { return $script:fixtureProfile }
+function Get-ProfileEvidence($Snapshot) { return $script:fixtureProfile }
 function Write-Evidence($Row,$Summary) { $script:fixtureRow=$Row; $script:fixtureSummary=$Summary }
 function New-Fixtures {
     $script:fixtureSnapshot=[pscustomobject]@{connected=$true;running=$true;executionMode='CONTINUOUS';recording=$false;recordingActive=$false;status='Working';failureHistory=@();inventory=@();player=[pscustomobject]@{dayTime=24000;x=1;y=64;z=1};capturedAt='2026-01-01T00:00:00Z'}
-    $script:fixtureProfile=[pscustomobject]@{enabled=[pscustomobject]@{LOGGING=$true};schedule=[pscustomobject]@{digest='first'};logging=[pscustomobject]@{enabled=$true;active=$false;remainingCount=0;replantingCount=0;pendingDigest='first';lease=$null;dueDay=1};workHotbarLease=$null;crystalRefillDigest='first'}
+    $script:fixtureProfile=[pscustomobject]@{enabled=[pscustomobject]@{LOGGING=$true};schedule=[pscustomobject]@{digest='first'};logging=[pscustomobject]@{enabled=$true;active=$false;remainingCount=0;replantingCount=0;pendingDigest='first';lease=$null;dueDay=1};workHotbarLease=$null;crystalRefillDigest='first';persistence=(New-MemoryEvidenceFixture).profileEvidence.persistence}
     $script:fixtureFresh=$true
 }
 . $initialize
@@ -275,4 +319,28 @@ for ($sample=0; $sample -le 244; $sample++) {
     . $sampleBody
 }
 Assert-Fixture (-not $fixtureSummary.verified -and $fixtureSummary.candidateVerifiedRunningWindow -and $fixtureSummary.needsAudit -and $fixtureSummary.cleanWindowLoggingCompletions -eq 0 -and $fixtureSummary.freshRunningWindowLoggingCompletions -eq 1) 'Each claim must use its own window; a recoverable capacity signal cannot borrow a completion for the stricter clean window.'
+
+foreach ($unsafeField in @('errorLatched','recoveryPending','lastSaveCommitted','profileLoaded','memoryProfileMatchesContext','MISSING_SUMMARY')) {
+    . $initialize
+    New-Fixtures
+    for ($sample=0; $sample -le 2; $sample++) {
+        $clock=[pscustomobject]@{Elapsed=[TimeSpan]::FromSeconds($sample*30)}
+        $fixtureProfile.schedule.digest=[string]$sample
+        if ($sample -eq 2) { $fixtureProfile.logging.dueDay=2 }
+        . $sampleBody
+    }
+    $clock.Elapsed=[TimeSpan]::FromSeconds(90)
+    if ($unsafeField -eq 'MISSING_SUMMARY') { $fixtureProfile=$null }
+    else { $fixtureProfile.persistence.$unsafeField=($unsafeField -in @('errorLatched','recoveryPending')); $fixtureProfile.schedule.digest='unsafe'; $fixtureProfile.logging.dueDay=3 }
+    . $sampleBody
+    Assert-Fixture ($fixtureRow.running -and -not $fixtureRow.profilePersistenceHealthy -and -not $fixtureRow.clean -and $fixtureSummary.uninterruptedFreshRunningSeconds -eq 0 -and $fixtureSummary.cleanWindowLoggingCompletions -eq 0 -and $fixtureSummary.freshRunningWindowLoggingCompletions -eq 0) ($unsafeField+': unhealthy or missing memory evidence must break both windows even when running remains true.')
+    if ($unsafeField -ne 'MISSING_SUMMARY') {
+        Assert-Fixture ($null -ne $fixtureRow.profile -and $fixtureRow.reasons -contains 'PROFILE_PERSISTENCE_NOT_HEALTHY' -and $fixtureSummary.recoveryRequired -and $fixtureSummary.loggingObservedCompletions -eq 2) 'A failed save retains raw RAM and global progress evidence without counting it as persisted success.'
+    }
+    New-Fixtures
+    $fixtureProfile.schedule.digest='recovered'; $fixtureProfile.logging.dueDay=4; $fixtureProfile.persistence.lastSaveCommitted=$true
+    $clock.Elapsed=[TimeSpan]::FromSeconds(120)
+    . $sampleBody
+    Assert-Fixture ($fixtureRow.profilePersistenceHealthy -and $fixtureRow.clean -and $fixtureSummary.cleanMinutes -eq 0 -and $fixtureSummary.uninterruptedFreshRunningSeconds -eq 0 -and $fixtureSummary.cleanWindowLoggingCompletions -eq 0 -and $fixtureSummary.freshRunningWindowLoggingCompletions -eq 0) 'Healthy recovery starts new windows; neither can borrow pre-recovery or boundary-spanning completions.'
+}
 [pscustomobject]@{result='PASS';checks=$checks;evidence='Synthetic fixtures only; no game process was inspected, requested, controlled, or verified.'} | ConvertTo-Json -Compress

@@ -4,8 +4,10 @@ Collects bounded, passive Society automation evidence from one exact game proces
 .DESCRIPTION
 Only creates the normal, empty config/autovalley/inspect.request marker in the game
 instance. Never starts, stops, resumes or otherwise controls gameplay or edits a
-profile. The caller must have permission to write that marker. Profile observations
-are read from disk separately from the fresh client diagnostic, not an atomic pair.
+profile. The caller must have permission to write that marker. Profile evidence is
+a bounded client-thread memory snapshot in that diagnostic; the observer never
+opens a live profile. Last save outcome is separate, not proof that RAM equals disk.
+Older diagnostics without this evidence fail closed; there is no disk fallback.
 
 Evidence is private: OutputDirectory must be a new directory beneath this repository's
 ignored .local directory. latest.json is replaced atomically; observations.jsonl is
@@ -151,36 +153,61 @@ function Request-FreshInspection {
     return [pscustomobject]@{ identity=$identity; fresh=$false; reason=$reason; snapshot=$null; requestedAt=$requestedAt.ToString('o') }
 }
 
-function Get-ProfileEvidence {
-    $profile = Read-BoundedJson $profilePath 2000000
-    $schedule = Get-Field $profile 'nextEligibleDay'
-    if ($null -eq $schedule) { throw 'Profile schedule is missing.' }
-    $scheduleText = @($schedule.PSObject.Properties | Sort-Object Name | ForEach-Object { $_.Name + '=' + [string]$_.Value }) -join "`n"
-    $families = @($schedule.PSObject.Properties | Group-Object { ($_.Name -split ':',2)[0] } | Sort-Object Name | ForEach-Object {
-        $values = @($_.Group | ForEach-Object { [long]$_.Value })
-        $measure = $values | Measure-Object -Minimum -Maximum
-        [pscustomobject]@{ family=$_.Name; count=$_.Count; minimumDay=$measure.Minimum; maximumDay=$measure.Maximum }
-    })
-    $logging = [ordered]@{
-        enabled=(Get-Field (Get-Field $profile 'enabled') 'LOGGING' $false)
-        active=(Get-Field $profile 'loggingRunActive' $false)
-        remaining=@(Get-Field $profile 'loggingRemainingPlots' @())
-        replanting=@(Get-Field $profile 'loggingReplantingPlots' @())
-        lease=(Get-Field $profile 'loggingHotbarLease')
+function Test-EvidenceCount($Value, [long]$Maximum = 20000) {
+    return ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) -and $Value -ge 0 -and $Value -le $Maximum -and [Math]::Floor([double]$Value) -eq $Value
+}
+
+function Get-ProfileEvidence($Snapshot) {
+    # Consume only the exact fresh diagnostic's memory summary. Never read a profile.
+    $evidence = Get-Field $Snapshot 'profileEvidence'
+    if ($null -eq $evidence -or (Get-Field $evidence 'schemaVersion') -ne 1 -or (Get-Field $evidence 'source') -cne 'CLIENT_THREAD_MEMORY' -or
+        (Get-Field $evidence 'available') -isnot [bool] -or -not $evidence.available -or (Get-Field $evidence 'profileKey') -cne $ProfileKey -or
+        [string](Get-Field $evidence 'capturedAt') -cne [string](Get-Field $Snapshot 'capturedAt') -or -not (Get-Field $evidence 'capturedAt')) { throw 'Client profile evidence is unavailable or mismatched.' }
+    $schedule = Get-Field $evidence 'schedule'; $logging = Get-Field $evidence 'logging'
+    if (-not (Test-EvidenceCount (Get-Field $schedule 'count')) -or [string](Get-Field $schedule 'digest') -cnotmatch '^[a-f0-9]{64}$' -or
+        (Get-Field $logging 'active') -isnot [bool] -or (Get-Field $logging 'enabled') -isnot [bool] -or
+        -not (Test-EvidenceCount (Get-Field $logging 'registeredPlotCount') 2048) -or
+        -not (Test-EvidenceCount (Get-Field $logging 'remainingCount') 2048) -or -not (Test-EvidenceCount (Get-Field $logging 'replantingCount') 2048) -or
+        [string](Get-Field $logging 'pendingDigest') -cnotmatch '^[a-f0-9]{64}$' -or $null -eq $logging.PSObject.Properties['lease'] -or
+        $null -eq $logging.PSObject.Properties['dueDay'] -or ($null -ne $logging.dueDay -and -not (Test-EvidenceCount $logging.dueDay ([long]::MaxValue)))) { throw 'Client schedule or logging evidence is malformed.' }
+    $families = @(Get-Field $schedule 'families' @()); $familyCount = [long]0
+    if ($families.Count -gt 128) { throw 'Schedule family evidence exceeds its bound.' }
+    foreach ($family in $families) {
+        if (-not (Test-EvidenceCount (Get-Field $family 'count')) -or -not (Test-EvidenceCount (Get-Field $family 'minimumDay') ([long]::MaxValue)) -or
+            -not (Test-EvidenceCount (Get-Field $family 'maximumDay') ([long]::MaxValue)) -or $family.minimumDay -gt $family.maximumDay -or
+            [string](Get-Field $family 'family') -notmatch '^[A-Za-z0-9_.-]{1,256}$') { throw 'Schedule family evidence is malformed.' }
+        $familyCount += $family.count
     }
-    $refills = Get-Field $profile 'crystalRefills'
-    $refillEntries = @()
-    if ($null -ne $refills) { $refillEntries = @($refills.PSObject.Properties | Sort-Object Name | ForEach-Object { $_.Value }) }
-    $pending = Get-Field $profile 'pendingMachineOutputs'
-    $pendingCount = if ($null -eq $pending) { 0 } else { @($pending.PSObject.Properties).Count }
-    return [pscustomobject]@{
-        readAtUtc=[DateTimeOffset]::UtcNow.ToString('o'); fileLastWriteUtc=(Get-Item -LiteralPath $profilePath).LastWriteTimeUtc.ToString('o')
-        schedule=[pscustomobject]@{ count=@($schedule.PSObject.Properties).Count; digest=(Get-Digest $scheduleText); families=$families }
-        logging=[pscustomobject]@{ enabled=$logging.enabled; active=$logging.active; dueDay=(Get-Field $schedule 'logging:batch'); remainingCount=$logging.remaining.Count; replantingCount=$logging.replanting.Count; pendingDigest=(Get-Digest (Convert-Compact @($logging.remaining,$logging.replanting))); lease=$logging.lease }
-        crystalRefillCount=$refillEntries.Count; crystalRefillDigest=(Get-Digest (Convert-Compact $refillEntries)); crystalRefills=@($refillEntries | Select-Object -First 32)
-        crystalRefillsTruncated=($refillEntries.Count -gt 32); workHotbarLease=(Get-Field $profile 'workHotbarLease'); pendingMachineOutputCount=$pendingCount
-        lastSeenDay=(Get-Field $profile 'lastSeenDay'); enabled=(Get-Field $profile 'enabled')
+    if ($familyCount -ne $schedule.count -or $null -eq (Get-Field $evidence 'enabled') -or $null -eq $evidence.PSObject.Properties['workHotbarLease']) { throw 'Client evidence is incomplete.' }
+    foreach ($feature in $evidence.enabled.PSObject.Properties) {
+        if ($feature.Name -cnotmatch '^[A-Z][A-Z0-9_]*$' -or $feature.Value -isnot [bool]) { throw 'Feature evidence is malformed.' }
     }
+    if ((Get-Field $evidence.enabled 'LOGGING') -ne $logging.enabled) { throw 'Logging enablement evidence disagrees.' }
+    foreach ($name in @('crystalRefill','pendingMachineOutput','machineOutputResolutions','manualWorkHotbarResolutions','manualLoggingHotbarResolutions')) {
+        if (-not (Test-EvidenceCount (Get-Field $evidence ($name+'Count'))) -or [string](Get-Field $evidence ($name+'Digest')) -cnotmatch '^[a-f0-9]{64}$') { throw 'Continuation evidence is incomplete.' }
+    }
+    foreach ($name in @('crystalRefills','pendingMachineOutputs','machineOutputResolutions','manualWorkHotbarResolutions','manualLoggingHotbarResolutions')) {
+        if ($null -eq $evidence.PSObject.Properties[$name] -or @(Get-Field $evidence $name @()).Count -gt 32 -or (Get-Field $evidence ($name+'Truncated')) -isnot [bool]) { throw 'Continuation list evidence exceeds its bound or is missing.' }
+    }
+    if ($null -eq (Get-Field $evidence 'persistence')) { throw 'Persistence evidence is unavailable.' }
+    # Select the bounded contract; do not propagate arbitrary future profile fields.
+    $selected = [ordered]@{}
+    foreach ($name in @('schemaVersion','source','capturedAt','profileKey','available','diskStateMatchesMemory','persistence','enabled','schedule','logging','crystalRefillCount','crystalRefillDigest','crystalRefills','crystalRefillsTruncated','workHotbarLease','pendingMachineOutputCount','pendingMachineOutputDigest','pendingMachineOutputs','pendingMachineOutputsTruncated','machineOutputResolutionsCount','machineOutputResolutionsDigest','machineOutputResolutions','machineOutputResolutionsTruncated','manualWorkHotbarResolutionsCount','manualWorkHotbarResolutionsDigest','manualWorkHotbarResolutions','manualWorkHotbarResolutionsTruncated','manualLoggingHotbarResolutionsCount','manualLoggingHotbarResolutionsDigest','manualLoggingHotbarResolutions','manualLoggingHotbarResolutionsTruncated','lastSeenDay')) {
+        $selected[$name] = Get-Field $evidence $name
+    }
+    return [pscustomobject]$selected
+}
+
+function Test-ProfilePersistenceHealthy($Evidence) {
+    $persistence = Get-Field $Evidence 'persistence'
+    foreach ($name in @('profileLoaded','memoryProfileMatchesContext','errorLatched','recoveryPending')) {
+        if ((Get-Field $persistence $name) -isnot [bool]) { return $false }
+    }
+    if ($null -eq $persistence.PSObject.Properties['lastSaveCommitted']) { return $false }
+    $committed = Get-Field $persistence 'lastSaveCommitted'
+    if ($null -ne $committed -and $committed -isnot [bool]) { return $false }
+    # A successful load with no attempted save is healthy but is NOT a witnessed commit.
+    return $persistence.profileLoaded -and $persistence.memoryProfileMatchesContext -and -not $persistence.errorLatched -and -not $persistence.recoveryPending -and $committed -ne $false
 }
 
 function Get-InventoryEvidence($Snapshot) {
@@ -228,9 +255,7 @@ if (-not $ProfileKey) {
     if ($profiles.Count -ne 1) { throw 'Specify ProfileKey explicitly when the instance has zero or multiple profiles.' }
     $ProfileKey = [IO.Path]::GetFileNameWithoutExtension($profiles[0].Name)
 }
-$profilePath = Join-Path $directory ($ProfileKey + '.json')
-Assert-NoReparsePath $profilePath
-$null = Read-BoundedJson $profilePath 2000000
+# Profile identity is verified inside every fresh client-thread summary; no profile content is opened.
 $requestPath = Join-Path $directory 'inspect.request'
 $diagnosticPath = Join-Path $directory 'diagnostics.json'
 $script:expectedStartUtc = $null
@@ -290,6 +315,7 @@ do {
     $interveningStop = $false
     $loggingCompletionObserved = $false
     $requiredFeaturesSatisfied = $false
+    $profilePersistenceHealthy = $false
     $gap = $null -ne $previousElapsed -and ($elapsed - $previousElapsed) -gt ($IntervalSeconds + $InspectionTimeoutSeconds + 5)
     if ($gap) { $reasons.Add('OBSERVATION_GAP') }
     if (-not $inspection.fresh) { $reasons.Add($inspection.reason) }
@@ -328,8 +354,13 @@ do {
         if ($interveningStop) { $reasons.Add('INTERVENING_STOP_EVENT') }
         if ($freshSamples -gt 1 -and $seenFailures.Count -gt 0 -and $history.Count -eq 0) { $reasons.Add('FAILURE_HISTORY_RESET'); $recoveryRequired=$true }
         $seenFailures = $currentFailures
-        try { $profileEvidence = Get-ProfileEvidence } catch { $reasons.Add('PROFILE_OBSERVATION_UNAVAILABLE') }
+        try {
+            $profileEvidence = Get-ProfileEvidence $snapshot
+            if ($null -eq $profileEvidence) { throw 'Missing client memory evidence.' }
+        } catch { $reasons.Add('PROFILE_OBSERVATION_UNAVAILABLE') }
         if ($null -ne $profileEvidence) {
+            $profilePersistenceHealthy = Test-ProfilePersistenceHealthy $profileEvidence
+            if (-not $profilePersistenceHealthy) { $reasons.Add('PROFILE_PERSISTENCE_NOT_HEALTHY'); $recoveryRequired=$true }
             if ($null -eq $initialEnabled) { $initialEnabled=$profileEvidence.enabled }
             $requiredFeaturesSatisfied=$true
             foreach ($feature in $RequiredFeature) {
@@ -380,7 +411,7 @@ do {
     if (-not $inspection.fresh -or $null -eq $profileEvidence -or $gap) { $loggingActiveStart=$null; $loggingPendingStart=$null }
     $observedDayTime = Get-Field (Get-Field $snapshot 'player') 'dayTime'
     $observedDay = if ($null -eq $observedDayTime) { $null } else { [Math]::Floor([double]$observedDayTime/24000) }
-    $freshRunning = $inspection.fresh -and -not $gap -and -not $interveningStop -and -not $reasons.Contains('FAILURE_HISTORY_RESET') -and -not $reasons.Contains('FAILURE_HISTORY_UNAVAILABLE') -and $requiredFeaturesSatisfied -and (Get-Field $snapshot 'connected') -eq $true -and (Get-Field $snapshot 'running') -eq $true -and (Get-Field $snapshot 'executionMode') -eq 'CONTINUOUS' -and (Get-Field $snapshot 'recording') -eq $false -and (Get-Field $snapshot 'recordingActive') -eq $false
+    $freshRunning = $inspection.fresh -and -not $gap -and -not $interveningStop -and -not $reasons.Contains('FAILURE_HISTORY_RESET') -and -not $reasons.Contains('FAILURE_HISTORY_UNAVAILABLE') -and $requiredFeaturesSatisfied -and $profilePersistenceHealthy -and (Get-Field $snapshot 'connected') -eq $true -and (Get-Field $snapshot 'running') -eq $true -and (Get-Field $snapshot 'executionMode') -eq 'CONTINUOUS' -and (Get-Field $snapshot 'recording') -eq $false -and (Get-Field $snapshot 'recordingActive') -eq $false
     if ($freshRunning) {
         if ($null -eq $freshRunningStart) {
             $freshRunningStart=$elapsed; $freshRunningProgressCount=0; $freshRunningFirstDay=$observedDay; $freshRunningLoggingCompletions=0
@@ -430,6 +461,7 @@ do {
         recording=(Get-Field $snapshot 'recording'); recordingActive=(Get-Field $snapshot 'recordingActive'); recordingStatus=(Get-Field $snapshot 'recordingStatus')
         screenClass=(Get-Field $snapshot 'screenClass'); player=$player; gameDay=$(if ($null -eq $dayTime) { $null } else { [Math]::Floor([double]$dayTime/24000) })
         navigation=(Get-Field $snapshot 'navigation'); inventory=$inventory; profile=$profileEvidence
+        persistence=(Get-Field $snapshot 'persistence')
         runtimeLogging=(Get-Field $snapshot 'logging')
         crystalPendingRefills=@(Get-Field $crystals 'pendingRefills' @() | Select-Object -First 32)
         crystalRecentServerReplies=@(Get-Field $crystals 'recentServerReplies' @() | Select-Object -Last 8)
@@ -437,6 +469,7 @@ do {
         recoveryObserved=$recovered; progressSources=@($progressSources.ToArray()); clean=$clean; reasons=@($reasons.ToArray()); cleanSeconds=[Math]::Round($cleanSeconds,3)
         uninterruptedFreshRunningSeconds=[Math]::Round($freshRunningSeconds,3); noNewFailureSeconds=[Math]::Round($noNewFailureSeconds,3)
         requiredFeaturesSatisfied=$requiredFeaturesSatisfied
+        profilePersistenceHealthy=$profilePersistenceHealthy
         interveningStopObserved=$interveningStop; loggingCompletionObserved=$loggingCompletionObserved
         loggingActiveSeconds=$(if ($null -eq $loggingActiveStart) { 0 } else { [Math]::Round($elapsed-$loggingActiveStart,3) })
         loggingPendingSeconds=$(if ($null -eq $loggingPendingStart) { 0 } else { [Math]::Round($elapsed-$loggingPendingStart,3) })
@@ -455,7 +488,7 @@ do {
         requiredFeatureWorkObserved=$requiredFeatureWorkObserved
         freshRunningWindowRequiredFeatureWorkObserved=$runningWindowRequiredFeatureWorkObserved
         cleanWindowLoggingCompletions=$cleanLoggingCompletions; freshRunningWindowLoggingCompletions=$freshRunningLoggingCompletions
-        limitation='Fresh sampled evidence, not proof of all events between samples. Disk profile is observed separately; inventory or schedule changes are progress evidence, not individual action receipts.'
+        limitation='Fresh sampled evidence, not proof of all events between samples. Profile is client-thread memory only; last save outcome does not prove current RAM equals disk. Inventory or schedule changes are progress evidence, not individual action receipts.'
         latest=$row
     }
     Write-Evidence $row $summary

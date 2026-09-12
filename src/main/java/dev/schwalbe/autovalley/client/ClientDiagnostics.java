@@ -59,7 +59,8 @@ public final class ClientDiagnostics {
         boolean connected = player != null && player.connected() && mc.player != null && mc.level != null;
         Map<String,Object> report = new LinkedHashMap<>();
         report.put("schemaVersion",1);
-        report.put("capturedAt",Instant.now().toString());
+        String capturedAt=Instant.now().toString();
+        report.put("capturedAt",capturedAt);
         report.put("connected",connected);
         report.put("running",runtime.running());
         report.put("executionMode",runtime.executionMode());
@@ -70,6 +71,10 @@ public final class ClientDiagnostics {
         report.put("wineLineEditRejection",runtime.wineLineSettingsRejection());
         report.put("failureHistory",runtime.failureHistory());
         report.put("crystals",runtime.crystalReport());
+        Map<String,Object> persistence=runtime.persistenceReport();
+        report.put("persistence",persistence);
+        report.put("profileEvidence",ProfileEvidenceSnapshot.capture(runtime.profile(),runtime.diagnosticProfileKey(),
+            capturedAt,persistence));
         Profile loggingProfile=runtime.profile();
         Map<String,Object> logging=new LinkedHashMap<>();
         logging.put("enabled",loggingProfile.enabled(Feature.LOGGING));
@@ -78,6 +83,9 @@ public final class ClientDiagnostics {
         logging.put("replantingPlots",List.copyOf(loggingProfile.loggingReplantingPlots));
         logging.put("hotbarLease",loggingProfile.loggingHotbarLease);
         logging.put("nextEligibleDay",loggingProfile.nextEligibleDay.get(LoggingRules.DUE_KEY));
+        logging.put("registeredPlotCount",loggingProfile.loggingPlots.size());
+        logging.put("mode",loggingProfile.loggingMode);
+        logging.put("growth",ProfileEvidenceSnapshot.loggingGrowth(world,loggingProfile,connected));
         if (ManualLoggingHotbarResolution.validLease(loggingProfile.loggingHotbarLease)) {
             String key=ManualLoggingHotbarResolution.confirmationKey(loggingProfile.loggingHotbarLease);
             logging.put("manualConfirmationKey",key);
