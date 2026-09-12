@@ -46,15 +46,99 @@ $requestPath=Join-Path $fixtureRoot 'inspect.request'
 $InspectionTimeoutSeconds=2; $Once=$true; $script:lastCapture=$null
 $script:expectedStartUtc=$null
 $script:fixtureProcess=[pscustomobject]@{ Name='javaw.exe'; CreationDate=[DateTime]::Parse('2026-01-01T00:00:00Z').ToUniversalTime(); CommandLine='javaw.exe --gameDir "C:\Fixture\Society Sunlit Valley"' }
+$script:productionReadBoundedJson=${function:Read-BoundedJson}
+$script:diagnosticBodyReads=0; $script:fixtureAfterRead=$null
+function Read-BoundedJson {
+    param([string]$Path,[long]$Limit=8000000)
+    if ($Path -eq $diagnosticPath) { $script:diagnosticBodyReads++ }
+    $value=& $script:productionReadBoundedJson $Path $Limit
+    if ($Path -eq $diagnosticPath -and $null -ne $script:fixtureAfterRead) { & $script:fixtureAfterRead }
+    return $value
+}
 function Start-Sleep {
     param($Milliseconds)
     [IO.File]::WriteAllText($diagnosticPath,('{"capturedAt":"' + [DateTimeOffset]::UtcNow.ToString('o') + '","connected":true}'),$utf8)
 }
 $freshFixture=Request-FreshInspection
 Assert-Fixture ($freshFixture.fresh -and (Test-Path -LiteralPath $requestPath)) 'Once creates only the inspection marker and accepts a newly captured diagnostic.'
+Assert-Fixture ($script:diagnosticBodyReads -eq 1) 'A missing baseline followed by a fresh candidate must read the body exactly once.'
 Remove-Item Function:\Start-Sleep
+$script:diagnosticBodyReads=0
 $staleFixture=Request-FreshInspection
 Assert-Fixture (-not $staleFixture.fresh -and $staleFixture.reason -eq 'STALE_DIAGNOSTIC_PROCESS_ALIVE') 'An old capture with live PID times out without reporting termination.'
+Assert-Fixture ($script:diagnosticBodyReads -eq 0) 'Unmodified diagnostics must not be opened during initial baseline or stale polling.'
+
+# Publish only to this synthetic directory. Per-candidate reads are counted at the
+# real bounded reader boundary; metadata polling never opens the JSON body.
+function Write-InspectionFixture([DateTimeOffset]$CapturedAt) {
+    [IO.File]::WriteAllText($diagnosticPath,('{"capturedAt":"'+$CapturedAt.ToString('o')+'","connected":true}'),$utf8)
+    [IO.File]::SetLastWriteTimeUtc($diagnosticPath,[DateTime]::UtcNow)
+}
+$script:fixturePoll=0; $script:fixturePublisher=$null
+function Start-Sleep {
+    param($Milliseconds)
+    $script:fixturePoll++
+    if ($null -ne $script:fixturePublisher) { & $script:fixturePublisher }
+    Microsoft.PowerShell.Utility\Start-Sleep -Milliseconds $Milliseconds
+}
+function Invoke-InspectionFixture($Publisher) {
+    $script:fixturePoll=0; $script:diagnosticBodyReads=0; $script:fixturePublisher=$Publisher
+    return Request-FreshInspection
+}
+$requestWriteBefore=[IO.File]::GetLastWriteTimeUtc($requestPath)
+$oldCapture=[DateTimeOffset]::Parse('2000-01-01T00:00:00Z')
+Write-InspectionFixture $oldCapture
+$sameLength=(Get-Item -LiteralPath $diagnosticPath).Length
+$candidateFixture=Invoke-InspectionFixture { if ($script:fixturePoll -eq 1) { Write-InspectionFixture ([DateTimeOffset]::UtcNow) } }
+Assert-Fixture ($candidateFixture.fresh -and $script:diagnosticBodyReads -eq 1 -and (Get-Item -LiteralPath $diagnosticPath).Length -eq $sameLength) 'A changed mtime must admit a fresh same-length replacement exactly once.'
+Write-InspectionFixture ([DateTimeOffset]::UtcNow.AddDays(1))
+$candidateFixture=Invoke-InspectionFixture $null
+Assert-Fixture (-not $candidateFixture.fresh -and $script:diagnosticBodyReads -eq 0) 'Even a preexisting future capture must remain unread when metadata is unchanged.'
+Write-InspectionFixture $oldCapture
+$candidateFixture=Invoke-InspectionFixture { if ($script:fixturePoll -eq 1) { [IO.File]::SetLastWriteTimeUtc($diagnosticPath,[DateTime]::UtcNow) } }
+Assert-Fixture (-not $candidateFixture.fresh -and $script:diagnosticBodyReads -eq 1) 'Mtime-only touch with an old capturedAt must fail and must not reopen the same candidate.'
+$candidateFixture=Invoke-InspectionFixture { if ($script:fixturePoll -eq 1) { Write-InspectionFixture ([DateTimeOffset]::UtcNow.AddDays(1)) } }
+Assert-Fixture (-not $candidateFixture.fresh -and $script:diagnosticBodyReads -eq 1) 'A newly published future capture must fail the existing future-time guard.'
+$candidateFixture=Invoke-InspectionFixture { if ($script:fixturePoll -eq 1) { Write-InspectionFixture ([DateTimeOffset]::UtcNow); [IO.File]::SetLastWriteTimeUtc($diagnosticPath,[DateTime]::UtcNow.AddMinutes(-5)) } }
+Assert-Fixture (-not $candidateFixture.fresh -and $script:diagnosticBodyReads -eq 0) 'Changed metadata predating the request must not open even a fresh-looking body.'
+$candidateFixture=Invoke-InspectionFixture { if ($script:fixturePoll -eq 1) { $duplicate=[DateTimeOffset]::UtcNow; Write-InspectionFixture $duplicate; $script:lastCapture=$duplicate.ToString('o') } }
+Assert-Fixture (-not $candidateFixture.fresh -and $script:diagnosticBodyReads -eq 1) 'The previous accepted capture cannot be accepted again after metadata changes.'
+$script:lastCapture=$null
+$candidateFixture=Invoke-InspectionFixture { if ($script:fixturePoll -eq 1) { [IO.File]::WriteAllText($diagnosticPath,'{',$utf8) } }
+Assert-Fixture (-not $candidateFixture.fresh -and $script:diagnosticBodyReads -eq 1) 'A malformed candidate is rejected and read at most once for its metadata version.'
+$candidateFixture=Invoke-InspectionFixture {
+    if ($script:fixturePoll -eq 1) { [IO.File]::WriteAllText($diagnosticPath,'{bad',$utf8) }
+    if ($script:fixturePoll -eq 3) { Write-InspectionFixture ([DateTimeOffset]::UtcNow) }
+}
+Assert-Fixture ($candidateFixture.fresh -and $script:diagnosticBodyReads -eq 2) 'Rejecting one metadata version must not suppress a later valid replacement in the same bounded request.'
+$candidateFixture=Invoke-InspectionFixture { if ($script:fixturePoll -eq 1) { $large=[IO.File]::Open($diagnosticPath,[IO.FileMode]::Create,[IO.FileAccess]::Write); try { $large.SetLength(8000001) } finally { $large.Dispose() } } }
+Assert-Fixture (-not $candidateFixture.fresh -and $script:diagnosticBodyReads -eq 0) 'Oversized metadata must be rejected before any diagnostic body read.'
+Write-InspectionFixture $oldCapture
+$boundedRejected=$false; try { $null=Read-BoundedJson $diagnosticPath 1 } catch { $boundedRejected=$true }
+Assert-Fixture $boundedRejected 'Direct JSON reads retain the caller-supplied byte-size bound.'
+$script:fixtureReparse=$true
+function Get-Item {
+    param([string]$LiteralPath,[switch]$Force)
+    if ($LiteralPath -eq $diagnosticPath -and $script:fixtureReparse) {
+        return [pscustomobject]@{Attributes=[IO.FileAttributes]::ReparsePoint;Length=1;LastWriteTimeUtc=[DateTime]::UtcNow}
+    }
+    return Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force:$Force
+}
+$candidateFixture=Invoke-InspectionFixture $null
+Assert-Fixture (-not $candidateFixture.fresh -and $script:diagnosticBodyReads -eq 0) 'Reparse-point metadata must be rejected before any diagnostic body read.'
+$reparseRejected=$false; try { $null=Read-BoundedJson $diagnosticPath } catch { $reparseRejected=$true }
+Assert-Fixture $reparseRejected 'The body reader must independently retain the reparse-point guard.'
+Remove-Item Function:\Get-Item
+$directoryRejected=$false; try { $null=Get-BoundedFileMetadata $fixtureRoot } catch { $directoryRejected=$true }
+Assert-Fixture $directoryRejected 'Metadata must describe a regular file, not a directory.'
+$script:expectedStartUtc=(Get-GameIdentity).startUtc
+$script:fixtureAfterRead={ $script:fixtureProcess.CreationDate=$script:fixtureProcess.CreationDate.AddMinutes(1) }
+$candidateFixture=Invoke-InspectionFixture { if ($script:fixturePoll -eq 1) { Write-InspectionFixture ([DateTimeOffset]::UtcNow) } }
+Assert-Fixture (-not $candidateFixture.fresh -and $candidateFixture.reason -eq 'PROCESS_REPLACED' -and $script:diagnosticBodyReads -eq 1) 'A fresh candidate must still recheck exact PID/start identity after reading.'
+$script:fixtureAfterRead=$null; $script:expectedStartUtc=$null
+Assert-Fixture ([IO.File]::GetLastWriteTimeUtc($requestPath) -eq $requestWriteBefore) 'Candidate rejection must not rewrite or reissue the single existing inspection request.'
+Remove-Item Function:\Start-Sleep
+Set-Item Function:\Read-BoundedJson -Value $script:productionReadBoundedJson
 $outputRoot=$fixtureRoot; $observationsPath=Join-Path $fixtureRoot 'observations.jsonl'; $latestPath=Join-Path $fixtureRoot 'latest.json'
 Write-Evidence ([pscustomobject]@{sample=1}) ([pscustomobject]@{sample=1})
 Write-Evidence ([pscustomobject]@{sample=2}) ([pscustomobject]@{sample=2})

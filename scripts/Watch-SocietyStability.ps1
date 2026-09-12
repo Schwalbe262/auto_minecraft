@@ -91,20 +91,29 @@ function Get-GameIdentity {
     return [pscustomobject]@{ state='ALIVE'; startUtc=$creation }
 }
 
-function Read-BoundedJson([string]$Path, [long]$Limit = 8000000) {
+function Get-BoundedFileMetadata([string]$Path, [long]$Limit = 8000000) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'Observation file is missing.' }
     $file = Get-Item -LiteralPath $Path -Force
-    if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $file.Length -gt $Limit) {
+    if (($file.Attributes -band ([IO.FileAttributes]::ReparsePoint -bor [IO.FileAttributes]::Directory)) -ne 0 -or $file.Length -gt $Limit) {
         throw 'Observation file is linked or exceeds the size limit.'
     }
-    return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    return [pscustomobject]@{ lastWriteUtc=$file.LastWriteTimeUtc; length=[long]$file.Length; signature=([string]$file.LastWriteTimeUtc.Ticks + ':' + [string]$file.Length) }
+}
+
+function Read-BoundedJson([string]$Path, [long]$Limit = 8000000) {
+    $null = Get-BoundedFileMetadata $Path $Limit
+    # Finish and close the content reader before parsing, rather than retaining
+    # its handle through a downstream JSON pipeline while the client publishes.
+    $json = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    return $json | ConvertFrom-Json
 }
 
 function Request-FreshInspection {
     $identity = Get-GameIdentity
     if ($identity.state -ne 'ALIVE') { return [pscustomobject]@{ identity=$identity; fresh=$false; reason=$identity.state; snapshot=$null; requestedAt=$null } }
-    $priorCapture = $null
-    try { $priorCapture = [string](Get-Field (Read-BoundedJson $diagnosticPath) 'capturedAt') } catch { }
+    $baseline = $null
+    try { $baseline = Get-BoundedFileMetadata $diagnosticPath } catch { }
+    $attemptedCandidates = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $requestedAt = [DateTimeOffset]::UtcNow
     Assert-NoReparsePath $requestPath
     if (-not (Test-Path -LiteralPath $requestPath)) {
@@ -119,9 +128,17 @@ function Request-FreshInspection {
     while ($wait.Elapsed.TotalSeconds -lt $InspectionTimeoutSeconds -and ($Once -or $clock.Elapsed.TotalMinutes -lt $MaxDurationMinutes)) {
         Start-Sleep -Milliseconds 250
         try {
+            # Do not open the old diagnostics body while the client is replacing
+            # it. Metadata is only a candidate gate, never freshness evidence.
+            # Mark before reading: malformed/temporarily unreadable candidates
+            # fail closed until their metadata changes or this request times out.
+            $metadata = Get-BoundedFileMetadata $diagnosticPath
+            if ($metadata.lastWriteUtc -lt $requestedAt.UtcDateTime -or
+                ($null -ne $baseline -and $metadata.signature -eq $baseline.signature) -or
+                -not $attemptedCandidates.Add($metadata.signature)) { continue }
             $snapshot = Read-BoundedJson $diagnosticPath
             $captured = [DateTimeOffset]::Parse([string](Get-Field $snapshot 'capturedAt'),[Globalization.CultureInfo]::InvariantCulture)
-            if ($captured -ge $requestedAt -and $captured -le [DateTimeOffset]::UtcNow.AddSeconds(2) -and $captured.ToString('o') -ne $script:lastCapture -and [string]$snapshot.capturedAt -ne $priorCapture) {
+            if ($captured -ge $requestedAt -and $captured -le [DateTimeOffset]::UtcNow.AddSeconds(2) -and $captured.ToString('o') -ne $script:lastCapture) {
                 $identity = Get-GameIdentity
                 if ($identity.state -ne 'ALIVE') { return [pscustomobject]@{ identity=$identity; fresh=$false; reason=$identity.state; snapshot=$null; requestedAt=$requestedAt.ToString('o') } }
                 $script:lastCapture = $captured.ToString('o')
