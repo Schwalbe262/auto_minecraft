@@ -6,7 +6,31 @@ import java.util.function.Function;
 
 /** Dispatches independent wine lines while retaining each in-flight owner's complete transaction. */
 public final class WineProductionModule implements AutomationModule {
-    private record Hold(WorkResult result,long until) { }
+    private record Hold(WorkResult result,long until,InputWait inputWait) { }
+    /** An empty-stock observation delays visits, never authorizes an inventory action. */
+    private record InputWait(Profile profile,WineProductionLine line,List<Poi> sources,
+            CommodityStore inputStore,CommodityStore outputStore,WineBatchSchedule schedule,
+            long day,MachineModule.InputShortage shortage) {
+        boolean stillWaiting(Context c) {
+            if(c.session().oneShotFeature!=null || c.profile()!=profile || day!=Math.floorDiv(c.world().dayTime(),24000L)
+                || !Objects.equals(line,WineProductionRules.line(c.profile(),line.id()))
+                || !WineProductionRules.allowed(c,line)
+                || !sources.equals(WineProductionRules.sources(c.profile(),line))
+                || !Objects.equals(inputStore,WineProductionRules.inputStore(c.profile(),line))
+                || !Objects.equals(outputStore,WineProductionRules.outputStore(c.profile(),line))
+                || !Objects.equals(schedule,WineBatchRules.schedule(c.profile(),line.id())))return false;
+            int[] carried=new int[4];
+            for(ItemSlot slot:c.world().inventory()) {
+                ItemData item=slot.item();
+                if(slot.player() && slot.inventoryIndex()>=0 && slot.inventoryIndex()<36 && item!=null
+                    && item.is(shortage.itemId()) && item.quality()>=0 && item.quality()<4 && item.count()<=64) {
+                    carried[item.quality()]+=item.count();
+                    if(carried[item.quality()]>=shortage.requiredCount())return false;
+                }
+            }
+            return true;
+        }
+    }
     private final Function<String,AutomationModule> factory;
     private final Map<String,AutomationModule> modules=new LinkedHashMap<>();
     private final Map<String,Hold> holds=new LinkedHashMap<>();
@@ -58,7 +82,7 @@ public final class WineProductionModule implements AutomationModule {
             WineProductionLine line=WineProductionRules.line(c.profile(),id);
             if(line==null || !line.enabled())continue;
             Hold hold=holds.get(id);
-            if(hold!=null && c.world().tick()<hold.until())continue;
+            if(hold!=null && (hold.inputWait()!=null ? hold.inputWait().stillWaiting(c) : c.world().tick()<hold.until()))continue;
             holds.remove(id);active=id;modules.computeIfAbsent(id,factory);
             // Empty/future-only lines are genuinely idle, not synthetic BUSY work.
             // A one-shot may inspect all idle lines in this bounded registered sweep.
@@ -111,9 +135,19 @@ public final class WineProductionModule implements AutomationModule {
     }
     private void release(Context c,WorkResult result) {
         AutomationModule owner=modules.get(active);
-        if(result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED || result.state()==WorkResult.State.COOLDOWN) {
+        MachineModule.InputShortage shortage=cleanup==null && owner instanceof MachineModule machine ? machine.inputShortage() : null;
+        WineProductionLine line=WineProductionRules.line(c.profile(),active);
+        if(c.session().oneShotFeature==null && result.state()==WorkResult.State.BLOCKED && shortage!=null && WineProductionRules.allowed(c,line)) {
+            InputWait wait=new InputWait(c.profile(),line,WineProductionRules.sources(c.profile(),line),
+                WineProductionRules.inputStore(c.profile(),line),WineProductionRules.outputStore(c.profile(),line),
+                WineBatchRules.schedule(c.profile(),active),Math.floorDiv(c.world().dayTime(),24000L),shortage);
+            String message="재료 부족 대기 — "+shortage.itemId()+" 같은 등급 "+shortage.requiredCount()
+                +"개 필요, 남은 설비 "+shortage.remainingMachines()+"개. 재료를 보유하거나 다음 게임 날짜가 되면 다시 확인합니다";
+            holds.put(active,new Hold(WorkResult.cooldown(message),0,wait));
+            owner.reset();
+        } else if(result.state()==WorkResult.State.BLOCKED || result.state()==WorkResult.State.DEFERRED || result.state()==WorkResult.State.COOLDOWN) {
             long delay=result.state()==WorkResult.State.COOLDOWN ? 100 : 1200;
-            holds.put(active,new Hold(result,c.world().tick()+delay));
+            holds.put(active,new Hold(result,c.world().tick()+delay,null));
             owner.reset();
         } else holds.remove(active);
         if(cleanup!=null)cleanup.reset();cleanup=null;returningInput=false;
@@ -122,7 +156,7 @@ public final class WineProductionModule implements AutomationModule {
     private static boolean clean(Context c,boolean allowContainerClose) {
         return !c.actions().busy() && c.actions().pauseReason()==null && c.world().player().connected() && c.world().player().onGround()
             && c.world().menu()!=null && (allowContainerClose || !c.world().menu().container()) && c.world().menu().carried().empty()
-            && c.profile().loggingHotbarLease==null && !MachineOutputLedger.hasPending(c);
+            && c.profile().loggingHotbarLease==null && c.profile().workHotbarLease==null && !MachineOutputLedger.hasPending(c);
     }
     private static boolean releasable(Context c,AutomationModule owner,boolean allowContainerClose) {
         return clean(c,allowContainerClose) && (!(owner instanceof MachineModule machine) || machine.canSwitchLine(c,allowContainerClose));
@@ -137,5 +171,12 @@ public final class WineProductionModule implements AutomationModule {
         modules.values().forEach(AutomationModule::reset);holds.clear();sweep=List.of();next=0;
         if(cleanup!=null)cleanup.reset();cleanup=null;returningInput=false;
         active=null;closeTicket=-1;afterClose=null;boundaryFailure=null;lastTick=Long.MIN_VALUE;
+    }
+    @Override public void resetForRetry() {
+        // Another line's normal navigation retry must not discard today's
+        // verified shortage. Explicit OFF/start/reset still clears every hold.
+        Map<String,Hold> inputWaits=new LinkedHashMap<>();
+        holds.forEach((id,hold)->{if(hold.inputWait()!=null)inputWaits.put(id,hold);});
+        reset();holds.putAll(inputWaits);
     }
 }

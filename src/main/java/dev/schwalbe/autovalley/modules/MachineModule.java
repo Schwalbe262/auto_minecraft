@@ -6,6 +6,8 @@ import java.util.*;
 
 /** Wine runs before preserves; each run services machines due on the current game day. */
 public final class MachineModule implements AutomationModule {
+    /** Scheduling evidence only: no feed, collection or completed-batch authority. */
+    record InputShortage(String itemId,int requiredCount,int remainingMachines) { }
     private enum Stage { START, MACHINE, SOURCE, SNAPSHOT, CHOOSE, FETCH_SOURCE, FETCH, RETURN, EQUIP, VERIFY, PICKUP, OUTPUT }
     private enum Pending { CLOSE, OPEN_SCAN, OPEN_FETCH, WITHDRAW, SWAP, SELECT, USE, INPUT_MERGE, OUTPUT_MERGE }
     private final Feature feature;
@@ -23,7 +25,7 @@ public final class MachineModule implements AutomationModule {
     private static final int PRESERVES_MORNING_SNAPSHOT_TICK = 240;
     private static final int RESERVED_OUTPUT_SLOTS = 2;
     private boolean stockReady, freshForHaul;
-    private long stockDay;
+    private long stockDay,stockEvidenceDay=-1;
     private int machineIndex, selectedMachineIndex = -1, sourceIndex, containerId = -1, grade = -1, cost, hotbar, inputBefore, withdrawalBefore;
     private Poi source;
     private boolean collected, feeding;
@@ -42,6 +44,7 @@ public final class MachineModule implements AutomationModule {
     private boolean pendingReposition;
     private boolean yieldTravel;
     private int inputMergeAttempts, outputMergeAttempts;
+    private InputShortage inputShortage;
 
     public MachineModule(Feature feature) {
         if (feature != Feature.WINE && feature != Feature.PRESERVES) throw new IllegalArgumentException("Machine feature must be WINE or PRESERVES");
@@ -53,6 +56,7 @@ public final class MachineModule implements AutomationModule {
         this.feature=Feature.WINE;this.lineId=lineId;
     }
     public String lineId() { return lineId; }
+    InputShortage inputShortage() { return inputShortage; }
     private boolean legacyInput() { return lineId==null || WineProductionRules.LEGACY_ID.equals(lineId); }
     private String inputId() { return productionLine==null ? ItemData.TOMATO : productionLine.inputItemId(); }
     private String ingredientLabel() { return legacyInput() ? "토마토" : inputId(); }
@@ -65,7 +69,7 @@ public final class MachineModule implements AutomationModule {
         return ticket<0 && pending==null && unresolvedInteraction==null && outputOperationId==null && !c.actions().busy()
             && c.actions().pauseReason()==null && c.world().menu()!=null && (allowContainerClose || !c.world().menu().container())
             && c.world().menu().carried().empty() && c.world().player().onGround()
-            && c.profile().loggingHotbarLease==null && !MachineOutputLedger.hasPending(c);
+            && c.profile().loggingHotbarLease==null && c.profile().workHotbarLease==null && !MachineOutputLedger.hasPending(c);
     }
     @Override public Feature feature() { return feature; }
     @Override public int priority() { return feature == Feature.WINE ? 60 : 70; }
@@ -81,7 +85,7 @@ public final class MachineModule implements AutomationModule {
             && unresolvedInteraction==null && outputOperationId==null && !c.actions().busy()
             && c.actions().pauseReason()==null && c.world().player().connected() && c.world().player().onGround()
             && c.world().menu()!=null && (allowContainerClose || !c.world().menu().container()) && c.world().menu().carried().empty()
-            && c.profile().loggingHotbarLease==null && !MachineOutputLedger.hasPending(c);
+            && c.profile().loggingHotbarLease==null && c.profile().workHotbarLease==null && !MachineOutputLedger.hasPending(c);
     }
     private String blockId() { return feature == Feature.WINE ? "society:wine_keg" : "society:preserves_jar"; }
     private String outputId() { return feature==Feature.PRESERVES ? ItemData.PRESERVES : productionLine==null ? ItemData.WINE : productionLine.outputItemId(); }
@@ -90,7 +94,11 @@ public final class MachineModule implements AutomationModule {
 
     @Override public WorkResult tick(Context c) {
         yieldTravel=false;
+        // A survey spanning a date change cannot establish today's empty-stock
+        // wait, even if the last source closes on the new day.
+        if(stockEvidenceDay>=0 && stockEvidenceDay!=gameDay(c))stockEvidenceDay=-1;
         if(feature==Feature.WINE && stage==Stage.START && ticket<0) {
+            inputShortage=null;
             productionLine=WineProductionRules.line(c.profile(),lineId);
             if(productionLine==null || !productionLine.enabled() || !legacyInput() && !WineProductionRules.allowed(c,productionLine))
                 return WorkResult.blocked("Wine production line is unavailable or not enabled: "+lineId);
@@ -295,12 +303,15 @@ public final class MachineModule implements AutomationModule {
                     // If fewer than one recipe remain, a normal refill is still necessary.
                 }
                 if (grade < 0) {
+                    if(feature==Feature.WINE && stockReady && stockEvidenceDay!=gameDay(c) && !sources.isEmpty()) {
+                        beginStockScan(c);
+                        return WorkResult.busy("재료 부족 확정 전 오늘의 보관함 재고 다시 확인");
+                    }
                     // A one-shot must not report an unfunded refill as completed or hide
                     // it behind tomorrow's polling deadline. Leave mature output in place
                     // so supplying ingredients permits a safe retry on this same game day.
                     if (feature==Feature.WINE || c.session().oneShotFeature==feature)
-                        return fail("Not enough tomatoes: "+(machines.size()-machineIndex)+" machine(s) remaining; need "
-                            +cost+" tomatoes of one grade to refill the machine at "+target().pos()+". Add ingredients and retry.");
+                        return insufficientInput(c);
                     feeding = false;
                     if (!machine(c).flag("mature")) { schedule(c,target(),1); machineIndex++; stage = Stage.MACHINE; break; }
                     stage = Stage.RETURN;
@@ -684,6 +695,7 @@ public final class MachineModule implements AutomationModule {
     private void beginStockScan(Context c) {
         sources = StorageVisitOrder.order(WineProductionRules.sources(c.profile(),productionLine),c.world().player());
         stock.clear(); stockReady = false; freshForHaul = false; sourceIndex = 0; grade=-1; stage = Stage.SOURCE;
+        stockEvidenceDay=gameDay(c);
         surveyedStock.clear(); stockSurvey=legacyInput() ? c.session().tomatoStockCache.beginSurvey(c) : null;
     }
     private void prepareStockHaul(Context c) {
@@ -699,6 +711,7 @@ public final class MachineModule implements AutomationModule {
         // Cache contents select a destination, never authorize its QuickMove.
         Optional<TomatoStockCache.View> remembered=c.session().tomatoStockCache.reusable(c);
         if (remembered.isEmpty()) { beginStockScan(c); return; }
+        stockEvidenceDay=remembered.get().fullSurveyDay();
         sources=StorageVisitOrder.order(WineProductionRules.sources(c.profile(),productionLine),c.world().player());
         stock.clear(); surveyedStock.clear(); stockSurvey=null;
         for (Poi poi:sources) {
@@ -848,12 +861,30 @@ public final class MachineModule implements AutomationModule {
         if (uncertainInteraction && !durableOutput) unresolvedInteraction = message;
         return WorkResult.blocked(legacyInput() ? message : message.replace("Tomato",inputId()).replace("tomatoes",inputId()).replace("tomato",inputId()));
     }
+    private WorkResult insufficientInput(Context c) {
+        // Only a completed, current source survey (or the verified legacy stock
+        // cache) proves shortage. Missing configuration or an unsafe boundary is
+        // still an ordinary failure, never permission to yield a transaction.
+        InputShortage observed=feature==Feature.WINE && stockReady && freshForHaul && stockDay>=0 && stockDay==gameDay(c)
+            && stockEvidenceDay==gameDay(c)
+            && !sources.isEmpty() && stock.size()==sources.size() && stock.keySet().containsAll(sources)
+            && Objects.equals(productionLine,WineProductionRules.line(c.profile(),lineId))
+            && WineProductionRules.allowed(c,productionLine)
+            && new HashSet<>(sources).equals(new HashSet<>(WineProductionRules.sources(c.profile(),productionLine)))
+            && cleanWineBoundary(c) && c.profile().workHotbarLease==null
+            ? new InputShortage(inputId(),cost,machines.size()-machineIndex) : null;
+        WorkResult result=fail("Not enough tomatoes: "+(machines.size()-machineIndex)+" machine(s) remaining; need "
+            +cost+" tomatoes of one grade to refill the machine at "+target().pos()+". Add ingredients and retry.");
+        inputShortage=observed;
+        return result;
+    }
     @Override public void reset() { yieldTravel=false; clearRun(); unresolvedInteraction = null; rejectedInputMerge=null; rejectedOutputMerge=null; repositionedInputState=null; }
     private void clearRun() {
+        inputShortage=null;
         stage = Stage.START; afterClose = null; pending = null; ticket = -1; verifySince = 0; useSettleAt = -1;
         machines = List.of(); sources = List.of(); stock.clear(); machineIndex = 0; selectedMachineIndex = -1; sourceIndex = 0;
         surveyedStock.clear(); stockSurvey=null;
-        stockReady = false; freshForHaul = false; stockDay = 0;
+        stockReady = false; freshForHaul = false; stockDay = 0; stockEvidenceDay=-1;
         source = null; containerId = -1; grade = -1; collected = false; feeding = false;
         partialWineFeedEligible=false;partialWineFeedTarget=null;confirmedPartialWineInput=0;
         fullWineFeedEligible=false;fullWineFeedTarget=null;confirmedFullWineInput=false;

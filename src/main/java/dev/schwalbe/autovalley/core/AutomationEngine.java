@@ -368,7 +368,7 @@ public final class AutomationEngine {
         boolean sleepSafe=module.sleepSafeDeferred(c);
         String message=module.feature()+(sleepSafe ? " 재료·응답 보류 (" : " 이동 보류 (")+delay+"틱 후 재확인): "+result.message();
         deferred.put(module,new DeferredRetry(failures,c.world().tick()+delay,message,sleepSafe));
-        c.actions().stopMovement(); c.navigation().reset(); module.reset();
+        c.actions().stopMovement(); c.navigation().reset(); module.resetForRetry();
         return true;
     }
     private boolean cooldown(Context c,AutomationModule module,WorkResult result) {

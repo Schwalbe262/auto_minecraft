@@ -5,6 +5,8 @@ public interface AutomationModule {
     int priority();
     WorkResult tick(Context context);
     void reset();
+    /** Scheduler-only retry reset; explicit start/stop still performs a full reset. */
+    default void resetForRetry() { reset(); }
     /** Read-only revalidation of a previously granted safe logging material, visibility or local navigation wait. */
     default ResourceReadiness resourceReadiness(Context context) { return ResourceReadiness.UNSAFE; }
     /** Separate opt-in: retained local navigation waits may yield work without authorizing sleep. */
